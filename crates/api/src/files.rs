@@ -28,7 +28,6 @@ const ALLOWED_BASES: &[&str] = &[
     "/mnt/cam",
     "/mnt/cam/TeslaCam",
     "/mutable/LicensePlate",
-    "/mutable/LockChime",
     "/mnt/music",
     "/mnt/lightshow",
     "/mnt/boombox",

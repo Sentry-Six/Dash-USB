@@ -107,34 +107,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/support/ticket/{id}/mark-read", post(crate::support::mark_read))
         .route("/api/support/ticket/{id}/register-device", post(crate::support::register_device))
         .route("/api/support/ticket/{id}/unregister-device", post(crate::support::unregister_device))
-        // Lock chime
-        .route("/api/lockchime/list", get(crate::lock_chime::list))
-        .route("/api/lockchime/upload", post(crate::lock_chime::upload))
-        .route("/api/lockchime/activate/{filename}", post(crate::lock_chime::activate))
-        .route("/api/lockchime/clear-active", post(crate::lock_chime::clear_active))
-        .route("/api/lockchime/{filename}", delete(crate::lock_chime::delete_chime))
-        .route("/api/lockchime/volume/{filename}", put(crate::lock_chime::set_volume))
-        .route("/api/lockchime/random-config", get(crate::lock_chime::get_random_config).put(crate::lock_chime::save_random_config))
-        .route("/api/lockchime/randomize", post(crate::lock_chime::randomize))
-        .route("/api/lockchime/randomize-on-connect", post(crate::lock_chime::randomize_on_connect))
-        .route("/api/lockchime/ble-shift-state", get(crate::lock_chime::ble_shift_state))
-        // Community lock chimes
-        .route("/api/lockchime/community/library", get(crate::community::lock_chime_library))
-        .route("/api/lockchime/community/stream/{code}", get(crate::community::lock_chime_stream))
-        .route("/api/lockchime/community/upload", post(crate::community::lock_chime_upload))
-        .route("/api/lockchime/community/download/{code}", post(crate::community::lock_chime_download))
-        .route("/api/lockchime/community/admin/validate", post(crate::community::lock_chime_admin_validate))
-        .route("/api/lockchime/community/admin/edit/{code}", put(crate::community::lock_chime_admin_edit))
-        .route("/api/lockchime/community/admin/delete/{code}", delete(crate::community::lock_chime_admin_delete))
-        // Community wraps
-        .route("/api/wraps/library", get(crate::community::wraps_library))
-        .route("/api/wraps/thumbnail/{code}", get(crate::community::wraps_thumbnail))
-        .route("/api/wraps/preview/{code}", get(crate::community::wraps_preview))
-        .route("/api/wraps/upload", post(crate::community::wraps_upload))
-        .route("/api/wraps/download/{code}", post(crate::community::wraps_download))
-        .route("/api/wraps/admin/validate", post(crate::community::wraps_admin_validate))
-        .route("/api/wraps/admin/edit/{code}", put(crate::community::wraps_admin_edit))
-        .route("/api/wraps/admin/delete/{code}", delete(crate::community::wraps_admin_delete))
         // Memory debug
         .route("/api/memory", get(crate::memory::memory_stats))
         // Backup
@@ -173,24 +145,6 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/telemetry/tire-history",
             get(crate::drives_handler::tire_history),
-        )
-        // Charging — sessions derived on-demand from the per-sample
-        // charge columns. Empty unless the experimental flag is on.
-        .route("/api/charging", get(crate::charging::list_charging))
-        .route("/api/charging/current", get(crate::charging::current_charging))
-        .route("/api/charging/tags", get(crate::charging::list_charge_tags))
-        .route(
-            "/api/charging/bulk-delete",
-            post(crate::charging::bulk_delete_charges),
-        )
-        .route("/api/charging/{id}", get(crate::charging::single_charging))
-        .route(
-            "/api/charging/{id}/tags",
-            put(crate::charging::set_charge_tags),
-        )
-        .route(
-            "/api/charging/{id}/cost",
-            put(crate::charging::set_charge_cost),
         )
         // Terminal WebSocket
         .route("/api/terminal", get(crate::terminal::handle_terminal))
