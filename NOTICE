@@ -1,13 +1,17 @@
-Sentry-USB-Rusty
+Dash-USB
 Copyright 2025-2026 Jhoan Romero, Scott Vandereems, and Jason Perez
+
+Dash-USB is a derivative of Sentry-USB-Rusty
+(https://github.com/Sentry-Six/Sentry-USB-Rusty), by the same authors.
 
 This product is licensed under the PolyForm Noncommercial License 1.0.0 (see
 LICENSE), EXCEPT for the third-party and derived files listed below, which
 remain under their original MIT License. The PolyForm Noncommercial terms do
 NOT apply to those files; the MIT terms in section "MIT License" below do.
 
-If a file is not listed below, it is original work of the Sentry-USB-Rusty
-authors and is covered by the PolyForm Noncommercial License 1.0.0.
+If a file is not listed below, it is original work of the Dash-USB /
+Sentry-USB-Rusty authors and is covered by the PolyForm Noncommercial
+License 1.0.0.
 
 ================================================================================
 1. TeslaUSB-derived shell scripts  --  MIT License
