@@ -171,8 +171,6 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
         // cam disk is always expected — hard fail if it's missing.
         ("/backingfiles/cam_disk.bin", "cam disk image", None),
         ("/backingfiles/music_disk.bin", "music disk image", Some("MUSIC_SIZE")),
-        ("/backingfiles/lightshow_disk.bin", "lightshow disk image", Some("LIGHTSHOW_SIZE")),
-        ("/backingfiles/boombox_disk.bin", "boombox disk image", Some("BOOMBOX_SIZE")),
     ];
     for (img, label, size_key) in disks {
         // Optional disk the user didn't ask for → skip the check entirely.
@@ -514,7 +512,7 @@ const DIAGNOSTICS_SCRIPT: &str = r#"{
 
   echo "====== disk / images ======"
   df -h /sentryusb/ / /backingfiles/ /mutable/ 2>/dev/null
-  for img in cam music lightshow boombox wraps; do
+  for img in cam music; do
     f="/backingfiles/${img}_disk.bin"
     if [ -f "$f" ]; then
       echo "$img disk: $(du -h "$f" | cut -f1)"

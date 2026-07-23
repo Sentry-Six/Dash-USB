@@ -28,8 +28,6 @@ const CFG: &str = "c";
 const DISK_IMAGES: &[(&str, &str)] = &[
     ("/backingfiles/cam_disk.bin", "CAM"),
     ("/backingfiles/music_disk.bin", "MUSIC"),
-    ("/backingfiles/lightshow_disk.bin", "LIGHTSHOW"),
-    ("/backingfiles/boombox_disk.bin", "BOOMBOX"),
 ];
 
 /// Find the configfs root mount point.

@@ -207,7 +207,7 @@ async fn main() {
         tower_http::services::ServeDir::new("/var/www/html/TeslaCam"),
     );
 
-    // Serve /fs/ for music/lightshow/boombox autofs mounts
+    // Serve /fs/ for the music autofs mount
     app = app.nest_service(
         "/fs",
         tower_http::services::ServeDir::new("/var/www/html/fs"),

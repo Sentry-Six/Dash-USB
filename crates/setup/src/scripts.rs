@@ -107,19 +107,13 @@ fi
 cat "$optfile"
 "#;
 
-/// autofs map script for `/var/www/html/fs` — resolves Music/LightShow/Boombox
-/// to the corresponding backing disk image with an rw mount.
+/// autofs map script for `/var/www/html/fs` — resolves Music to the
+/// corresponding backing disk image with an rw mount.
 const AUTO_WWW: &str = r#"#!/bin/dash
 
 case "$1" in
   Music)
     diskimage="/backingfiles/music_disk.bin"
-    ;;
-  LightShow)
-    diskimage="/backingfiles/lightshow_disk.bin"
-    ;;
-  Boombox)
-    diskimage="/backingfiles/boombox_disk.bin"
     ;;
   *)
     exit 1

@@ -1,6 +1,6 @@
 //! Disk image creation — replaces `create-backingfiles.sh`.
 //!
-//! Creates FAT32/exFAT disk images for cam, music, lightshow, and boombox
+//! Creates FAT32/exFAT disk images for cam and music
 //! drives in /backingfiles/. Wraps & License Plates live as folders on the
 //! cam drive — no dedicated partition.
 
@@ -25,8 +25,6 @@ struct DriveSpec {
 const DRIVE_SPECS: &[DriveSpec] = &[
     DriveSpec { name: "cam", label: "CAM", config_key: "CAM_SIZE", default_fallback: "30G" },
     DriveSpec { name: "music", label: "MUSIC", config_key: "MUSIC_SIZE", default_fallback: "4G" },
-    DriveSpec { name: "lightshow", label: "LIGHTSHOW", config_key: "LIGHTSHOW_SIZE", default_fallback: "1G" },
-    DriveSpec { name: "boombox", label: "BOOMBOX", config_key: "BOOMBOX_SIZE", default_fallback: "100M" },
 ];
 
 /// One-time cleanup for installs that previously had a dedicated wraps disk.
@@ -178,7 +176,7 @@ async fn release_all_images() {
     let _ = sentryusb_gadget::disable();
     // /mnt/wraps stays in the list to drain any leftover mount from a
     // pre-migration install before purge_legacy_wraps_disk runs.
-    for mount in &["/mnt/cam", "/mnt/music", "/mnt/lightshow", "/mnt/boombox", "/mnt/wraps"] {
+    for mount in &["/mnt/cam", "/mnt/music", "/mnt/wraps"] {
         let _ = sentryusb_shell::run("umount", &["-d", mount]).await;
     }
     let _ = sentryusb_shell::run(
