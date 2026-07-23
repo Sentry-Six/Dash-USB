@@ -1,9 +1,8 @@
 use axum::extract::DefaultBodyLimit;
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, post};
 use axum::Router;
 
 use crate::auth::AuthState;
-use crate::drives_handler::DriveState;
 use crate::status::NetSampler;
 
 /// Shared application state available to all handlers.
@@ -11,7 +10,6 @@ use crate::status::NetSampler;
 pub struct AppState {
     pub hub: sentryusb_ws::Hub,
     pub auth: AuthState,
-    pub drives: DriveState,
     pub net_sampler: NetSampler,
 }
 
@@ -41,7 +39,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/backingfiles/free-space", get(crate::snapshots::get_free_space))
         // Clips
         .route("/api/clips", get(crate::clips::get_clips))
-        .route("/api/clips/telemetry", get(crate::clips::get_clip_telemetry))
         // Files
         .route("/api/files/ls", get(crate::files::list_files))
         .route("/api/files/mkdir", post(crate::files::create_dir))
@@ -112,38 +109,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/system/backups", get(crate::backup::list_backups))
         .route("/api/system/backup/{date}", get(crate::backup::get_backup))
         .route("/api/system/restore", post(crate::backup::restore_backup))
-        // Drives
-        .route("/api/drives", get(crate::drives_handler::list_drives))
-        .route("/api/drives/routes", get(crate::drives_handler::all_routes))
-        .route("/api/drives/tags", get(crate::drives_handler::list_tags))
-        .route("/api/drives/process", get(crate::drives_handler::processing_status).post(crate::drives_handler::process_files))
-        .route("/api/drives/reprocess", post(crate::drives_handler::reprocess_all))
-        .route("/api/drives/status", get(crate::drives_handler::processing_status))
-        .route("/api/drives/data/download", get(crate::drives_handler::download_data))
-        .route("/api/drives/data/upload", post(crate::drives_handler::upload_data))
-        .route("/api/drives/data/import-history", get(crate::drives_handler::import_history))
-        .route("/api/drives/data", axum::routing::delete(crate::drives_handler::delete_all_drives))
-        .route("/api/drives/bulk-delete", post(crate::drives_handler::bulk_delete_drives))
-        .route("/api/drives/data/export-for-sync", post(crate::drives_handler::export_for_sync))
-        .route("/api/drives/stats", get(crate::drives_handler::drive_stats))
-        .route("/api/drives/fsd-analytics", get(crate::drives_handler::fsd_analytics))
-        .route("/api/drives/migration-status", get(crate::drives_handler::migration_status))
-        .route("/api/drives/{id}/tags", put(crate::drives_handler::set_drive_tags))
-        .route(
-            "/api/drives/{id}/battery-series",
-            get(crate::drives_handler::battery_series),
-        )
-        .route(
-            "/api/drives/{id}/temperature-series",
-            get(crate::drives_handler::temperature_series),
-        )
-        .route("/api/drives/{id}", get(crate::drives_handler::single_drive))
-        // Telemetry — global rollups over telemetry_samples, not scoped
-        // to one drive. Powers the Dashboard's TirePressureCard.
-        .route(
-            "/api/telemetry/tire-history",
-            get(crate::drives_handler::tire_history),
-        )
         // Terminal WebSocket
         .route("/api/terminal", get(crate::terminal::handle_terminal))
         // WebSocket

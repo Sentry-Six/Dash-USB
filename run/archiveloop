@@ -1472,21 +1472,6 @@ function snapshotloop {
     sleep "${SNAPSHOT_INTERVAL:-3480}"
     /root/bin/waitforidle || true
     /root/bin/make_snapshot.sh
-    # Incrementally process new clips after each snapshot.
-    # The processor skips already-processed files, so this is lightweight.
-    # Runs in a subshell so the snapshot loop isn't blocked.
-    if [ "${DRIVE_MAP_WHILE_AWAY:-false}" = "true" ]; then
-      (
-        SENTRYUSB_PORT="${SENTRYUSB_PORT:-80}"
-        API_URL="http://127.0.0.1:${SENTRYUSB_PORT}"
-        if curl -sf "${API_URL}/api/drives/status" > /dev/null 2>&1; then
-          curl -sf -X POST "${API_URL}/api/drives/process?post_archive=1" \
-            -H "Content-Type: application/json" \
-            -d '{"clips_dir": "/mutable/TeslaCam/RecentClips", "throttle_ms": 30}' \
-            > /dev/null 2>&1 || true
-        fi
-      ) &
-    fi
   done
 }
 

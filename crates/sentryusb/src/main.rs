@@ -112,7 +112,7 @@ async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "sentryusb=info,sentryusb_api=info,sentryusb_drives=info,tower_http=info".into()),
+                .unwrap_or_else(|_| "sentryusb=info,sentryusb_api=info,tower_http=info".into()),
         )
         .init();
 
@@ -172,59 +172,11 @@ async fn main() {
     // WebSocket hub
     let hub = sentryusb_ws::Hub::new();
 
-    // Drive store (SQLite)
-    let db_path = sentryusb_drives::DEFAULT_DB_PATH;
-    let store = match sentryusb_drives::DriveStore::open(db_path) {
-        Ok(s) => Arc::new(s),
-        Err(e) => {
-            // Try in-memory if DB path doesn't work (e.g., on dev machine)
-            tracing::warn!("Failed to open drive DB at {}: {}. Using in-memory.", db_path, e);
-            Arc::new(sentryusb_drives::DriveStore::open_memory().expect("failed to create in-memory DB"))
-        }
-    };
-    // Remove orphaned files older binaries wrote to /mutable (drive-data.json
-    // moved to /backingfiles, plus a couple of pre-Rust state files). Runs
-    // after DriveStore::open so any one-shot importer that needs the legacy
-    // path has already had a chance to consume it.
-    sentryusb_drives::cleanup_legacy_mutable_files();
-    phase!("drive_store_opened");
-
-    // Legacy-JSON migration is now handled automatically inside
-    // DriveStore::open via the one-shot import dance.
-    // No manual step needed here — the import marker in the meta table
-    // ensures it only runs once across the lifetime of the DB.
-
-    // Drive processor
-    let mut processor = sentryusb_drives::processor::Processor::with_on_complete(
-        store.clone(),
-        hub.clone(),
-        None,
-    );
-    // Gap-fill backfill: create missing RecentClips links for manifest
-    // clips right after each process pass rewrites the manifest. Lives
-    // here (not in the snapshot path) because on-device snapshots run
-    // through the bash make_snapshot.sh, which never reaches the Rust
-    // snapshot code — the daemon is the only OTA-updatable place this
-    // can run. No-op unless the manifest changed since the last pass.
-    processor.set_after_process(Arc::new(|| {
-        if let Err(e) = sentryusb_gadget::snapshot::backfill_gapfill_links() {
-            tracing::warn!("gap-fill backfill: {}", e);
-        }
-    }));
-    let processor = Arc::new(processor);
-
-    let drive_state = sentryusb_api::drives_handler::DriveState {
-        store: store.clone(),
-        processor: processor.clone(),
-        importing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-    };
-
     phase!("processor_initialized");
 
     let app_state = sentryusb_api::router::AppState {
         hub: hub.clone(),
         auth: auth.clone(),
-        drives: drive_state,
         net_sampler: Arc::new(Mutex::new(HashMap::new())),
     };
 

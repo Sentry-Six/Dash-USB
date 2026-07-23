@@ -5,7 +5,6 @@ members = [
     "crates/config",
     "crates/shell",
     "crates/ws",
-    "crates/drives",
     "crates/api",
     "crates/notify",
     "crates/usb_gadget",

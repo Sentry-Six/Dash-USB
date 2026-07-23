@@ -1,6 +1,5 @@
 pub mod auth;
 pub mod router;
-pub mod drives_handler;
 pub mod status;
 pub mod system;
 pub mod files;

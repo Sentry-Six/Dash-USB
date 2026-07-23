@@ -69,9 +69,6 @@ struct BackupData {
     config: String,
     #[serde(default)]
     preferences: HashMap<String, String>,
-    #[serde(default)]
-    drive_data_included: bool,
-
     #[serde(default, skip_serializing_if = "String::is_empty")]
     ssh_private_key: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -139,7 +136,6 @@ async fn build_backup_data_async() -> Result<BackupData, String> {
         hostname,
         config,
         preferences: prefs_as_strings(),
-        drive_data_included: false,
         ssh_private_key,
         ssh_public_key,
         rclone_config: read_file_if_exists(RCLONE_CONFIG),
@@ -393,132 +389,6 @@ fn list_backups_in_dir(dir: &str, location: &str) -> Vec<BackupEntry> {
     out
 }
 
-/// Scratch path for the drive-DB snapshot. Lives on /backingfiles (the
-/// big data partition) — /tmp can be RAM-backed and /mutable is small,
-/// and the source DB is on the same filesystem anyway.
-const DB_EXPORT_TMP: &str = "/backingfiles/.backup-drive-data.db";
-const DRIVE_DB_PATH: &str = "/backingfiles/drive-data.db";
-
-fn drive_data_filename(date: &str) -> String {
-    format!("sentryusb-backup-{}.drive-data.db.gz", date)
-}
-
-/// Snapshot the drive DB (drives, charges, telemetry) into a gzipped
-/// copy ready to ship next to the JSON backup. `VACUUM INTO` takes a
-/// read transaction on the live DB so the copy is consistent even while
-/// the sampler writes; other DB users queue for the few seconds it
-/// takes, which is fine for a manual/nightly backup. Returns the .gz
-/// path.
-async fn export_drive_data_gz(
-    store: std::sync::Arc<sentryusb_drives::DriveStore>,
-) -> Result<String, String> {
-    if !Path::new(DRIVE_DB_PATH).exists() {
-        return Err("drive DB does not exist yet".to_string());
-    }
-    let gz = format!("{}.gz", DB_EXPORT_TMP);
-    // VACUUM INTO refuses to overwrite; clear leftovers from a crashed run.
-    let _ = std::fs::remove_file(DB_EXPORT_TMP);
-    let _ = std::fs::remove_file(&gz);
-
-    let vacuum = tokio::task::spawn_blocking(move || {
-        store.with_locked_conn(|conn| {
-            conn.execute("VACUUM INTO ?1", rusqlite::params![DB_EXPORT_TMP])
-                .map(|_| ())
-        })
-    })
-    .await;
-    match vacuum {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => return Err(format!("VACUUM INTO failed: {}", e)),
-        Err(e) => return Err(format!("export task failed: {}", e)),
-    }
-
-    sentryusb_shell::run_with_timeout(
-        Duration::from_secs(300),
-        "gzip",
-        &["-f", DB_EXPORT_TMP],
-    )
-    .await
-    .map_err(|e| format!("gzip failed: {}", e))?;
-    Ok(gz)
-}
-
-/// Ship the drive-DB snapshot to the same archive destination the JSON
-/// backup goes to. Deliberately NOT written to the /mutable local copy —
-/// that partition is a few hundred MB and a dated DB snapshot per backup
-/// would fill it. `location == "ssd"` therefore skips with an
-/// explanatory error the caller logs.
-async fn ship_drive_data(location: &str, gz_path: &str, date: &str) -> Result<(), String> {
-    if location == "ssd" {
-        return Err(
-            "backup_location is local SSD — drive DB snapshot is only shipped to archive \
-             destinations (/mutable is too small for dated DB copies)"
-                .to_string(),
-        );
-    }
-    let filename = drive_data_filename(date);
-    let config_path = sentryusb_config::find_config_path();
-    let (active, _) = sentryusb_config::parse_file(config_path).map_err(|e| e.to_string())?;
-    let archive_system = active.get("ARCHIVE_SYSTEM").cloned().unwrap_or_default();
-    match archive_system.as_str() {
-        "cifs" | "nfs" => {
-            let gz = gz_path.to_string();
-            let dest = format!("{}/{}", ARCHIVE_BACKUP_DIR, filename);
-            with_archive_mounted(move || async move {
-                // Tens of MB onto a network mount — keep it off the runtime.
-                tokio::task::spawn_blocking(move || {
-                    std::fs::create_dir_all(ARCHIVE_BACKUP_DIR)
-                        .map_err(|e| format!("create {}: {}", ARCHIVE_BACKUP_DIR, e))?;
-                    let tmp = format!("{}.tmp", dest);
-                    std::fs::copy(&gz, &tmp).map_err(|e| format!("copy to archive: {}", e))?;
-                    std::fs::rename(&tmp, &dest).map_err(|e| format!("finalize: {}", e))
-                })
-                .await
-                .map_err(|e| format!("copy task failed: {}", e))?
-            })
-            .await
-        }
-        "rsync" => {
-            let server = active.get("RSYNC_SERVER").cloned().unwrap_or_default();
-            let user = active.get("RSYNC_USER").cloned().unwrap_or_default();
-            let rsync_path = active.get("RSYNC_PATH").cloned().unwrap_or_default();
-            if server.is_empty() || user.is_empty() {
-                return Err("rsync not configured".to_string());
-            }
-            let dest = format!("{}@{}:{}/backups/{}", user, server, rsync_path, filename);
-            sentryusb_shell::run_with_timeout(
-                Duration::from_secs(600),
-                "rsync",
-                &["-h", "--no-perms", "--omit-dir-times", "--timeout=300", gz_path, &dest],
-            )
-            .await
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-        }
-        "rclone" => {
-            let drive = active.get("RCLONE_DRIVE").cloned().unwrap_or_default();
-            let rclone_path = active.get("RCLONE_PATH").cloned().unwrap_or_default();
-            if drive.is_empty() {
-                return Err("rclone not configured".to_string());
-            }
-            // rclone preserves the source filename; stage under the dated
-            // name so the remote gets sentryusb-backup-<date>.drive-data.db.gz.
-            let staged = format!("/backingfiles/{}", filename);
-            std::fs::rename(gz_path, &staged).map_err(|e| format!("stage: {}", e))?;
-            let dest = format!("{}:{}/backups/", drive, rclone_path);
-            let res = sentryusb_shell::run_with_timeout(
-                Duration::from_secs(600),
-                "rclone",
-                &["--config", "/root/.config/rclone/rclone.conf", "copy", &staged, &dest],
-            )
-            .await;
-            let _ = std::fs::rename(&staged, gz_path);
-            res.map(|_| ()).map_err(|e| e.to_string())
-        }
-        _ => Err("no archive system configured".to_string()),
-    }
-}
-
 #[derive(Deserialize, Default)]
 pub struct BackupQuery {
     /// `force=1` skips hash-based change detection.
@@ -527,15 +397,11 @@ pub struct BackupQuery {
 }
 
 /// POST /api/system/backup
-///
-/// Query: `force=1` to bypass change detection. Always writes a local copy
-/// as a safety net even when the primary destination is an archive server,
-/// so a flaky network can't leave you with no backup at all.
 pub async fn create_backup(
-    State(s): State<AppState>,
+    State(_s): State<AppState>,
     Query(q): Query<BackupQuery>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let mut data = match build_backup_data_async().await {
+    let data = match build_backup_data_async().await {
         Ok(d) => d,
         Err(e) => {
             return crate::json_error(
@@ -552,27 +418,6 @@ pub async fn create_backup(
         .unwrap_or("archive")
         .to_string();
 
-    // Snapshot + ship the drive DB (drives, charges, telemetry) next to
-    // the JSON backup. Runs even when the config hash is unchanged —
-    // drive data changes every day the car is used, and a stale export
-    // is exactly how users lose drive history on a reflash. Best-effort:
-    // a DB export failure must never block the config backup.
-    let mut drive_data_shipped = false;
-    match export_drive_data_gz(s.drives.store.clone()).await {
-        Ok(gz) => {
-            match ship_drive_data(&location, &gz, &data.date).await {
-                Ok(()) => {
-                    info!("[backup] Drive DB snapshot shipped as {}", drive_data_filename(&data.date));
-                    drive_data_shipped = true;
-                }
-                Err(e) => warn!("[backup] Drive DB snapshot not shipped: {}", e),
-            }
-            let _ = std::fs::remove_file(&gz);
-        }
-        Err(e) => warn!("[backup] Drive DB export failed: {}", e),
-    }
-    data.drive_data_included = drive_data_shipped;
-
     let force = q.force.as_deref() == Some("1");
     let current_hash = compute_backup_hash(&data);
     if !force && current_hash == read_last_hash() && !current_hash.is_empty() {
@@ -582,7 +427,6 @@ pub async fn create_backup(
             "success": true,
             "skipped": true,
             "reason": "no changes detected",
-            "drive_data_refreshed": drive_data_shipped,
             "date": data.date,
         })));
     }

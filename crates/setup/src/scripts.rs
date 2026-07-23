@@ -167,7 +167,6 @@ cat "$optfile"
 // no archive ever runs.
 
 const ARCHIVELOOP: &str = include_str!("../../../run/archiveloop");
-const POST_ARCHIVE_PROCESS: &str = include_str!("../../../run/post-archive-process.sh");
 const AWAKE_START: &str = include_str!("../../../run/awake_start");
 const AWAKE_STOP: &str = include_str!("../../../run/awake_stop");
 const SEND_LIVE_ACTIVITY: &str = include_str!("../../../run/send-live-activity");
@@ -201,7 +200,6 @@ pub async fn install_runtime_scripts(emitter: &crate::SetupEmitter) -> Result<bo
         // archive.sh) are installed by `archive::install_archive_scripts`
         // based on ARCHIVE_SYSTEM, since each system has its own copy.
         ("archiveloop", ARCHIVELOOP),
-        ("post-archive-process.sh", POST_ARCHIVE_PROCESS),
         ("awake_start", AWAKE_START),
         ("awake_stop", AWAKE_STOP),
         ("send-live-activity", SEND_LIVE_ACTIVITY),

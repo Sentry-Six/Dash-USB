@@ -1675,7 +1675,6 @@ dependencies = [
  "libc",
  "rust-embed",
  "sentryusb-api",
- "sentryusb-drives",
  "sentryusb-gadget",
  "sentryusb-setup",
  "sentryusb-shell",
@@ -1704,7 +1703,6 @@ dependencies = [
  "ring",
  "rusqlite",
  "sentryusb-config",
- "sentryusb-drives",
  "sentryusb-gadget",
  "sentryusb-notify",
  "sentryusb-setup",
@@ -1725,23 +1723,6 @@ name = "sentryusb-config"
 version = "0.1.0"
 dependencies = [
  "anyhow",
-]
-
-[[package]]
-name = "sentryusb-drives"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64",
- "chrono",
- "rusqlite",
- "sentryusb-ws",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
 ]
 
 [[package]]
