@@ -97,7 +97,7 @@ pub async fn get_preference(
 
 /// PUT /api/config/preference
 pub async fn set_preference(
-    State(s): State<AppState>,
+    State(_s): State<AppState>,
     body: String,
 ) -> (StatusCode, Json<serde_json::Value>) {
     #[derive(Deserialize)]
@@ -110,7 +110,6 @@ pub async fn set_preference(
         Ok(r) => r,
         Err(_) => return crate::json_error(StatusCode::BAD_REQUEST, "invalid request body"),
     };
-    let key = req.key.clone();
 
     {
         // Hold the lock across the entire load→modify→save so two concurrent
@@ -124,58 +123,6 @@ pub async fn set_preference(
         save_prefs(&prefs);
     }
 
-    // Rate-config keys feed cloud sync: queue the document for push
-    // and wake the sweep loop. Pull-applied configs bypass this handler
-    // (the sync engine writes prefs directly), so there's no echo loop.
-    if RATE_CONFIG_KEYS.contains(&key.as_str()) {
-        if let Err(e) = s.drives.store.mark_rate_config_dirty() {
-            tracing::warn!("[preferences] mark_rate_config_dirty failed: {}", e);
-        }
-        s.cloud.uploader.nudge();
-    }
     crate::json_ok()
 }
 
-/// The preference keys that make up the per-Pi charging rate-config
-/// document synced to/from the cloud (charging.rs `RateConfig::load`
-/// reads exactly these).
-pub const RATE_CONFIG_KEYS: &[&str] =
-    &["charging_currency", "charging_default_rate", "charging_tag_rates"];
-
-/// `RateConfigAccess` over the local preferences store — wired into the
-/// cloud uploader at spawn (main.rs). Reads/writes only the
-/// RATE_CONFIG_KEYS subset, under the same PREFS_LOCK as the API.
-pub struct PrefsRateConfig;
-
-impl sentryusb_cloud_uploader::RateConfigAccess for PrefsRateConfig {
-    fn load_doc(&self) -> serde_json::Value {
-        let prefs = load_prefs();
-        let mut doc = serde_json::Map::new();
-        for k in RATE_CONFIG_KEYS {
-            if let Some(v) = prefs.get(*k) {
-                doc.insert((*k).to_string(), v.clone());
-            }
-        }
-        serde_json::Value::Object(doc)
-    }
-
-    fn store_doc(&self, doc: &serde_json::Value) -> anyhow::Result<()> {
-        let Some(obj) = doc.as_object() else {
-            anyhow::bail!("rate config doc is not an object");
-        };
-        let _guard = PREFS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let mut prefs = load_prefs();
-        for k in RATE_CONFIG_KEYS {
-            match obj.get(*k) {
-                Some(v) => {
-                    prefs.insert((*k).to_string(), v.clone());
-                }
-                None => {
-                    prefs.remove(*k);
-                }
-            }
-        }
-        save_prefs(&prefs);
-        Ok(())
-    }
-}

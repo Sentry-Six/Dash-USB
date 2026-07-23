@@ -3,7 +3,6 @@ use axum::routing::{delete, get, post, put};
 use axum::Router;
 
 use crate::auth::AuthState;
-use crate::cloud::CloudHandlerState;
 use crate::drives_handler::DriveState;
 use crate::status::NetSampler;
 
@@ -13,7 +12,6 @@ pub struct AppState {
     pub hub: sentryusb_ws::Hub,
     pub auth: AuthState,
     pub drives: DriveState,
-    pub cloud: CloudHandlerState,
     pub net_sampler: NetSampler,
 }
 
@@ -151,20 +149,7 @@ pub fn build_router(state: AppState) -> Router {
         // WebSocket
         .route("/api/ws", get(ws_handler))
         // Memory HTML page
-        .route("/memory", get(crate::memory::memory_page))
-        // Cloud upload pipeline (paired-Pi cloud sync). Production uploads
-        // are automatic at the tail of the archive lifecycle. `upload-now`
-        // nudges the uploader manually — wired to the Retry button in the
-        // cloud-pairing UI when `lastUploadError` is showing (uploader is
-        // event-driven, so a transient failure can leave the queue stuck
-        // until the next clip archives).
-        .route("/api/cloud/status", get(crate::cloud::get_status))
-        .route("/api/cloud/queue", get(crate::cloud::get_queue))
-        .route("/api/cloud/pair/begin", post(crate::cloud::pair_begin))
-        .route("/api/cloud/pair/cancel", post(crate::cloud::pair_cancel))
-        .route("/api/cloud/unpair", post(crate::cloud::unpair))
-        .route("/api/cloud/upload-now", post(crate::cloud::upload_now))
-        .route("/api/cloud/backfill-ble", post(crate::cloud::backfill_ble));
+        .route("/memory", get(crate::memory::memory_page));
 
     api.with_state(state)
 }

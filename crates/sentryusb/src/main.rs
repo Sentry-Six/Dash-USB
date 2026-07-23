@@ -194,16 +194,11 @@ async fn main() {
     // No manual step needed here — the import marker in the meta table
     // ensures it only runs once across the lifetime of the DB.
 
-    // Cloud-uploader wake channel. Threaded into Processor so do_process
-    // calls notify_one() at the tail of every successful run; the cloud
-    // sweep loop is the only subscriber.
-    let cloud_notify = Arc::new(tokio::sync::Notify::new());
-
     // Drive processor
     let mut processor = sentryusb_drives::processor::Processor::with_on_complete(
         store.clone(),
         hub.clone(),
-        Some(cloud_notify.clone()),
+        None,
     );
     // Gap-fill backfill: create missing RecentClips links for manifest
     // clips right after each process pass rewrites the manifest. Lives
@@ -226,30 +221,10 @@ async fn main() {
 
     phase!("processor_initialized");
 
-    // SentryCloud upload pipeline. Background tasks pull pending routes
-    // from the local DB, encrypt under the per-Pi key, and POST to
-    // sentryusb.com/api/pi/routes whenever the Notify above fires.
-    let cloud_uploader = sentryusb_cloud_uploader::CloudUploader::spawn_with_options(
-        store.clone(),
-        hub.clone(),
-        cloud_notify,
-        sentryusb_cloud_uploader::SpawnOptions {
-            // Rate-config sync hook — preferences live in the api
-            // crate, which depends on the uploader, so the binary wires
-            // the implementation in here.
-            rate_config: Some(Arc::new(sentryusb_api::preferences::PrefsRateConfig)),
-            ..Default::default()
-        },
-    ).await;
-    phase!("cloud_uploader_spawned");
-
     let app_state = sentryusb_api::router::AppState {
         hub: hub.clone(),
         auth: auth.clone(),
         drives: drive_state,
-        cloud: sentryusb_api::cloud::CloudHandlerState {
-            uploader: cloud_uploader,
-        },
         net_sampler: Arc::new(Mutex::new(HashMap::new())),
     };
 

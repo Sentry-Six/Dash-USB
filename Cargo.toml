@@ -10,8 +10,6 @@ members = [
     "crates/notify",
     "crates/usb_gadget",
     "crates/setup",
-    "crates/cloud_crypto",
-    "crates/cloud_uploader",
 ]
 
 [workspace.package]

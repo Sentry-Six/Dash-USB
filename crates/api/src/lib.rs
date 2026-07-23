@@ -18,7 +18,6 @@ pub mod preferences;
 pub mod memory;
 pub mod logs;
 pub mod devices;
-pub mod cloud;
 pub mod snapshots;
 pub mod storage_repair;
 
