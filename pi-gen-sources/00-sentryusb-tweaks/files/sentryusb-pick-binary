@@ -161,7 +161,7 @@ log "selected variant=${PICKED} (detected=${DETECTED:-unknown}) path=${PICKED_PA
 # (image predates this scheme and the OTA updater hasn't run since), leave
 # /root/bin alone — a regular file there is the only copy we have.
 mkdir -p /root/bin 2>/dev/null || true
-for name in sentryusb-tesla-telemetry sentryusb-ble-action; do
+for name in sentryusb-ble-action; do
     AUX_PATH="${INSTALL_DIR}/${name}-${PICKED}"
     if [ ! -x "$AUX_PATH" ]; then
         # Same fallback chain as the main binary. a72 is safe on every

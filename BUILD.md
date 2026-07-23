@@ -23,9 +23,8 @@ cp -r web/dist crates/sentryusb/static
 
 ## Rust binaries
 
-Two binaries ship with the project:
+One binary ships with the project:
 - `sentryusb` — main daemon (HTTP + WebSocket + setup orchestrator)
-- `sentryusb-tesla-telemetry` — BLE telemetry sampler (lazy-started after pairing)
 
 ### Cross-compile for the Pi
 
@@ -81,7 +80,6 @@ GitHub Releases are expected to host these artifacts (naming consumed by
 - `sentryusb-linux-arm64-a53` / `-a72` / `-a76` (per-CPU aarch64 variants)
 - `sentryusb-linux-arm64` (backward-compat alias = a72 build)
 - `sentryusb-linux-armv7`
-- `sentryusb-tesla-telemetry-linux-*` (one per CPU variant)
 
 armv6 (Pi Zero W / Pi 1) is no longer built — the board is too underpowered
 to run the daemon comfortably, and dropping the matrix entry keeps the

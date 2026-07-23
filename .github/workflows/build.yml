@@ -256,7 +256,6 @@ jobs:
             *)         BUILD_WRAPPER="" ;;
           esac
           $BUILD_WRAPPER cargo build --release --target ${{ matrix.target }} -p sentryusb
-          $BUILD_WRAPPER cargo build --release --target ${{ matrix.target }} -p sentryusb-tesla-telemetry
           # One-shot CLI used by run/awake_start to issue keep-awake
           # actions over BLE (replaces tesla-control shell-outs).
           $BUILD_WRAPPER cargo build --release --target ${{ matrix.target }} -p sentryusb-tesla-ble --bin sentryusb-ble-action
@@ -265,10 +264,9 @@ jobs:
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: ${{ matrix.linker }}
 
       - name: Package binaries
-        # Both artifacts use the same `artifact_suffix` so the in-app
+        # All artifacts use the same `artifact_suffix` so the in-app
         # updater (update.rs) and the picker script can fetch them via a
-        # predictable URL pattern: sentryusb-${suffix},
-        # sentryusb-tesla-telemetry-${suffix}.
+        # predictable URL pattern: sentryusb-${suffix}.
         #
         # The a72 job ALSO uploads under the legacy unsuffixed name
         # (sentryusb-linux-arm64 etc.) so pre-multi-binary installs whose
@@ -279,11 +277,9 @@ jobs:
         run: |
           mkdir -p release
           cp target/${{ matrix.target }}/release/sentryusb release/sentryusb-${{ matrix.artifact_suffix }}
-          cp target/${{ matrix.target }}/release/sentryusb-tesla-telemetry release/sentryusb-tesla-telemetry-${{ matrix.artifact_suffix }}
           cp target/${{ matrix.target }}/release/sentryusb-ble-action release/sentryusb-ble-action-${{ matrix.artifact_suffix }}
           if [ "${{ matrix.artifact_suffix }}" = "linux-arm64-a72" ]; then
               cp target/${{ matrix.target }}/release/sentryusb release/sentryusb-linux-arm64
-              cp target/${{ matrix.target }}/release/sentryusb-tesla-telemetry release/sentryusb-tesla-telemetry-linux-arm64
               cp target/${{ matrix.target }}/release/sentryusb-ble-action release/sentryusb-ble-action-linux-arm64
           fi
           ls -lh release/

@@ -97,9 +97,8 @@ if [ -n "${RELEASE_TAG:-}" ]; then
     echo "Version: $RELEASE_TAG"
 fi
 
-# ── Pre-install Tesla BLE aux binaries (telemetry sampler + action CLI) ──
+# ── Pre-install Tesla BLE aux binaries (action CLI) ──
 #
-# sentryusb-tesla-telemetry: BLE telemetry sampler daemon.
 # sentryusb-ble-action: one-shot CLI invoked by run/awake_start to send
 # keep-awake commands (wake / sentry-mode / charge-port). Without it,
 # users with BLE keep-awake enabled hit "No such file or directory"
@@ -120,19 +119,12 @@ fi
 #
 # Input precedence per variant (mirrors the main-binary loop):
 #   * files/<name>-<sfx> — per-variant build injected by build-image.sh
-#   * SENTRYUSB_TELEMETRY_BINARY / SENTRYUSB_BLE_ACTION_BINARY env
-#     override — a single binary staged under ALL variant slots; only
-#     fully correct for single-variant builds (armv7), kept for CI and
-#     local-dev convenience
+#   * SENTRYUSB_BLE_ACTION_BINARY env override — a single binary staged
+#     under ALL variant slots; only fully correct for single-variant
+#     builds (armv7), kept for CI and local-dev convenience
 #   * GitHub release download as the last resort
-#
-# The sentryusb-telemetry.service unit (installed below) has
-# ConditionPathExists guards so the sampler only runs once the user
-# pairs BLE — until then the binaries sit idle, which is safe and
-# matches the lazy-install UX in the settings page.
-for name in sentryusb-tesla-telemetry sentryusb-ble-action; do
+for name in sentryusb-ble-action; do
     case "$name" in
-        sentryusb-tesla-telemetry) OVERRIDE="${SENTRYUSB_TELEMETRY_BINARY:-}" ;;
         sentryusb-ble-action)      OVERRIDE="${SENTRYUSB_BLE_ACTION_BINARY:-}" ;;
     esac
     STAGED_ANY=""
@@ -193,9 +185,9 @@ fi
 
 # ── (tesla-control / tesla-keygen are no longer installed) ──
 # Keep Awake BLE, pairing, keygen and every Tesla command are native now
-# (sentryusb-ble-action + sentryusb-tesla-telemetry, installed via the
-# variant binaries above). The external Go binaries are gone, so there is
-# nothing to drop under /root/bin here.
+# (sentryusb-ble-action, installed via the variant binaries above). The
+# external Go binaries are gone, so there is nothing to drop under
+# /root/bin here.
 
 # ── Install remountfs_rw helper (needed by BLE daemon to save PIN on read-only rootfs) ──
 if [ -f "../../run/remountfs_rw" ]; then
@@ -241,17 +233,6 @@ else
         -o "${BLE_SERVICE}" 2>/dev/null || echo "WARNING: Could not fetch BLE service file"
 fi
 
-# ── Install systemd service for the Tesla BLE telemetry sampler ──
-TELEMETRY_SERVICE="${ROOTFS_DIR}/lib/systemd/system/sentryusb-telemetry.service"
-if [ -f "files/sentryusb-telemetry.service" ]; then
-    cp "files/sentryusb-telemetry.service" "${TELEMETRY_SERVICE}"
-elif [ -f "../../server/ble/sentryusb-telemetry.service" ]; then
-    cp "../../server/ble/sentryusb-telemetry.service" "${TELEMETRY_SERVICE}"
-else
-    curl -fsSL "https://raw.githubusercontent.com/${REPO}/main-dev/server/ble/sentryusb-telemetry.service" \
-        -o "${TELEMETRY_SERVICE}" 2>/dev/null || echo "WARNING: Could not fetch telemetry service file"
-fi
-
 # ── Install systemd service for the web UI ──
 cat > "${ROOTFS_DIR}/lib/systemd/system/sentryusb.service" << 'SERVICEEOF'
 [Unit]
@@ -272,7 +253,7 @@ RestartSec=5
 # flooded with framework-level logs that nobody reads. Result: less
 # write IO to the SD card, smaller journal footprint, less per-log
 # CPU on Pi Zero 2 W.
-Environment=RUST_LOG=sentryusb=info,sentryusb_api=info,sentryusb_drives=info,sentryusb_cloud_uploader=info,sentryusb_tesla_telemetry=info,sentryusb_setup=info,sentryusb_gadget=info,sentryusb_notify=info,sentryusb_ws=info,sentryusb_cloud_crypto=info,tower_http=warn,warn
+Environment=RUST_LOG=sentryusb=info,sentryusb_api=info,sentryusb_drives=info,sentryusb_cloud_uploader=info,sentryusb_setup=info,sentryusb_gadget=info,sentryusb_notify=info,sentryusb_ws=info,sentryusb_cloud_crypto=info,tower_http=warn,warn
 # Cap glibc malloc arenas to 2. Default on multicore ARM is 8× nproc
 # arenas, each holding a fragmented heap fork that the kernel never
 # reclaims. Steady-state RSS on Pi-class hardware drops ~40-50% with
@@ -290,10 +271,6 @@ on_chroot << EOF
 # Enable the web server service
 systemctl enable sentryusb.service
 systemctl enable sentryusb-ble.service 2>/dev/null || true
-# Telemetry sampler — service has ConditionPathExists on the BLE
-# keypair, so it'll stay inactive until the user generates keys / pairs
-# BLE. Enable is safe.
-systemctl enable sentryusb-telemetry.service 2>/dev/null || true
 
 # Install prerequisites needed by setup scripts
 apt-get update -qq

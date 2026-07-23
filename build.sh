@@ -97,13 +97,3 @@ else
     echo "Build failed!"
     exit 1
 fi
-
-# Workspace cross-build above produces every workspace binary; report
-# the telemetry sampler too so the release flow / dev knows it's
-# there. Pi-gen install must place it at /root/bin/sentryusb-tesla-telemetry
-# for the sentryusb-telemetry.service unit to find it.
-TELEMETRY_BINARY="$(dirname "$BINARY")/sentryusb-tesla-telemetry"
-if [ -f "$TELEMETRY_BINARY" ]; then
-    TSIZE=$(du -h "$TELEMETRY_BINARY" | cut -f1)
-    echo "Telemetry binary: $TELEMETRY_BINARY ($TSIZE)"
-fi
