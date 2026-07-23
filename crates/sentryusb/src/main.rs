@@ -165,6 +165,12 @@ async fn main() {
         }
     });
 
+    // Publish the active vehicle profile to the bash side (archiveloop
+    // sources /root/bin/profile_env.sh). Rewritten only when content
+    // differs, so OTA updates propagate profile changes without a
+    // setup re-run.
+    sentryusb_vehicle_profile::write_profile_env();
+
     // Initialize auth
     let auth = sentryusb_api::init_auth();
     phase!("auth_initialized");

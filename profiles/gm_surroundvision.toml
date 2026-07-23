@@ -1,0 +1,75 @@
+# Vehicle profile: GM Surround Vision Recorder (2026+ EV/ICE with the
+# built-in rolling dashcam). Everything brand-specific about how the car
+# writes footage to the USB drive lives here — adding support for a new
+# brand should be a new profile file, not new code.
+
+[profile]
+id = "gm_surroundvision"
+display_name = "GM Surround Vision"
+brand = "GM"
+
+[recording]
+# Path inside the virtual drive the car records to. The car is an
+# Android Automotive system writing through standard external-storage
+# paths; bench testing must confirm whether the car creates this tree
+# on a blank drive or expects it to exist.
+root = "Android/media/com.gm.ultifi.gmconnectedcameraservice/Recordings/SurroundVisionRecorder"
+# Segment filenames: FRONT_2026_07_17_T_19_34_53.mp4
+filename_regex = '^(?P<camera>FRONT|LEFT|RIGHT|REAR|INTERIOR)_(?P<y>\d{4})_(?P<mo>\d{2})_(?P<d>\d{2})_T_(?P<h>\d{2})_(?P<mi>\d{2})_(?P<s>\d{2})\.mp4$'
+segment_seconds = 300
+# The car hard-deletes footage older than this regardless of drive size.
+# Dash USB's snapshot loop must capture segments well inside this window.
+rolling_window_minutes = 120
+# ~106 MB per camera per 5-minute segment (H.264 1280x768@30).
+approx_bytes_per_camera_segment = 111000000
+
+[[cameras]]
+id = "FRONT"
+label = "Front"
+
+[[cameras]]
+id = "LEFT"
+label = "Left"
+
+[[cameras]]
+id = "RIGHT"
+label = "Right"
+
+[[cameras]]
+id = "REAR"
+label = "Rear"
+
+# 2027+ models add an interior camera. Optional: the viewer only shows
+# it when files for it exist.
+[[cameras]]
+id = "INTERIOR"
+label = "Interior"
+optional = true
+
+[viewer]
+# Row-major playback grid; "" is an empty cell. Optional cameras not in
+# the grid (INTERIOR) are appended by the viewer when present.
+grid = [["LEFT", "FRONT", "RIGHT"], ["", "REAR", ""]]
+
+[virtual_drive]
+# GM's listed requirements: FAT32, >=64 GB with 32 GB available.
+default_size = "64G"
+min_size = "64G"
+filesystem = "fat32"
+label = "DASHUSB"
+
+[snapshots]
+# 2 h delete window / 900 s = 8 capture chances per segment; worst-case
+# footage loss on a stalled loop is 15 minutes. Overridable per install
+# via SNAPSHOT_INTERVAL in dashusb.conf.
+default_interval_secs = 900
+
+[features]
+# GM has no persistent saved/event folder tier (as far as we know) —
+# everything ages out of the rolling window, so archive everything.
+event_folders = false
+archive_everything_default = true
+# Keep the FUA-suppression LUN tuning inherited from the Tesla build
+# until GM hardware testing says otherwise; the snapshot pipeline
+# already tolerates torn tails on power loss.
+nofua = true

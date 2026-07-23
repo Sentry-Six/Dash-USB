@@ -18,6 +18,7 @@ pub fn build_router(state: AppState) -> Router {
     let api = Router::new()
         // Status & config
         .route("/api/status", get(crate::status::get_status))
+        .route("/api/profile", get(crate::profile::get_profile))
         .route("/api/status/storage", get(crate::status::get_storage_breakdown))
         .route("/api/config", get(crate::status::get_config))
         .route("/api/wifi", get(crate::status::get_wifi_config))

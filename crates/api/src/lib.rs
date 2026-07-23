@@ -14,6 +14,7 @@ pub mod support;
 pub mod healthcheck;
 pub mod clips;
 pub mod preferences;
+pub mod profile;
 pub mod memory;
 pub mod logs;
 pub mod devices;

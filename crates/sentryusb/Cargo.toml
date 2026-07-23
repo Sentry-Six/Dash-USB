@@ -21,5 +21,6 @@ rust-embed = { version = "8" }
 sentryusb-shell = { path = "../shell", package = "sentryusb-shell" }
 sentryusb-ws = { path = "../ws", package = "sentryusb-ws" }
 sentryusb-api = { path = "../api", package = "sentryusb-api" }
+sentryusb-vehicle-profile = { path = "../vehicle_profile", package = "sentryusb-vehicle-profile" }
 sentryusb-setup = { path = "../setup", package = "sentryusb-setup" }
 sentryusb-gadget = { path = "../usb_gadget", package = "sentryusb-gadget" }
