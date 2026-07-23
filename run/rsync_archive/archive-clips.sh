@@ -8,26 +8,13 @@
 # dropping link, so a bash-level monitor is the only way to bound the
 # hang from outside the rsync process.
 #
-# Travel Mode (passed fresh by archiveloop as TRAVEL_MODE_ACTIVE) relaxes the
-# thresholds below for slow, high-latency VPN links so a still-progressing
-# transfer isn't killed by a brief mobile-link hiccup. Normal mode keeps the
-# original snappy values byte-for-byte so "drive away from home" recovery is
-# unchanged.
-if [ "${TRAVEL_MODE_ACTIVE:-0}" = "1" ]; then
-  MONITOR_MISSES=20            # ~minutes of sustained loss before giving up
-  MONITOR_TIMEOUT=20           # must exceed the patient probe (ping 4 + ssh 8 ~= 12s)
-  export ARCHIVE_PING_TIMEOUT=4 ARCHIVE_SSH_TIMEOUT=8
-  RSYNC_EXTRA=(--partial)      # resume an interrupted large clip next cycle
-else
-  MONITOR_MISSES=5             # unchanged
-  MONITOR_TIMEOUT=6            # unchanged
-  # --partial in normal mode too: with the archive reads now running at low
-  # I/O priority behind the car's writes, rsync's own --timeout=600 can
-  # abort a slowed-but-wanted transfer; without --partial the in-flight
-  # clip would restart from byte 0 next cycle, re-reading gigabytes against
-  # the same contended disk.
-  RSYNC_EXTRA=(--partial)
-fi
+MONITOR_MISSES=5
+MONITOR_TIMEOUT=6
+# --partial: with the archive reads running at low I/O priority behind the
+# car's writes, rsync's own --timeout=600 can abort a slowed-but-wanted
+# transfer; without --partial the in-flight clip would restart from byte 0
+# next cycle, re-reading gigabytes against the same contended disk.
+RSYNC_EXTRA=(--partial)
 
 function connectionmonitor {
   while true

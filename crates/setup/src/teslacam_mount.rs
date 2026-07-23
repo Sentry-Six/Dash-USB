@@ -1,6 +1,6 @@
-//! TeslaCam web mount wiring.
+//! Recordings web mount wiring.
 //!
-//! Wires the bind mount of /mutable/TeslaCam at /var/www/html/TeslaCam,
+//! Wires the bind mount of /mutable/Recordings at /var/www/html/Recordings,
 //! which is where the Axum server's ServeDir route reads from. Prior
 //! versions of this phase configured a cttseraser FUSE mount to strip
 //! the `ctts` atom from MP4 files for browsers that couldn't parse it;
@@ -18,10 +18,10 @@ use anyhow::{Context, Result};
 
 use crate::SetupEmitter;
 
-/// Canonical fstab entry that bind-mounts the TeslaCam source tree at the
-/// path the Axum ServeDir route reads from.
+/// Canonical fstab entry that bind-mounts the recordings source tree at
+/// the path the Axum ServeDir route reads from.
 const FSTAB_BIND_LINE: &str =
-    "/mutable/TeslaCam /var/www/html/TeslaCam none bind,nofail,x-systemd.requires=/mutable 0 0";
+    "/mutable/Recordings /var/www/html/Recordings none bind,nofail,x-systemd.requires=/mutable 0 0";
 
 pub async fn configure_web_mount(emitter: &SetupEmitter) -> Result<bool> {
     // Idempotency check — if the canonical bind entry is already present
@@ -29,8 +29,8 @@ pub async fn configure_web_mount(emitter: &SetupEmitter) -> Result<bool> {
     let fstab = std::fs::read_to_string("/etc/fstab").unwrap_or_default();
     let fstab_has_bind = fstab.lines().any(|l| {
         !l.trim_start().starts_with('#')
-            && l.contains("/mutable/TeslaCam")
-            && l.contains("/var/www/html/TeslaCam")
+            && l.contains("/mutable/Recordings")
+            && l.contains("/var/www/html/Recordings")
             && l.contains("bind")
     });
     let fstab_has_legacy = fstab
@@ -41,7 +41,7 @@ pub async fn configure_web_mount(emitter: &SetupEmitter) -> Result<bool> {
         return Ok(false);
     }
 
-    emitter.begin_phase("web_mount", "TeslaCam mount");
+    emitter.begin_phase("web_mount", "Recordings mount");
     emitter.progress("configuring web (SentryUSB mode)");
 
     // Install runtime packages for the network status APIs. The bind mount
@@ -61,8 +61,8 @@ pub async fn configure_web_mount(emitter: &SetupEmitter) -> Result<bool> {
     }
 
     // Source + target dirs.
-    std::fs::create_dir_all("/mutable/TeslaCam")?;
-    std::fs::create_dir_all("/var/www/html/TeslaCam")?;
+    std::fs::create_dir_all("/mutable/Recordings")?;
+    std::fs::create_dir_all("/var/www/html/Recordings")?;
 
     // Replace any legacy cttseraser entry with the bind-mount entry, then
     // clear systemd's cached failed state so the unit activates immediately
@@ -71,21 +71,18 @@ pub async fn configure_web_mount(emitter: &SetupEmitter) -> Result<bool> {
     let _ = sentryusb_shell::run("systemctl", &["daemon-reload"]).await;
     let _ = sentryusb_shell::run(
         "systemctl",
-        &["reset-failed", "var-www-html-TeslaCam.mount"],
+        &["reset-failed", "var-www-html-Recordings.mount"],
     ).await;
     let _ = sentryusb_shell::run(
         "systemctl",
-        &["start", "var-www-html-TeslaCam.mount"],
+        &["start", "var-www-html-Recordings.mount"],
     ).await;
 
-    // (Samba reads from /mutable/TeslaCam directly, so no FUSE allow_other
-    // configuration is required for it.)
+    // (Samba reads from /mutable/Recordings directly, so no FUSE
+    // allow_other configuration is required for it.)
 
-    // Optional auto.www autofs for music/lightshow/boombox disk images.
-    if Path::new("/backingfiles/music_disk.bin").exists()
-        || Path::new("/backingfiles/lightshow_disk.bin").exists()
-        || Path::new("/backingfiles/boombox_disk.bin").exists()
-    {
+    // Optional auto.www autofs for the music disk image.
+    if Path::new("/backingfiles/music_disk.bin").exists() {
         std::fs::create_dir_all("/var/www/html/fs")?;
         std::fs::create_dir_all("/etc/auto.master.d")?;
         std::fs::write(
@@ -104,7 +101,7 @@ pub async fn configure_web_mount(emitter: &SetupEmitter) -> Result<bool> {
     Ok(true)
 }
 
-/// Strip any existing TeslaCam mount entry (legacy cttseraser or prior bind)
+/// Strip any existing Recordings mount entry (or a stale prior bind)
 /// from /etc/fstab and add the canonical bind-mount entry.
 fn install_bind_mount_fstab() -> Result<()> {
     let content = std::fs::read_to_string("/etc/fstab").unwrap_or_default();
@@ -115,8 +112,8 @@ fn install_bind_mount_fstab() -> Result<()> {
             if t.starts_with('#') {
                 return true;
             }
-            // Drop any existing line that targets /var/www/html/TeslaCam.
-            !l.contains("/var/www/html/TeslaCam")
+            // Drop any existing line that targets /var/www/html/Recordings.
+            !l.contains("/var/www/html/Recordings")
         })
         .collect();
     let mut new = kept.join("\n");

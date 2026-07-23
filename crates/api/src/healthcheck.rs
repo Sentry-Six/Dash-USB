@@ -188,18 +188,18 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
             st.push(item(label, status, Some("missing".to_string())));
         }
     }
-    // TeslaCam directory on /mutable — the source of the bind mount
-    // at /var/www/html/TeslaCam. Without it, the Axum ServeDir route
+    // Recordings directory on /mutable — the source of the bind mount
+    // at /var/www/html/Recordings. Without it, the Axum ServeDir route
     // can't expose the cam content to Samba/web downloads, and the
-    // dashboard would otherwise show "all green" while TeslaCam is
+    // dashboard would otherwise show "all green" while Recordings is
     // silently empty.
-    if std::path::Path::new("/mutable/TeslaCam").is_dir() {
-        st.push(item("TeslaCam directory", "pass", None));
+    if std::path::Path::new("/mutable/Recordings").is_dir() {
+        st.push(item("Recordings directory", "pass", None));
     } else {
         st.push(item(
-            "TeslaCam directory",
+            "Recordings directory",
             "fail",
-            Some("/mutable/TeslaCam missing — Samba + web listing will be empty".to_string()),
+            Some("/mutable/Recordings missing — Samba + web listing will be empty".to_string()),
         ));
     }
     categories.push(HealthCategory { name: "Storage".to_string(), items: st });

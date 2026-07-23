@@ -204,13 +204,11 @@ async fn main() {
     // Build the API router
     let mut app = sentryusb_api::build_router(app_state.clone());
 
-    // Serve TeslaCam video files via the bind mount of /mutable/TeslaCam
-    // at /var/www/html/TeslaCam. Modern browsers (Chrome 80+, Firefox 70+,
-    // Safari iOS 13+, ExoPlayer) parse Tesla's `ctts` atom natively, so
-    // no FUSE wrapper is needed.
+    // Serve recording video files via the bind mount of
+    // /mutable/Recordings at /var/www/html/Recordings.
     app = app.nest_service(
-        "/TeslaCam",
-        tower_http::services::ServeDir::new("/var/www/html/TeslaCam"),
+        "/Recordings",
+        tower_http::services::ServeDir::new("/var/www/html/Recordings"),
     );
 
     // Serve /fs/ for the music autofs mount
@@ -232,8 +230,8 @@ async fn main() {
     // apply compression AFTER the api router + ServeDir nests + SPA fallback
     // are in place. The predicate keeps already-compressed media bodies
     // (MP4, MP3, JPEG, ZIP) and binary streams out of the gzip path:
-    //   - video/*  — Tesla MP4s under /TeslaCam/*; gzipping wastes CPU and
-    //                produces no size win on already-compressed H.264.
+    //   - video/*  — dashcam MP4s under /Recordings/*; gzipping wastes CPU
+    //                and produces no size win on already-compressed H.264.
     //   - audio/*  — /fs/* music/lock_chimes (MP3/AAC/OGG are pre-compressed).
     //   - image/*  — already-compressed JPEG/PNG/WebP.
     //   - application/octet-stream — /api/files/download streams arbitrary

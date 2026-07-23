@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use tracing::info;
 
-const GADGET_NAME: &str = "sentryusb";
+const GADGET_NAME: &str = "dashusb";
 // US English. Must match the form used by `run/enable_gadget.sh:13` (`0x409`)
 // — the kernel parses `0x0409` and `0x409` to the same numeric langid (0x409)
 // but the configfs dentry takes whichever string mkdir'd first. Boot runs the
@@ -91,17 +91,16 @@ fn get_max_power() -> u32 {
     }
 }
 
-/// Machine-ID-derived serial: `SentryUSB-<hex sha256(machine-id)>`.
-/// Ensures Tesla's cached pairing survives the
-/// Go→Rust transition.
+/// Machine-ID-derived serial: `DashUSB-<hex sha256(machine-id)>` — a
+/// stable per-device identity some head units cache across replugs.
 fn get_machine_serial() -> String {
     let mid = fs::read_to_string("/etc/machine-id").unwrap_or_default();
     let mid = mid.trim();
     if mid.is_empty() {
-        return "SentryUSB-unknown".to_string();
+        return "DashUSB-unknown".to_string();
     }
     let h = ring::digest::digest(&ring::digest::SHA256, mid.as_bytes());
-    format!("SentryUSB-{}", hex::encode(h.as_ref()))
+    format!("DashUSB-{}", hex::encode(h.as_ref()))
 }
 
 /// True if a configured gadget dir looks complete enough to safely re-bind.
@@ -204,9 +203,9 @@ pub fn enable() -> Result<()> {
         .with_context(|| format!("failed to create {}", cfg_strings.display()))?;
 
     write_file(&strings_dir.join("serialnumber"), &get_machine_serial())?;
-    write_file(&strings_dir.join("manufacturer"), "SentryUSB")?;
-    write_file(&strings_dir.join("product"), "SentryUSB Composite Gadget")?;
-    write_file(&cfg_strings.join("configuration"), "SentryUSB Config")?;
+    write_file(&strings_dir.join("manufacturer"), "DashUSB")?;
+    write_file(&strings_dir.join("product"), "DashUSB Composite Gadget")?;
+    write_file(&cfg_strings.join("configuration"), "DashUSB Config")?;
 
     // MaxPower based on Pi model
     write_file(
@@ -252,7 +251,7 @@ pub fn enable() -> Result<()> {
                 .unwrap_or_else(|_| "?".to_string());
             write_file(
                 &lun_dir.join("inquiry_string"),
-                &format!("SentryUSB {} {}", label, size),
+                &format!("DashUSB {} {}", label, size),
             )?;
 
             lun += 1;

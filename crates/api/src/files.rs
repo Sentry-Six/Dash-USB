@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::io::ReaderStream;
-use tracing::info;
 
 use crate::router::AppState;
 
@@ -26,8 +25,6 @@ use crate::router::AppState;
 const ALLOWED_BASES: &[&str] = &[
     "/mutable",
     "/mnt/cam",
-    "/mnt/cam/TeslaCam",
-    "/mutable/LicensePlate",
     "/mnt/music",
     "/var/www/html/fs",
 ];
@@ -57,7 +54,7 @@ fn lexical_normalize(req_path: &str) -> PathBuf {
 /// Validate and clean a path against the allowed bases.
 ///
 /// We check the *logical* path (lexically normalized), not the symlink-resolved
-/// path. Dashcam clips under `/mutable/TeslaCam/...` are symlinks into the snapshot
+/// path. Dashcam clips under `/mutable/Recordings/...` are symlinks into the snapshot
 /// autofs mount (`/tmp/snapshots/snap-*/...`), which is deliberately outside the
 /// allowed bases — canonicalizing them would deny every clip download (and make
 /// delete operate on the read-only snapshot file instead of the symlink). Lexical
@@ -107,7 +104,7 @@ pub async fn list_files(
     Query(params): Query<ListParams>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     // A folder listing reads the directory and stats every entry — and
-    // TeslaCam clip folders are symlinks into on-demand (autofs) snapshot
+    // recording clip folders are symlinks into on-demand (autofs) snapshot
     // mounts, so the first listing of a busy day can block for seconds
     // while the kernel mounts the image. Run it on the blocking pool so it
     // can't stall the async reactor (which would drop the WebSocket
@@ -297,23 +294,6 @@ pub async fn delete_file(State(_s): State<AppState>, Query(params): Query<Delete
 
     match result {
         Ok(()) => {
-            // Path is rooted at /mutable/Wraps/* — write a zero-byte tombstone so
-            // archiveloop's reverse-sync (--ignore-existing) from the cam drive
-            // won't resurrect it on the next loop. Tombstones are cleared after
-            // a successful forward-sync.
-            if clean_str.starts_with("/mutable/Wraps/") {
-                let tombstone_dir = std::path::Path::new("/mutable/.wraps_deleted");
-                if std::fs::create_dir_all(tombstone_dir).is_ok() {
-                    if let Some(base) = clean.file_name() {
-                        let _ = std::fs::write(tombstone_dir.join(base), b"");
-                    }
-                }
-            }
-            // Clean up snapshot symlinks for SavedClips/SentryClips
-            if clean_str.contains("/SavedClips/") || clean_str.contains("/SentryClips/") {
-                let path = clean_str.to_string();
-                tokio::spawn(async move { cleanup_snapshot_symlinks(&path); });
-            }
             crate::json_ok()
         }
         Err(e) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to delete: {}", e)),
@@ -920,64 +900,6 @@ where
         .into_response()
 }
 
-/// Clean up snapshot symlinks after deleting SavedClips/SentryClips files.
-fn cleanup_snapshot_symlinks(deleted_path: &str) {
-    let mut clip_type = "";
-    let mut event_name = "";
-
-    for ct in &["SavedClips", "SentryClips"] {
-        let marker = format!("/{}/", ct);
-        if let Some(idx) = deleted_path.find(&marker) {
-            clip_type = ct;
-            let rest = &deleted_path[idx + marker.len()..];
-            event_name = rest.split('/').next().unwrap_or("");
-            break;
-        }
-    }
-
-    if clip_type.is_empty() || event_name.is_empty() {
-        return;
-    }
-
-    info!("[files] Cleaning up snapshot symlinks for {}/{}", clip_type, event_name);
-
-    let snapshots_base = Path::new("/backingfiles/snapshots");
-    if let Ok(entries) = std::fs::read_dir(snapshots_base) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if !entry.path().is_dir() || !name_str.starts_with("snap-") {
-                continue;
-            }
-
-            let event_dir = snapshots_base.join(&name).join("mnt/TeslaCam").join(clip_type).join(event_name);
-            if !event_dir.exists() {
-                continue;
-            }
-
-            if let Ok(clip_entries) = std::fs::read_dir(&event_dir) {
-                for ce in clip_entries.flatten() {
-                    let link_path = ce.path();
-                    if let Ok(meta) = std::fs::symlink_metadata(&link_path) {
-                        if meta.file_type().is_symlink() {
-                            let _ = std::fs::remove_file(&link_path);
-                        }
-                    }
-                }
-            }
-
-            // Remove empty event directory
-            if let Ok(remaining) = std::fs::read_dir(&event_dir) {
-                if remaining.count() == 0 {
-                    let _ = std::fs::remove_dir(&event_dir);
-                }
-            }
-        }
-    }
-
-    info!("[files] Snapshot symlink cleanup complete for {}/{}", clip_type, event_name);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -987,21 +909,21 @@ mod tests {
 
     #[test]
     fn allows_clip_paths_and_blocks_traversal() {
-        // The dashcam clip path that was being denied: it lives logically under
-        // /mutable even though the real file is a symlink into the snapshot mount.
+        // The dashcam clip path: it lives logically under /mutable even
+        // though the real file is a symlink into the snapshot mount.
         assert!(
             is_path_allowed(
-                "/mutable/TeslaCam/SavedClips/2026-05-02_08-50-13/2026-05-02_08-46-34-back.mp4"
+                "/mutable/Recordings/Continuous/2026-07-17/FRONT_2026_07_17_T_19_34_53.mp4"
             )
             .1
         );
-        // Exact base and other allowed roots.
+        // Exact base and other allowed roots (raw cam drive included).
         assert!(is_path_allowed("/mutable").1);
-        assert!(is_path_allowed("/mnt/cam/TeslaCam/SentryClips/x/y.mp4").1);
+        assert!(is_path_allowed("/mnt/cam/Android/media/x/y.mp4").1);
 
         // `..` traversal is normalized away and then rejected.
         assert!(!is_path_allowed("/mutable/../etc/passwd").1);
-        assert!(!is_path_allowed("/mutable/TeslaCam/../../../../etc/shadow").1);
+        assert!(!is_path_allowed("/mutable/Recordings/../../../../etc/shadow").1);
         assert!(!is_path_allowed("/etc/passwd").1);
         // Prefix-boundary: a sibling that merely starts with a base name is denied.
         assert!(!is_path_allowed("/mutable-secret/data").1);

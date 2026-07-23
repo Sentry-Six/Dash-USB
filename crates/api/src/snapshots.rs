@@ -161,7 +161,7 @@ pub async fn list_snapshots(
 /// DELETE /api/snapshots/:id
 ///
 /// Calls `release_snapshot.sh` to umount the snap.bin loop image and
-/// remove the directory + dangling /mutable/TeslaCam symlinks. The
+/// remove the directory + dangling /mutable/Recordings symlinks. The
 /// id must be a `snap-*` name; reject anything else to prevent
 /// arbitrary path traversal.
 pub async fn delete_snapshot(

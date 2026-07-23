@@ -161,8 +161,6 @@ cat "$optfile"
 // no archive ever runs.
 
 const ARCHIVELOOP: &str = include_str!("../../../run/archiveloop");
-const AWAKE_START: &str = include_str!("../../../run/awake_start");
-const AWAKE_STOP: &str = include_str!("../../../run/awake_stop");
 const SEND_LIVE_ACTIVITY: &str = include_str!("../../../run/send-live-activity");
 const SEND_PUSH_MESSAGE: &str = include_str!("../../../run/send-push-message");
 const TEMPERATURE_MONITOR: &str = include_str!("../../../run/temperature_monitor");
@@ -194,8 +192,6 @@ pub async fn install_runtime_scripts(emitter: &crate::SetupEmitter) -> Result<bo
         // archive.sh) are installed by `archive::install_archive_scripts`
         // based on ARCHIVE_SYSTEM, since each system has its own copy.
         ("archiveloop", ARCHIVELOOP),
-        ("awake_start", AWAKE_START),
-        ("awake_stop", AWAKE_STOP),
         ("send-live-activity", SEND_LIVE_ACTIVITY),
         ("send-push-message", SEND_PUSH_MESSAGE),
         ("temperature_monitor", TEMPERATURE_MONITOR),

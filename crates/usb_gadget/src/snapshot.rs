@@ -1,28 +1,16 @@
 //! Snapshot management — reflink-backed copy-on-write captures of the
 //! cam disk image, plus the bookkeeping that makes those captures
-//! browseable from the iOS app and `/mutable/TeslaCam/`.
+//! browseable from the web UI, the phone app, and `/mutable/Recordings/`.
 //!
-//! Ports the bash logic of `Sentry-USB/run/make_snapshot.sh` end-to-end.
-//! Earlier the Rust impl only did the `cp --reflink` and skipped:
-//!
-//!   * fsck of the snapshot image (so `nofsck` had no meaning)
-//!   * waiting for autofs to be active before symlinking through it
-//!   * generating + diffing a TOC of clip filenames so identical
-//!     snapshots get discarded instead of accumulating
-//!   * the explicit `<snapdir>/mnt` symlink that lets per-clip symlinks
-//!     resolve before the first autofs trigger
-//!   * walking RecentClips / SavedClips / SentryClips / TeslaTrackMode
-//!     and creating per-clip + per-event symlinks under
-//!     `/mutable/TeslaCam/...` (this is the bit drive-map and the
-//!     iOS app actually read)
-//!   * rebuilding the lot when `/mutable/.rebuild_snapshot_symlinks`
-//!     is set (post-setup-re-run recovery)
-//!
-//! Without the symlink work, `archiveloop` logs
-//!   `[drive-map] RecentClips directory not found at /mutable/TeslaCam/RecentClips, skipping`
-//! every cycle and the iOS app sees an empty timeline.
+//! Flow per snapshot: `cp --reflink` the live image, optional fsck,
+//! read-only mount through autofs, TOC-diff against the previous
+//! snapshot (identical ⇒ discarded), then walk the vehicle profile's
+//! recording root and drop one symlink per matching clip under
+//! `/mutable/Recordings/Continuous/<YYYY-MM-DD>/` — that link tree is
+//! what archiveloop archives and the Viewer plays. The car firmware
+//! rolling-deletes footage on the live drive (2 h on GM); snapshots
+//! taken inside that window are how footage outlives it.
 
-use std::collections::HashSet;
 use std::path::Path;
 use std::time::Duration;
 
@@ -33,67 +21,10 @@ const SNAPSHOTS_DIR: &str = "/backingfiles/snapshots";
 const CAM_DISK: &str = "/backingfiles/cam_disk.bin";
 const REBUILD_FLAG: &str = "/mutable/.rebuild_snapshot_symlinks";
 
-/// Persistent marker gating the one-time purge of legacy Saved/Sentry
-/// cross-links out of `RecentClips/`. Present ⇒ the sweep already ran on
-/// this device; we never re-run it (the linker no longer creates such
-/// links, so there is nothing new to clean).
-const PURGE_MARKER: &str = "/mutable/.recentclips_events_purged";
+const RECORDINGS: &str = "/mutable/Recordings";
 
-const TESLACAM: &str = "/mutable/TeslaCam";
-
-/// Manifest of Saved/Sentry event clips that fill a genuine RecentClips
-/// recording hole: driving pre-roll the drive-map processor spliced into
-/// a drive (routes table), plus interior-hole clips a user save moved out
-/// of RecentClips regardless of driving state (the processor's ungated
-/// scan). One `YYYY-MM-DD_HH-MM-SS` timestamp per line. The drives crate
-/// rewrites it on every process pass (self-healing). We consult it here
-/// so those clips — and ONLY those — are cross-linked back into
-/// RecentClips (for continuous playback) and exempted from the purge.
-/// Everything else stays out of RecentClips, so Chad's dedup (parked
-/// events no longer flood the Recent tab) is preserved — a manifest clip
-/// can never double-list, its minute is missing from RecentClips by
-/// construction.
-const GAPFILL_MANIFEST: &str = "/mutable/.gapfill_recent_links";
-
-/// Marker holding the manifest content [`backfill_gapfill_links`] last
-/// applied. `make_links_for_snapshot` only runs when a snapshot is
-/// CREATED, so a stamp added to the manifest later (the processor
-/// rediscovering an old hole) never gets its RecentClips link if the
-/// footage survives only in already-linked snapshots. The backfill pass
-/// closes that: it re-runs once each time the manifest content differs
-/// from this marker, then goes quiet.
-const GAPFILL_APPLIED_MARKER: &str = "/mutable/.gapfill_links_applied";
-
-/// Load the gap-fill manifest into a set of clip timestamps. Missing or
-/// unreadable ⇒ empty set (no cross-links, no exemptions — exactly the
-/// pre-manifest behaviour), so this is safe on boards that never had a
-/// drive-data gap.
-fn load_gapfill_stamps() -> HashSet<String> {
-    match std::fs::read_to_string(GAPFILL_MANIFEST) {
-        Ok(s) => s
-            .lines()
-            .map(|l| l.trim())
-            .filter(|l| !l.is_empty())
-            .map(|l| l.to_string())
-            .collect(),
-        Err(_) => HashSet::new(),
-    }
-}
-
-/// The `YYYY-MM-DD_HH-MM-SS` timestamp prefix of a clip filename, shared
-/// by every camera angle of the same minute. Matching on this (not the
-/// full basename) means one manifest entry cross-links all cameras of
-/// that minute together.
-fn clip_stamp(name: &str) -> Option<&str> {
-    if name.len() >= 19 && looks_like_dated_clip(name) {
-        Some(&name[..19])
-    } else {
-        None
-    }
-}
-
-/// Create a snapshot of the cam disk plus all the symlink/TOC work the
-/// car-touchscreen + drive-map UI need.
+/// Create a snapshot of the cam disk plus the symlink/TOC bookkeeping
+/// the archive loop and the web Viewer need.
 ///
 /// `skip_fsck` corresponds to the `nofsck` arg the bash wrapper used to
 /// pass after a reboot to avoid running fsck twice in quick succession.
@@ -180,16 +111,7 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
         None => true,
     };
 
-    let is_duplicate = run_link_maintenance_before_duplicate_check(is_new, || {
-        // Covers manifest stamps whose footage survives only in snapshots
-        // linked before the stamp existed. This must precede the duplicate
-        // return: an idle cam disk can still have a newly changed manifest.
-        if let Err(e) = backfill_gapfill_links() {
-            warn!("backfill_gapfill_links: {}", e);
-        }
-    });
-
-    if is_duplicate {
+    if !is_new {
         info!("Snapshot {} identical to previous; discarding", snap_name);
         let _ = std::fs::remove_file(&toc_path_tmp);
         let _ = std::fs::remove_file(&snap_file);
@@ -197,11 +119,9 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
         return Ok(None);
     }
 
-    // The car's firmware auto-deletes Sentry events when the cam disk
-    // fills, which is indistinguishable from a user deletion via the
-    // touchscreen viewer. We used to mirror those deletions into the
-    // snapshot symlinks; that was wrong — it threw away the very events
-    // snapshots exist to preserve. Don't sync deletions either way.
+    // The car firmware rolling-deletes footage on the live drive.
+    // Deletions are never mirrored into the snapshot link trees —
+    // preserving footage past the car's window is the whole product.
 
     // ── Pre-create the <snapdir>/mnt symlink (bash 317) ───────────────
     // make_links_for_snapshot links each clip with a target like
@@ -213,7 +133,7 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
         let _ = std::os::unix::fs::symlink(&snap_mnt, &snap_mnt_link);
     }
 
-    // ── build /mutable/TeslaCam/... symlinks (bash 318) ───────────────
+    // ── build /mutable/Recordings/... symlinks ────────────────────────
     if let Err(e) = make_links_for_snapshot(&snap_mnt, &snap_mnt_link) {
         warn!("make_links_for_snapshot failed: {}", e);
     }
@@ -229,26 +149,7 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
         let _ = std::fs::remove_file(REBUILD_FLAG);
     }
 
-    // ── one-time purge of legacy Saved/Sentry cross-links from RecentClips ─
-    // Self-guarded by a persistent marker so it runs once per device after
-    // the update that stopped creating them, then never again.
-    if !Path::new(PURGE_MARKER).exists() {
-        let gapfill = load_gapfill_stamps();
-        if let Err(e) = purge_event_links_in(&Path::new(TESLACAM).join("RecentClips"), &gapfill) {
-            warn!("purge_event_links_in: {}", e);
-        }
-        let _ = std::fs::write(PURGE_MARKER, b"done\n");
-    }
-
     Ok(Some(snap_name))
-}
-
-fn run_link_maintenance_before_duplicate_check(
-    is_new: bool,
-    maintenance: impl FnOnce(),
-) -> bool {
-    maintenance();
-    !is_new
 }
 
 /// Normalize a snapshot identifier to its bare `snap-NNNNNN` name.
@@ -453,360 +354,78 @@ fn toc_has_additions(old_toc: &str, new_toc: &str) -> Result<bool> {
         .any(|line| !line.is_empty() && !old_set.contains(line)))
 }
 
-/// Build `/mutable/TeslaCam/{RecentClips,SavedClips,SentryClips,TeslaTrackMode}`
-/// symlinks pointing into the snapshot mount.
+/// Build `/mutable/Recordings/Continuous/<YYYY-MM-DD>/` symlinks
+/// pointing into the snapshot mount, per the active vehicle profile.
 ///
 /// `cur_mnt` is `/tmp/snapshots/snap-NNNNNN` (autofs path used during
-/// initial scan). `final_mnt` is `<snapdir>/mnt` — the symlink to the
-/// autofs path. We retarget per-clip symlinks to use `final_mnt` so they
-/// keep working even if the autofs path is unmounted later.
+/// the scan). `final_mnt` is `<snapdir>/mnt` — the symlink to the autofs
+/// path. Per-clip symlinks are retargeted onto `final_mnt` so they keep
+/// working even if the autofs path is unmounted later.
 fn make_links_for_snapshot(cur_mnt: &str, final_mnt: &str) -> Result<()> {
-    let saved = format!("{}/SavedClips", TESLACAM);
-    let sentry = format!("{}/SentryClips", TESLACAM);
-    let track = format!("{}/TeslaTrackMode", TESLACAM);
-    let _ = std::fs::create_dir_all(&saved);
-    let _ = std::fs::create_dir_all(&sentry);
-
-    // Timestamps of event clips that fill a genuine driving hole — these
-    // (and only these) also get cross-linked into RecentClips below so the
-    // drive plays back continuously. Empty on boards with no gap.
-    let gapfill = load_gapfill_stamps();
-
-    info!("Making links for {}, retargeted to {}", cur_mnt, final_mnt);
-
-    // RecentClips: flat directory; date-bucket each file under YYYY-MM-DD.
-    let recents_root = format!("{}/TeslaCam/RecentClips", cur_mnt);
-    if let Ok(entries) = std::fs::read_dir(&recents_root) {
-        for entry in entries.flatten() {
-            link_clip_into_recents(&entry.path(), cur_mnt, final_mnt);
-        }
-    }
-
-    // SavedClips: nested event folders.
-    let saved_root = format!("{}/TeslaCam/SavedClips", cur_mnt);
-    if let Ok(events) = std::fs::read_dir(&saved_root) {
-        for evt in events.flatten() {
-            let evt_path = evt.path();
-            if !evt_path.is_dir() {
-                continue;
-            }
-            let event_time = evt.file_name().to_string_lossy().to_string();
-            let evt_dest = format!("{}/{}", saved, event_time);
-            let _ = std::fs::create_dir_all(&evt_dest);
-
-            if let Ok(clips) = std::fs::read_dir(&evt_path) {
-                for clip in clips.flatten() {
-                    // Event clips are linked into their SavedClips event
-                    // folder ONLY — deliberately NOT cross-linked into
-                    // RecentClips, so the Recent tab stays limited to genuine
-                    // continuous footage instead of double-listing events.
-                    let link = format!(
-                        "{}/{}",
-                        evt_dest,
-                        clip.file_name().to_string_lossy()
-                    );
-                    let _ = std::fs::remove_file(&link);
-                    #[cfg(unix)]
-                    {
-                        let target = retarget_path(&clip.path(), cur_mnt, final_mnt);
-                        let _ = std::os::unix::fs::symlink(&target, &link);
-                    }
-                    // Exception: a clip the drive-map flagged as filling a
-                    // driving hole IS cross-linked into RecentClips, so the
-                    // drive's video is continuous. Scoped to the manifest —
-                    // parked-event clips never qualify.
-                    maybe_gapfill_recent_link(&clip.path(), cur_mnt, final_mnt, &gapfill);
-                }
-            }
-        }
-    }
-
-    // SentryClips: nested event folders, same shape as SavedClips.
-    let sentry_root = format!("{}/TeslaCam/SentryClips", cur_mnt);
-    if let Ok(events) = std::fs::read_dir(&sentry_root) {
-        for evt in events.flatten() {
-            let evt_path = evt.path();
-            if !evt_path.is_dir() {
-                continue;
-            }
-            let event_time = evt.file_name().to_string_lossy().to_string();
-            let evt_dest = format!("{}/{}", sentry, event_time);
-            let _ = std::fs::create_dir_all(&evt_dest);
-
-            if let Ok(clips) = std::fs::read_dir(&evt_path) {
-                for clip in clips.flatten() {
-                    // SentryClips event folder ONLY, never RecentClips (see
-                    // the SavedClips loop above for the rationale).
-                    let link = format!(
-                        "{}/{}",
-                        evt_dest,
-                        clip.file_name().to_string_lossy()
-                    );
-                    let _ = std::fs::remove_file(&link);
-                    #[cfg(unix)]
-                    {
-                        let target = retarget_path(&clip.path(), cur_mnt, final_mnt);
-                        let _ = std::os::unix::fs::symlink(&target, &link);
-                    }
-                    // Scoped RecentClips cross-link for driving-hole fills
-                    // (see the SavedClips loop for the rationale).
-                    maybe_gapfill_recent_link(&clip.path(), cur_mnt, final_mnt, &gapfill);
-                }
-            }
-        }
-    }
-
-    // TrackMode: flat directory, NO retarget (matches bash line 102).
-    let track_root = format!("{}/TeslaTrackMode", cur_mnt);
-    if let Ok(entries) = std::fs::read_dir(&track_root) {
-        let mut made = false;
-        for entry in entries.flatten() {
-            if !made {
-                let _ = std::fs::create_dir_all(&track);
-                made = true;
-            }
-            let link = format!(
-                "{}/{}",
-                track,
-                entry.file_name().to_string_lossy()
-            );
-            let _ = std::fs::remove_file(&link);
-            #[cfg(unix)]
-            let _ = std::os::unix::fs::symlink(&entry.path(), &link);
-        }
-    }
-
-    info!("Made all links for {}", cur_mnt);
-    Ok(())
+    let profile = sentryusb_vehicle_profile::Profile::active();
+    make_links_in(Path::new(RECORDINGS), profile, cur_mnt, final_mnt)
 }
 
-/// `linksnapshotfiletorecents` (bash lines 25-43). Drops a per-clip
-/// symlink under `/mutable/TeslaCam/RecentClips/<YYYY-MM-DD>/`.
-#[cfg_attr(not(unix), allow(unused_variables))]
-fn link_clip_into_recents(file: &Path, cur_mnt: &str, final_mnt: &str) {
-    let filename = match file.file_name().map(|s| s.to_string_lossy().to_string()) {
-        Some(f) => f,
-        None => return,
-    };
-    if !looks_like_dated_clip(&filename) {
-        return;
-    }
-    let filedate = &filename[..10];
-    let recents = format!("{}/RecentClips/{}", TESLACAM, filedate);
-    let _ = std::fs::create_dir_all(&recents);
-    let link = format!("{}/{}", recents, filename);
-    let _ = std::fs::remove_file(&link);
-    #[cfg(unix)]
-    {
-        let target = retarget_path(file, cur_mnt, final_mnt);
-        let _ = std::os::unix::fs::symlink(&target, &link);
-    }
-}
-
-/// Cross-link an event clip into `RecentClips/<date>/` IFF its timestamp
-/// is in the gap-fill manifest — the drive-map flagged it as filling a
-/// genuine driving hole. Same link shape as [`link_clip_into_recents`]
-/// (retargeted symlink under the day bucket), so the Viewer and drive
-/// player treat it as continuous footage. No-op for every other event
-/// clip, which keeps parked-event footage out of RecentClips.
-#[cfg_attr(not(unix), allow(unused_variables))]
-fn maybe_gapfill_recent_link(
-    clip: &Path,
+/// [`make_links_for_snapshot`] over an explicit recordings root (testable).
+fn make_links_in(
+    recordings: &Path,
+    profile: &sentryusb_vehicle_profile::Profile,
     cur_mnt: &str,
     final_mnt: &str,
-    gapfill: &HashSet<String>,
-) {
-    if gapfill.is_empty() {
-        return;
-    }
-    let filename = match clip.file_name().map(|s| s.to_string_lossy().to_string()) {
-        Some(f) => f,
-        None => return,
-    };
-    let stamp = match clip_stamp(&filename) {
-        Some(s) => s,
-        None => return,
-    };
-    if !gapfill.contains(stamp) {
-        return;
-    }
-    let filedate = &filename[..10];
-    let recents = format!("{}/RecentClips/{}", TESLACAM, filedate);
-    let _ = std::fs::create_dir_all(&recents);
-    let link = format!("{}/{}", recents, filename);
-    let _ = std::fs::remove_file(&link);
-    #[cfg(unix)]
-    {
-        let target = retarget_path(clip, cur_mnt, final_mnt);
-        let _ = std::os::unix::fs::symlink(&target, &link);
-    }
-}
-
-/// Backfill RecentClips cross-links for manifest stamps whose clips only
-/// exist in already-linked snapshots (see [`GAPFILL_APPLIED_MARKER`]).
-/// Walks the existing `/mutable/TeslaCam/{SavedClips,SentryClips}` link
-/// tree — no snapshot mounts touched — and creates any missing
-/// `RecentClips/<date>/` link for a manifest clip, pointing at the event
-/// link's own stored target (single-level `read_link`, so the retargeted
-/// `<snapdir>/mnt` path is inherited without resolving through autofs).
-/// Runs once per manifest change; no-op otherwise. Never overwrites an
-/// existing RecentClips entry.
-pub fn backfill_gapfill_links() -> Result<()> {
-    let manifest_body = std::fs::read_to_string(GAPFILL_MANIFEST).unwrap_or_default();
-    if std::fs::read_to_string(GAPFILL_APPLIED_MARKER).unwrap_or_default() == manifest_body {
-        return Ok(());
-    }
-    let gapfill = load_gapfill_stamps();
-    let made = backfill_gapfill_links_in(Path::new(TESLACAM), &gapfill);
-    // Written AFTER the walk so a crash mid-pass re-runs it next snapshot.
-    std::fs::write(GAPFILL_APPLIED_MARKER, &manifest_body)?;
-    if made > 0 {
-        info!(
-            "gap-fill backfill: created {} RecentClips link(s) for manifest clips",
-            made
-        );
-    }
+) -> Result<()> {
+    let rec_root = Path::new(cur_mnt).join(&profile.recording.root);
+    info!("Making links for {}, retargeted to {}", cur_mnt, final_mnt);
+    let mut made = 0usize;
+    link_clips_under(&rec_root, recordings, profile, cur_mnt, final_mnt, 0, &mut made);
+    info!("Made {} link(s) for {}", made, cur_mnt);
     Ok(())
 }
 
-/// [`backfill_gapfill_links`] over an explicit TeslaCam root (testable).
-/// Returns how many links were created.
-fn backfill_gapfill_links_in(teslacam: &Path, gapfill: &HashSet<String>) -> usize {
-    if gapfill.is_empty() {
-        return 0;
+/// Recursive walk (bounded depth — today's GM layout is flat, but a
+/// firmware that starts date-bucketing must not break capture). Every
+/// file whose name matches the profile's clip pattern gets one symlink
+/// under `<recordings>/Continuous/<YYYY-MM-DD>/`, dated from the
+/// filename timestamp — clip names carry no leading date on GM, so the
+/// parsed timestamp is the only reliable bucket key.
+#[cfg_attr(not(unix), allow(unused_variables))]
+fn link_clips_under(
+    dir: &Path,
+    recordings: &Path,
+    profile: &sentryusb_vehicle_profile::Profile,
+    cur_mnt: &str,
+    final_mnt: &str,
+    depth: u8,
+    made: &mut usize,
+) {
+    if depth > 3 {
+        return;
     }
-    let mut made = 0usize;
-    for sub in ["SavedClips", "SentryClips"] {
-        let Ok(events) = std::fs::read_dir(teslacam.join(sub)) else {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(ftype) = entry.file_type() else { continue };
+        if ftype.is_dir() {
+            link_clips_under(&path, recordings, profile, cur_mnt, final_mnt, depth + 1, made);
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Some(clip) = profile.parse_clip_filename(&name) else {
             continue;
         };
-        for evt in events.flatten() {
-            let evt_path = evt.path();
-            if !evt_path.is_dir() {
-                continue;
-            }
-            if let Ok(clips) = std::fs::read_dir(&evt_path) {
-                for clip in clips.flatten() {
-                    if backfill_recent_link(teslacam, &clip.path(), gapfill) {
-                        made += 1;
-                    }
-                }
+        let day_dir = recordings.join("Continuous").join(clip.date_str());
+        let _ = std::fs::create_dir_all(&day_dir);
+        let link = day_dir.join(&name);
+        let _ = std::fs::remove_file(&link);
+        #[cfg(unix)]
+        {
+            let target = retarget_path(&path, cur_mnt, final_mnt);
+            if std::os::unix::fs::symlink(&target, &link).is_ok() {
+                *made += 1;
             }
         }
     }
-    made
-}
-
-/// Create the `RecentClips/<date>/` link for one event-tree entry IFF its
-/// stamp is in the manifest and no RecentClips entry exists yet. Same
-/// link shape as [`maybe_gapfill_recent_link`], but sourced from the
-/// already-built event link instead of a snapshot mount.
-#[cfg_attr(not(unix), allow(unused_variables))]
-fn backfill_recent_link(teslacam: &Path, clip: &Path, gapfill: &HashSet<String>) -> bool {
-    let filename = match clip.file_name().map(|s| s.to_string_lossy().to_string()) {
-        Some(f) => f,
-        None => return false,
-    };
-    let stamp = match clip_stamp(&filename) {
-        Some(s) => s,
-        None => return false,
-    };
-    if !gapfill.contains(stamp) {
-        return false;
-    }
-    let recents = teslacam.join("RecentClips").join(&filename[..10]);
-    let link = recents.join(&filename);
-    // Never clobber: an existing entry is either genuine continuous
-    // footage or a cross-link a snapshot pass already created.
-    if std::fs::symlink_metadata(&link).is_ok() {
-        return false;
-    }
-    // The event entry is itself a symlink into <snapdir>/mnt/...; reuse
-    // its stored target. A plain file (shouldn't occur in this tree)
-    // falls back to linking its own path.
-    let target = match std::fs::read_link(clip) {
-        Ok(t) => t.to_string_lossy().to_string(),
-        Err(_) => clip.to_string_lossy().to_string(),
-    };
-    let _ = std::fs::create_dir_all(&recents);
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(&target, &link).is_ok()
-    }
-    #[cfg(not(unix))]
-    false
-}
-
-/// One-time cleanup mirroring the bash `purge_event_links_from_recentclips`.
-///
-/// Earlier versions cross-linked every Saved/Sentry event clip into
-/// `RecentClips/<date>/` in addition to its own event folder, so the Recent
-/// tab double-listed events and looked like it held weeks of continuous
-/// footage. This removes those stray links: genuine continuous-footage links
-/// point at `.../RecentClips/...`, event cross-links point at
-/// `.../SavedClips/...` or `.../SentryClips/...`, so we discriminate on the
-/// symlink's stored target via a single-level `read_link` (never resolving
-/// through the autofs snapshot mount). Date folders left empty afterwards
-/// (days that held only events) are pruned. Idempotent: a second run finds
-/// nothing to remove.
-fn purge_event_links_in(recents_root: &Path, gapfill: &HashSet<String>) -> Result<()> {
-    if !recents_root.is_dir() {
-        return Ok(());
-    }
-    info!(
-        "purging Saved/Sentry cross-links from {}",
-        recents_root.display()
-    );
-    let date_dirs = match std::fs::read_dir(recents_root) {
-        Ok(d) => d,
-        Err(_) => return Ok(()),
-    };
-    for date_entry in date_dirs.flatten() {
-        let date_dir = date_entry.path();
-        if !date_dir.is_dir() {
-            continue;
-        }
-        if let Ok(clips) = std::fs::read_dir(&date_dir) {
-            for clip in clips.flatten() {
-                let path = clip.path();
-                // A driving-hole fill is a legitimate RecentClips entry even
-                // though it targets an event folder — keep it (it's what
-                // makes the drive play back continuously). Everything else
-                // targeting Saved/Sentry is a stray cross-link.
-                if let Some(stamp) = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .and_then(clip_stamp)
-                {
-                    if gapfill.contains(stamp) {
-                        continue;
-                    }
-                }
-                // Only symlinks are candidates. Read the stored target
-                // without resolving it (symlink_metadata avoids following).
-                let is_symlink = std::fs::symlink_metadata(&path)
-                    .map(|m| m.file_type().is_symlink())
-                    .unwrap_or(false);
-                if !is_symlink {
-                    continue;
-                }
-                if let Ok(target) = std::fs::read_link(&path) {
-                    let t = target.to_string_lossy().replace('\\', "/");
-                    if t.contains("/SavedClips/") || t.contains("/SentryClips/") {
-                        let _ = std::fs::remove_file(&path);
-                    }
-                }
-            }
-        }
-        // Drop the date folder if it's now empty (held only events).
-        let now_empty = std::fs::read_dir(&date_dir)
-            .map(|mut d| d.next().is_none())
-            .unwrap_or(false);
-        if now_empty {
-            let _ = std::fs::remove_dir(&date_dir);
-        }
-    }
-    Ok(())
 }
 
 /// Replace `cur_mnt` prefix with `final_mnt` so the symlink target
@@ -822,28 +441,9 @@ fn retarget_path(file: &Path, cur_mnt: &str, final_mnt: &str) -> String {
     }
 }
 
-/// Match bash regex `^[0-9]{4}-[0-9]{2}-[0-9]{2}.*` (line 32).
-fn looks_like_dated_clip(name: &str) -> bool {
-    let b = name.as_bytes();
-    if b.len() < 10 {
-        return false;
-    }
-    b[0].is_ascii_digit()
-        && b[1].is_ascii_digit()
-        && b[2].is_ascii_digit()
-        && b[3].is_ascii_digit()
-        && b[4] == b'-'
-        && b[5].is_ascii_digit()
-        && b[6].is_ascii_digit()
-        && b[7] == b'-'
-        && b[8].is_ascii_digit()
-        && b[9].is_ascii_digit()
-}
-
 /// Walk every completed snapshot (one with a `.toc`) and rebuild the
-/// `/mutable/TeslaCam/...` symlinks for any whose links have gone
-/// missing. Mirrors bash function `rebuild_all_snapshot_links`
-/// (lines 163-222).
+/// `/mutable/Recordings/...` symlinks for any whose links have gone
+/// missing (post-setup-re-run recovery via the rebuild flag file).
 pub fn rebuild_all_snapshot_links() -> Result<()> {
     let mut rebuilt = 0usize;
     let entries = match std::fs::read_dir(SNAPSHOTS_DIR) {
@@ -898,13 +498,12 @@ pub fn rebuild_all_snapshot_links() -> Result<()> {
     Ok(())
 }
 
-/// Check whether any symlink under `/mutable/TeslaCam/` already points
-/// at this snapshot. Used to skip rebuilds for snapshots that are
-/// already linked. Mirrors bash `find -lname "*/${snapname}/*"`
-/// (line 195).
+/// Check whether any symlink under `/mutable/Recordings/` already
+/// points at this snapshot. Used to skip rebuilds for snapshots that
+/// are already linked.
 fn has_existing_links_into_snapshot(snap_name: &str) -> bool {
     let needle = format!("/{}/", snap_name);
-    walk_for_symlink_pointing_at(Path::new(TESLACAM), &needle, 0)
+    walk_for_symlink_pointing_at(Path::new(RECORDINGS), &needle, 0)
 }
 
 fn walk_for_symlink_pointing_at(dir: &Path, needle: &str, depth: u8) -> bool {
@@ -979,14 +578,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn duplicate_snapshot_still_runs_link_maintenance() {
-        let mut ran = false;
-        let duplicate = run_link_maintenance_before_duplicate_check(false, || ran = true);
-        assert!(ran, "manifest backfill must run before a duplicate returns");
-        assert!(duplicate);
-    }
-
-    #[test]
     fn normalize_accepts_bare_name() {
         // autofs and a correct WebUI call pass the bare id.
         assert_eq!(normalize_snap_name("snap-000001").as_deref(), Some("snap-000001"));
@@ -1027,203 +618,58 @@ mod tests {
         assert_eq!(normalize_snap_name("/etc/../snap-1/.."), None);
     }
 
-    /// Backfill creates a RecentClips link for a manifest clip that only
-    /// exists in the (already-linked) event tree, reusing the event
-    /// link's stored target; non-manifest clips are ignored and existing
-    /// RecentClips entries are never clobbered. Targets are dangling on
-    /// purpose — the pass reads link strings, never the files behind them.
+    /// The profile-driven link farm: GM-named clips land in dated
+    /// Continuous buckets keyed by the filename timestamp, non-matching
+    /// files are ignored, and targets are retargeted onto the stable
+    /// `<snapdir>/mnt` path.
     #[cfg(unix)]
     #[test]
-    fn backfill_creates_missing_manifest_links_only() {
-        use std::os::unix::fs::symlink;
+    fn links_gm_clips_into_dated_continuous_buckets() {
         use tempfile::TempDir;
 
-        let root = TempDir::new().unwrap();
-        let teslacam = root.path();
-        let evt = teslacam.join("SavedClips/2026-07-15_04-59-30");
-        std::fs::create_dir_all(&evt).unwrap();
-
-        let target_a = "/backingfiles/snapshots/snap-000005/mnt/TeslaCam/SavedClips/2026-07-15_04-59-30/2026-07-15_04-50-00-front.mp4";
-        symlink(target_a, evt.join("2026-07-15_04-50-00-front.mp4")).unwrap();
-        // In the manifest but already cross-linked → must not be clobbered.
-        symlink(
-            "/backingfiles/snapshots/snap-000005/mnt/TeslaCam/SavedClips/2026-07-15_04-59-30/2026-07-15_04-55-00-front.mp4",
-            evt.join("2026-07-15_04-55-00-front.mp4"),
-        )
-        .unwrap();
-        // Not in the manifest → must stay out of RecentClips.
-        symlink(
-            "/backingfiles/snapshots/snap-000005/mnt/TeslaCam/SavedClips/2026-07-15_04-59-30/2026-07-15_04-58-00-front.mp4",
-            evt.join("2026-07-15_04-58-00-front.mp4"),
-        )
-        .unwrap();
-
-        let day = teslacam.join("RecentClips/2026-07-15");
-        std::fs::create_dir_all(&day).unwrap();
-        let existing = day.join("2026-07-15_04-55-00-front.mp4");
-        symlink("/pre/existing/target.mp4", &existing).unwrap();
-
-        let mut gapfill = HashSet::new();
-        gapfill.insert("2026-07-15_04-50-00".to_string());
-        gapfill.insert("2026-07-15_04-55-00".to_string());
-
-        assert_eq!(backfill_gapfill_links_in(teslacam, &gapfill), 1);
-
-        // The missing manifest clip gained a link with the event link's target.
-        let made = day.join("2026-07-15_04-50-00-front.mp4");
-        assert_eq!(
-            std::fs::read_link(&made).unwrap().to_string_lossy(),
-            target_a
+        let tmp = TempDir::new().unwrap();
+        let snap_mnt = tmp.path().join("snapmnt");
+        let rec = snap_mnt.join(
+            "Android/media/com.gm.ultifi.gmconnectedcameraservice/Recordings/SurroundVisionRecorder",
         );
-        // Existing entry untouched.
-        assert_eq!(
-            std::fs::read_link(&existing).unwrap().to_string_lossy(),
-            "/pre/existing/target.mp4"
-        );
-        // Non-manifest clip not cross-linked.
-        assert!(
-            std::fs::symlink_metadata(day.join("2026-07-15_04-58-00-front.mp4")).is_err()
-        );
-        // Idempotent: second run creates nothing.
-        assert_eq!(backfill_gapfill_links_in(teslacam, &gapfill), 0);
-        // Empty manifest: no-op even with clips present.
-        assert_eq!(backfill_gapfill_links_in(teslacam, &HashSet::new()), 0);
-    }
+        std::fs::create_dir_all(&rec).unwrap();
+        for name in [
+            "FRONT_2026_07_17_T_19_34_53.mp4",
+            "REAR_2026_07_17_T_19_34_53.mp4",
+            "LEFT_2026_07_18_T_08_00_00.mp4",
+        ] {
+            std::fs::write(rec.join(name), b"x").unwrap();
+        }
+        std::fs::write(rec.join("metadata.json"), b"x").unwrap();
 
-    /// The purge keys off each symlink's stored target: links into
-    /// `.../SavedClips/...` or `.../SentryClips/...` are the stray event
-    /// cross-links to delete; `.../RecentClips/...` links are genuine
-    /// continuous footage to keep. Targets are dangling on purpose — the
-    /// sweep reads the link string, never the file behind it.
-    #[cfg(unix)]
-    #[test]
-    fn purge_event_links_in_removes_only_event_crosslinks() {
-        use std::os::unix::fs::symlink;
-        use tempfile::TempDir;
-
-        let root = TempDir::new().unwrap();
-        let recents = root.path();
-
-        // A day that was ONLY events (like the user's May 18): a Sentry
-        // cross-link + a Saved cross-link, both should be removed and the
-        // now-empty date folder pruned.
-        let only_events = recents.join("2026-05-18");
-        std::fs::create_dir_all(&only_events).unwrap();
-        symlink(
-            "/backingfiles/snapshots/snap-000005/mnt/TeslaCam/SentryClips/2026-05-18_17-29-00/2026-05-18_17-29-00-front.mp4",
-            only_events.join("2026-05-18_17-29-00-front.mp4"),
-        )
-        .unwrap();
-        symlink(
-            "/backingfiles/snapshots/snap-000005/mnt/TeslaCam/SavedClips/2026-05-18_08-12-00/2026-05-18_08-12-00-front.mp4",
-            only_events.join("2026-05-18_08-12-00-front.mp4"),
-        )
-        .unwrap();
-
-        // A driving day: a genuine continuous RecentClips link (must survive)
-        // plus a stray Sentry cross-link (must be removed).
-        let mixed = recents.join("2026-06-22");
-        std::fs::create_dir_all(&mixed).unwrap();
-        let continuous = mixed.join("2026-06-22_12-58-00-front.mp4");
-        symlink(
-            "/backingfiles/snapshots/snap-000068/mnt/TeslaCam/RecentClips/2026-06-22_12-58-00-front.mp4",
-            &continuous,
-        )
-        .unwrap();
-        symlink(
-            "/backingfiles/snapshots/snap-000068/mnt/TeslaCam/SentryClips/2026-06-22_13-00-00/2026-06-22_13-00-00-front.mp4",
-            mixed.join("2026-06-22_13-00-00-front.mp4"),
-        )
-        .unwrap();
-
-        purge_event_links_in(recents, &HashSet::new()).unwrap();
-
-        // Event-only day pruned entirely.
-        assert!(!only_events.exists(), "event-only date folder should be removed");
-
-        // Driving day kept, with ONLY the continuous link remaining.
-        assert!(mixed.is_dir(), "driving day should remain");
-        let survivors: Vec<String> = std::fs::read_dir(&mixed)
+        let profile = sentryusb_vehicle_profile::Profile::embedded("gm_surroundvision")
             .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().to_string())
-            .collect();
-        assert_eq!(survivors, vec!["2026-06-22_12-58-00-front.mp4"]);
-        assert!(
-            std::fs::symlink_metadata(&continuous)
-                .unwrap()
-                .file_type()
-                .is_symlink(),
-            "the continuous RecentClips link must be untouched",
-        );
-    }
-
-    /// Missing root is a no-op; regular (non-symlink) files are never
-    /// touched, and a clean tree is left alone (idempotent).
-    #[cfg(unix)]
-    #[test]
-    fn purge_event_links_in_is_safe_on_missing_and_clean_trees() {
-        use tempfile::TempDir;
-
-        let root = TempDir::new().unwrap();
-        let recents = root.path().join("RecentClips");
-
-        // Missing root: returns Ok with nothing to do.
-        purge_event_links_in(&recents, &HashSet::new()).unwrap();
-
-        // A real (non-symlink) clip file is left alone, and its folder
-        // survives because it isn't empty.
-        let day = recents.join("2026-06-22");
-        std::fs::create_dir_all(&day).unwrap();
-        std::fs::write(day.join("real.mp4"), b"x").unwrap();
-        purge_event_links_in(&recents, &HashSet::new()).unwrap();
-        assert!(day.join("real.mp4").exists());
-    }
-
-    /// A gap-fill cross-link (event target, but manifest-flagged as filling
-    /// a driving hole) must SURVIVE the purge, while an ordinary event
-    /// cross-link on the same day is still removed. This is what keeps the
-    /// drive's video continuous without re-flooding the Recent tab.
-    #[cfg(unix)]
-    #[test]
-    fn purge_event_links_in_keeps_gapfill_exempt_links() {
-        use std::os::unix::fs::symlink;
-        use tempfile::TempDir;
-
-        let root = TempDir::new().unwrap();
-        let recents = root.path();
-
-        let day = recents.join("2026-07-05");
-        std::fs::create_dir_all(&day).unwrap();
-
-        // Driving-hole fill: targets SentryClips but is in the manifest.
-        let gap_link = day.join("2026-07-05_16-03-46-front.mp4");
-        symlink(
-            "/backingfiles/snapshots/snap-000515/mnt/TeslaCam/SentryClips/2026-07-05_16-12-51/2026-07-05_16-03-46-front.mp4",
-            &gap_link,
+            .unwrap();
+        let recordings = tmp.path().join("Recordings");
+        let cur = snap_mnt.to_string_lossy().to_string();
+        make_links_in(
+            &recordings,
+            &profile,
+            &cur,
+            "/backingfiles/snapshots/snap-000001/mnt",
         )
         .unwrap();
 
-        // Ordinary event cross-link the same day: NOT in the manifest.
-        let stray = day.join("2026-07-05_20-00-00-front.mp4");
-        symlink(
-            "/backingfiles/snapshots/snap-000515/mnt/TeslaCam/SentryClips/2026-07-05_20-00-00/2026-07-05_20-00-00-front.mp4",
-            &stray,
-        )
-        .unwrap();
+        let day = recordings.join("Continuous/2026-07-17");
+        for name in ["FRONT_2026_07_17_T_19_34_53.mp4", "REAR_2026_07_17_T_19_34_53.mp4"] {
+            assert!(day.join(name).is_symlink(), "{name} must be linked");
+        }
+        assert!(recordings
+            .join("Continuous/2026-07-18/LEFT_2026_07_18_T_08_00_00.mp4")
+            .is_symlink());
+        assert!(!day.join("metadata.json").exists(), "non-clips must be skipped");
 
-        let mut gapfill = HashSet::new();
-        gapfill.insert("2026-07-05_16-03-46".to_string());
-
-        purge_event_links_in(recents, &gapfill).unwrap();
-
+        let target = std::fs::read_link(day.join("FRONT_2026_07_17_T_19_34_53.mp4")).unwrap();
         assert!(
-            std::fs::symlink_metadata(&gap_link).is_ok(),
-            "manifest-flagged driving-hole fill must survive the purge",
-        );
-        assert!(
-            std::fs::symlink_metadata(&stray).is_err(),
-            "ordinary event cross-link must still be purged",
+            target
+                .to_string_lossy()
+                .starts_with("/backingfiles/snapshots/snap-000001/mnt/"),
+            "target must be retargeted, got {target:?}",
         );
     }
 }

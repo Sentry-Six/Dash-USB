@@ -261,8 +261,8 @@ pub async fn run_full_setup(emitter: SetupEmitter) -> Result<()> {
     // readonly phase so /etc/auto.master.d is writable.
     crate::automount::configure_automount(&emitter).await?;
 
-    // TeslaCam bind-mount wiring. Writes /etc/fstab bind entry and
-    // activates var-www-html-TeslaCam.mount. Must run before readonly
+    // Recordings bind-mount wiring. Writes /etc/fstab bind entry and
+    // activates var-www-html-Recordings.mount. Must run before readonly
     // so /etc/fstab is still writable.
     crate::teslacam_mount::configure_web_mount(&emitter).await?;
 
@@ -1011,13 +1011,15 @@ async fn update_image_fstab_entries() -> Result<()> {
 async fn initialize_drive_directories() -> Result<()> {
     let _ = sentryusb_gadget::disable();
 
-    // Wraps & LicensePlate are folders on the cam drive — Tesla reads them
-    // from there, no dedicated partition needed.
+    // Pre-create the vehicle profile's recording tree on the cam drive
+    // so the car can start recording even if its firmware doesn't create
+    // the folder structure on a blank drive itself (unverified on GM —
+    // creating it up front is harmless either way).
+    let recording_root = sentryusb_vehicle_profile::Profile::active().recording.root.clone();
+    let cam_dirs: &[&str] = &[recording_root.as_str()];
     let drives: &[(&str, &[&str])] = &[
-        ("/mnt/cam", &["TeslaCam", "TeslaTrackMode", "Wraps", "LicensePlate"]),
+        ("/mnt/cam", cam_dirs),
         ("/mnt/music", &[]),
-        ("/mnt/lightshow", &["LightShow"]),
-        ("/mnt/boombox", &["Boombox"]),
     ];
 
     for (mnt, dirs) in drives {

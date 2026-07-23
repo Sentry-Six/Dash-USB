@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::router::AppState;
 
-const TESLACAM_DIR: &str = "/mutable/TeslaCam";
+const RECORDINGS_DIR: &str = "/mutable/Recordings";
 
 #[derive(Deserialize)]
 pub struct ClipParams {
@@ -43,15 +43,14 @@ struct EventMeta {
     longitude: Option<String>,
 }
 
-/// Read a `RecentClips/`, `SavedClips/`, or `SentryClips/` directory and return
-/// its dated subfolders, newest first.
+/// Read a category directory (today just `Continuous/`) and return its
+/// dated subfolders, newest first.
 ///
-/// All three categories share this layout under `/mutable/TeslaCam`: the
-/// snapshot symlink builder (`sentryusb_gadget::snapshot`) date-buckets the
-/// car's flat RecentClips files into `YYYY-MM-DD/` folders, matching the
-/// `YYYY-MM-DD_HH-MM-SS/` event folders SavedClips/SentryClips already use.
-/// `path().is_dir()` follows symlinks — required, since each entry is a
-/// symlink into a reflink snapshot.
+/// The snapshot symlink builder (`sentryusb_gadget::snapshot`)
+/// date-buckets the car's flat recording files into `YYYY-MM-DD/`
+/// folders under `/mutable/Recordings/Continuous`. `path().is_dir()`
+/// follows symlinks — required, since each entry is a symlink into a
+/// reflink snapshot.
 fn enumerate_event_dirs(base: &Path) -> Vec<String> {
     let mut dirs: Vec<String> = match std::fs::read_dir(base) {
         Ok(entries) => entries
@@ -65,10 +64,10 @@ fn enumerate_event_dirs(base: &Path) -> Vec<String> {
     dirs
 }
 
-/// Build the `[{ name, clips, hasMore }]` JSON the Viewer expects for one
-/// category:
-/// one code path for all three categories — each clip is a dated subfolder of
-/// `.mp4` files plus an optional `event.json`.
+/// Build the `[{ name, clips, hasMore }]` JSON the Viewer expects for
+/// one category — each clip group is a dated subfolder of `.mp4` files
+/// plus an optional `event.json` (unused by GM; kept for profiles with
+/// event folders).
 fn list_clips_in(
     teslacam_dir: &Path,
     category: &str,
@@ -111,7 +110,7 @@ fn list_clips_in(
 
         entries.push(ClipEntry {
             date: dir_name.clone(),
-            path: format!("/TeslaCam/{}/{}", category, dir_name),
+            path: format!("/Recordings/{}/{}", category, dir_name),
             files,
             event,
         });
@@ -124,13 +123,13 @@ fn list_clips_in(
     }])
 }
 
-/// GET /api/clips?category=RecentClips&limit=20[&before=<date>]
+/// GET /api/clips?category=Continuous&limit=20[&before=<date>]
 pub async fn get_clips(
     State(_s): State<AppState>,
     Query(params): Query<ClipParams>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let category = params.category.as_deref().unwrap_or("SavedClips");
-    if !matches!(category, "SavedClips" | "SentryClips" | "RecentClips") {
+    let category = params.category.as_deref().unwrap_or("Continuous");
+    if !matches!(category, "Continuous") {
         return crate::json_error(StatusCode::BAD_REQUEST, "invalid category");
     }
     let limit = params.limit.unwrap_or(20).min(200);
@@ -143,7 +142,7 @@ pub async fn get_clips(
     let category = category.to_string();
     let before = params.before;
     let response = tokio::task::spawn_blocking(move || {
-        list_clips_in(Path::new(TESLACAM_DIR), &category, limit, before.as_deref())
+        list_clips_in(Path::new(RECORDINGS_DIR), &category, limit, before.as_deref())
     })
     .await
     .unwrap_or_else(|_| serde_json::json!([]));
@@ -168,27 +167,27 @@ mod tests {
         assert_eq!(dirs, vec!["2025-02-23_09-12-00", "2025-02-22_17-58-00"]);
     }
 
-    /// RecentClips under `/mutable/TeslaCam` are dated `YYYY-MM-DD/` subfolders
-    /// (the snapshot symlink builder date-buckets them), not flat files — so
-    /// they list through the same code path as SavedClips/SentryClips.
+    /// Continuous recordings under `/mutable/Recordings` are dated
+    /// `YYYY-MM-DD/` subfolders (the snapshot symlink builder
+    /// date-buckets them from the parsed filename timestamps).
     #[test]
-    fn lists_recent_clips_from_dated_subdirs() {
+    fn lists_continuous_clips_from_dated_subdirs() {
         let root = TempDir::new().unwrap();
-        let day = root.path().join("RecentClips").join("2025-02-22");
+        let day = root.path().join("Continuous").join("2026-07-17");
         fs::create_dir_all(&day).unwrap();
-        fs::write(day.join("2025-02-22_17-58-00-front.mp4"), b"").unwrap();
-        fs::write(day.join("2025-02-22_17-58-00-back.mp4"), b"").unwrap();
+        fs::write(day.join("FRONT_2026_07_17_T_19_34_53.mp4"), b"").unwrap();
+        fs::write(day.join("REAR_2026_07_17_T_19_34_53.mp4"), b"").unwrap();
 
-        let value = list_clips_in(root.path(), "RecentClips", 20, None);
-        assert_eq!(value[0]["name"].as_str().unwrap(), "RecentClips");
+        let value = list_clips_in(root.path(), "Continuous", 20, None);
+        assert_eq!(value[0]["name"].as_str().unwrap(), "Continuous");
         assert_eq!(value[0]["hasMore"].as_bool().unwrap(), false);
 
         let clips = value[0]["clips"].as_array().unwrap();
         assert_eq!(clips.len(), 1);
-        assert_eq!(clips[0]["date"].as_str().unwrap(), "2025-02-22");
+        assert_eq!(clips[0]["date"].as_str().unwrap(), "2026-07-17");
         assert_eq!(
             clips[0]["path"].as_str().unwrap(),
-            "/TeslaCam/RecentClips/2025-02-22",
+            "/Recordings/Continuous/2026-07-17",
         );
         let files: Vec<&str> = clips[0]["files"]
             .as_array()
@@ -199,45 +198,18 @@ mod tests {
         assert_eq!(
             files,
             vec![
-                "2025-02-22_17-58-00-back.mp4",
-                "2025-02-22_17-58-00-front.mp4",
+                "FRONT_2026_07_17_T_19_34_53.mp4",
+                "REAR_2026_07_17_T_19_34_53.mp4",
             ],
         );
-        // RecentClips carry no event.json, so `event` is skipped entirely.
+        // Continuous folders carry no event.json, so `event` is skipped.
         assert!(clips[0].get("event").is_none());
-    }
-
-    #[test]
-    fn lists_event_clips_with_event_json() {
-        let root = TempDir::new().unwrap();
-        let event = root.path().join("SentryClips").join("2025-02-22_17-58-00");
-        fs::create_dir_all(&event).unwrap();
-        fs::write(event.join("2025-02-22_17-58-00-front.mp4"), b"").unwrap();
-        fs::write(
-            event.join("event.json"),
-            r#"{"city":"San Francisco, CA","reason":"sentry_aware_object_detection"}"#,
-        )
-        .unwrap();
-
-        let value = list_clips_in(root.path(), "SentryClips", 20, None);
-        let clips = value[0]["clips"].as_array().unwrap();
-        assert_eq!(clips.len(), 1);
-        assert_eq!(clips[0]["date"].as_str().unwrap(), "2025-02-22_17-58-00");
-        assert_eq!(
-            clips[0]["path"].as_str().unwrap(),
-            "/TeslaCam/SentryClips/2025-02-22_17-58-00",
-        );
-        assert_eq!(clips[0]["event"]["city"].as_str().unwrap(), "San Francisco, CA");
-        assert_eq!(
-            clips[0]["event"]["reason"].as_str().unwrap(),
-            "sentry_aware_object_detection",
-        );
     }
 
     #[test]
     fn list_clips_respects_limit_and_before() {
         let root = TempDir::new().unwrap();
-        let saved = root.path().join("SavedClips");
+        let saved = root.path().join("Continuous");
         for name in &[
             "2025-02-20_10-00-00",
             "2025-02-21_10-00-00",
@@ -249,7 +221,7 @@ mod tests {
         }
 
         // `limit` truncates and reports hasMore, newest first.
-        let value = list_clips_in(root.path(), "SavedClips", 2, None);
+        let value = list_clips_in(root.path(), "Continuous", 2, None);
         assert_eq!(value[0]["hasMore"].as_bool().unwrap(), true);
         let clips = value[0]["clips"].as_array().unwrap();
         assert_eq!(clips.len(), 2);
@@ -257,7 +229,7 @@ mod tests {
         assert_eq!(clips[1]["date"].as_str().unwrap(), "2025-02-21_10-00-00");
 
         // `before` cursor drops entries at or after the cursor.
-        let value = list_clips_in(root.path(), "SavedClips", 20, Some("2025-02-22_10-00-00"));
+        let value = list_clips_in(root.path(), "Continuous", 20, Some("2025-02-22_10-00-00"));
         assert_eq!(value[0]["hasMore"].as_bool().unwrap(), false);
         let clips = value[0]["clips"].as_array().unwrap();
         assert_eq!(clips.len(), 2);
@@ -268,39 +240,40 @@ mod tests {
     #[test]
     fn list_clips_empty_for_missing_category_dir() {
         let root = TempDir::new().unwrap();
-        let value = list_clips_in(root.path(), "SavedClips", 20, None);
-        assert_eq!(value[0]["name"].as_str().unwrap(), "SavedClips");
+        let value = list_clips_in(root.path(), "Continuous", 20, None);
+        assert_eq!(value[0]["name"].as_str().unwrap(), "Continuous");
         assert_eq!(value[0]["clips"].as_array().unwrap().len(), 0);
         assert_eq!(value[0]["hasMore"].as_bool().unwrap(), false);
     }
 
-    /// The real `/mutable/TeslaCam` clip entries are symlinks into reflink
-    /// snapshots, so `enumerate_event_dirs` must follow symlinked directories.
+    /// The real `/mutable/Recordings` clip entries are symlinks into
+    /// reflink snapshots, so `enumerate_event_dirs` must follow
+    /// symlinked directories.
     #[cfg(unix)]
     #[test]
     fn list_clips_follows_symlinked_dirs() {
         let root = TempDir::new().unwrap();
-        let saved = root.path().join("SavedClips");
-        fs::create_dir_all(&saved).unwrap();
+        let cont = root.path().join("Continuous");
+        fs::create_dir_all(&cont).unwrap();
 
         // A real clip dir living outside the category folder...
-        let real = root.path().join("snapshot").join("2025-02-22_17-58-00");
+        let real = root.path().join("snapshot").join("2026-07-17");
         fs::create_dir_all(&real).unwrap();
-        fs::write(real.join("2025-02-22_17-58-00-front.mp4"), b"").unwrap();
+        fs::write(real.join("FRONT_2026_07_17_T_19_34_53.mp4"), b"").unwrap();
 
-        // ...reachable only through a symlink inside SavedClips/.
-        std::os::unix::fs::symlink(&real, saved.join("2025-02-22_17-58-00")).unwrap();
+        // ...reachable only through a symlink inside Continuous/.
+        std::os::unix::fs::symlink(&real, cont.join("2026-07-17")).unwrap();
 
-        let value = list_clips_in(root.path(), "SavedClips", 20, None);
+        let value = list_clips_in(root.path(), "Continuous", 20, None);
         let clips = value[0]["clips"].as_array().unwrap();
         assert_eq!(clips.len(), 1);
-        assert_eq!(clips[0]["date"].as_str().unwrap(), "2025-02-22_17-58-00");
+        assert_eq!(clips[0]["date"].as_str().unwrap(), "2026-07-17");
         let files: Vec<&str> = clips[0]["files"]
             .as_array()
             .unwrap()
             .iter()
             .map(|v| v.as_str().unwrap())
             .collect();
-        assert_eq!(files, vec!["2025-02-22_17-58-00-front.mp4"]);
+        assert_eq!(files, vec!["FRONT_2026_07_17_T_19_34_53.mp4"]);
     }
 }

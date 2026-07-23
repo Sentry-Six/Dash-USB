@@ -231,10 +231,12 @@ impl Profile {
              # ({id}) at every startup — do not edit; changes are overwritten.\n\
              export VEHICLE_PROFILE_ID={id}\n\
              export RECORDINGS_TREE=/mutable/Recordings\n\
+             export RECORDING_ROOT={root}\n\
              export RECORDINGS_ARCHIVE_DEFAULT={archive}\n\
              export SNAPSHOT_INTERVAL_DEFAULT={interval}\n\
              export CLIP_MIN_BYTES=100000\n",
             id = self.profile.id,
+            root = self.recording.root,
             archive = self.features.archive_everything_default,
             interval = self.snapshots.default_interval_secs,
         )
@@ -321,6 +323,9 @@ mod tests {
     fn profile_env_render_is_stable() {
         let env = gm().render_profile_env();
         assert!(env.contains("export RECORDINGS_TREE=/mutable/Recordings"));
+        assert!(env.contains(
+            "export RECORDING_ROOT=Android/media/com.gm.ultifi.gmconnectedcameraservice/Recordings/SurroundVisionRecorder"
+        ));
         assert!(env.contains("export SNAPSHOT_INTERVAL_DEFAULT=900"));
         assert!(env.contains("export RECORDINGS_ARCHIVE_DEFAULT=true"));
     }

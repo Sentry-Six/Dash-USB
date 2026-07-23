@@ -303,7 +303,7 @@ pub async fn create_disk_images(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
         create_drive(name, label, *size_kb, use_exfat, emitter).await?;
     }
 
-    // Clean up stale /mutable/TeslaCam symlinks when cam drive was
+    // Clean up stale /mutable/Recordings symlinks when cam drive was
     // changed/removed — those symlinks point into the old cam_disk and
     // are dangling after the recreate. Snapshots are intentionally NOT
     // touched: they live independently on backingfiles and represent
@@ -311,11 +311,9 @@ pub async fn create_disk_images(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
     // change is the same "I changed a setting, why did I lose data"
     // failure mode the partition wipe used to cause.
     if sizes[0].2 == 0 || cam_changed {
-        if Path::new("/mutable/TeslaCam").is_dir() {
-            for dir in &["RecentClips", "SavedClips", "SentryClips", "TeslaTrackMode"] {
-                let _ = std::fs::remove_dir_all(format!("/mutable/TeslaCam/{}", dir));
-            }
-            let _ = std::fs::remove_file("/mutable/sentry_files_archived");
+        if Path::new("/mutable/Recordings").is_dir() {
+            let _ = std::fs::remove_dir_all("/mutable/Recordings/Continuous");
+            let _ = std::fs::remove_file("/mutable/recordings_archived");
         }
     }
 

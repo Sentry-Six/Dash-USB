@@ -64,30 +64,11 @@ export MUSIC_MOUNT=/mnt/music
 # read the setup variables and define other environment variables and functions
 source /root/bin/envsetup.sh
 
-# Make sure awake_stop runs no matter how this script exits — set -e
-# is on (bash -eu above), so any unhandled error in archive_clips or
-# its helpers would otherwise kill the script before reaching the
-# explicit `awake_stop` call after archive_clips. Without this trap
-# the BLE radio lock stays held by "keep_awake" until the lock-stale
-# check eventually kicks in 24h later (or the Pi reboots), blocking
-# the telemetry sampler for the duration.
-# Idempotent: awake_stop is safe to call even when keep-awake was
-# never started (no lock to remove, services already up).
-# awake_stop is Travel Mode-aware internally: it always reaps the
-# keep-awake nudge loop and restores the BLE radio, but skips the
-# SENTRY_CASE 1/2 "Sentry Mode OFF" command while Travel Mode is on,
-# so a crash/restart can't disable the user's Sentry away from home.
-# That also covers a mid-cycle toggle: enabling Travel Mode between
-# awake_start and awake_stop still kills the nudge loop instead of
-# leaving it nudging the car every 5 minutes for the rest of the trip.
-trap '/root/bin/awake_stop || true' EXIT
-
-# Reason passed to awake_start so nudge log lines show what is keeping the car awake.
-export KEEP_AWAKE_REASON=Archive
-# Single global PID file shared with web UI keep-awake. awake_start kills
-# any existing nudge loop before starting a new one, so only one BLE
-# nudge process runs at a time (prevents hci0 contention).
-export KEEP_AWAKE_PID_FILE=/tmp/keep_awake_nudge_pid
+# Vehicle-profile defaults (RECORDINGS_TREE, RECORDING_ROOT,
+# SNAPSHOT_INTERVAL_DEFAULT, RECORDINGS_ARCHIVE_DEFAULT, CLIP_MIN_BYTES).
+# Written by the daemon at startup; user conf still wins everywhere via
+# ${VAR:-$VAR_DEFAULT}.
+source /root/bin/profile_env.sh 2>/dev/null || true
 
 # led triggers may have been built as modules, so try
 # to load them
@@ -150,18 +131,7 @@ function fix_errors_in_image () {
 function archive_is_reachable () {
   local reachable=true
 
-  # Travel Mode: relax the probe timeouts to the same values the transfer
-  # watchdog in archive-clips.sh uses — a high-latency VPN link can take
-  # more than 1s to answer, and the snappy defaults misread "slow" as
-  # "offline" (skipping post-archive work, or never starting an archive at
-  # all on a working link). Normal mode keeps the 1s defaults so
-  # drive-away detection stays fast. An explicit env override still wins.
-  if travel_mode_active; then
-    ARCHIVE_PING_TIMEOUT="${ARCHIVE_PING_TIMEOUT:-4}" ARCHIVE_SSH_TIMEOUT="${ARCHIVE_SSH_TIMEOUT:-8}" \
-      /root/bin/archive-is-reachable.sh "$ARCHIVE_SERVER" || reachable=false
-  else
-    /root/bin/archive-is-reachable.sh "$ARCHIVE_SERVER" || reachable=false
-  fi
+  /root/bin/archive-is-reachable.sh "$ARCHIVE_SERVER" || reachable=false
 
   if [ "$reachable" = false ]
   then
@@ -171,111 +141,13 @@ function archive_is_reachable () {
   true
 }
 
-function sync_user_media_to_cam () {
-  if ! has_cam_disk
-  then
-    return
-  fi
-  log "Syncing user media to cam drive..."
-
-  # Wraps & LicensePlate live as folders on the cam drive (no dedicated partition).
-  if ensure_mountpoint_is_mounted "$CAM_MOUNT"
-  then
-    if [ -d "/mutable/Wraps" ] && [ -n "$(ls -A /mutable/Wraps 2>/dev/null)" ]
-    then
-      mkdir -p "$CAM_MOUNT/Wraps"
-      rsync -a --delete "/mutable/Wraps/" "$CAM_MOUNT/Wraps/" >> "$LOG_FILE" 2>&1 \
-        || log "Failed to sync Wraps to cam drive"
-      # Forward-sync propagated deletions to disk; tombstones no longer needed
-      rm -rf /mutable/.wraps_deleted 2>/dev/null || true
-    fi
-    if [ -d "/mutable/LicensePlate" ] && [ -n "$(ls -A /mutable/LicensePlate 2>/dev/null)" ]
-    then
-      mkdir -p "$CAM_MOUNT/LicensePlate"
-      rsync -a --delete "/mutable/LicensePlate/" "$CAM_MOUNT/LicensePlate/" >> "$LOG_FILE" 2>&1 \
-        || log "Failed to sync LicensePlate to cam drive"
-    fi
-    # Sync LockChime.wav to the root of the cam drive so Tesla reads it via USB.
-    # Active chime is tracked via /mutable/LockChime/.active_name (directory-based library).
-    _active_chime_name=""
-    if [ -f "/mutable/LockChime/.active_name" ]; then
-      _active_chime_name=$(tr -d '\n\r' < "/mutable/LockChime/.active_name")
-    fi
-    if [ -n "$_active_chime_name" ] && [ -f "/mutable/LockChime/$_active_chime_name" ]
-    then
-      if cp -f "/mutable/LockChime/$_active_chime_name" "$CAM_MOUNT/LockChime.wav"; then
-        log "Synced LockChime.wav ($_active_chime_name) to cam drive"
-      else
-        log "Failed to sync LockChime.wav to cam drive"
-      fi
-    else
-      # No active lock chime — remove from cam drive if present
-      rm -f "$CAM_MOUNT/LockChime.wav" 2>/dev/null || true
-    fi
-    unmount_mount_point "$CAM_MOUNT"
-    log "Done syncing user media."
-  else
-    log "Could not mount cam drive to sync user media."
-  fi
-}
-
 function sync_disk_media_to_host () {
-  log "Reverse-syncing disk media to host paths..."
-
-  # Reverse-sync Wraps & LicensePlate from the cam drive (the only place
-  # they live now — no dedicated wraps partition).
-  if [ -e /backingfiles/cam_disk.bin ]
-  then
-    if ensure_mountpoint_is_mounted "$CAM_MOUNT"
-    then
-      if [ -d "$CAM_MOUNT/Wraps" ] && [ -n "$(ls -A "$CAM_MOUNT/Wraps" 2>/dev/null)" ]
-      then
-        mkdir -p /mutable/Wraps
-        # Build exclude list from tombstones to prevent resurrection of deleted wraps
-        _wraps_exclude_file=$(mktemp)
-        if [ -d /mutable/.wraps_deleted ]; then
-          for _tombstone in /mutable/.wraps_deleted/*; do
-            [ -e "$_tombstone" ] && basename "$_tombstone" >> "$_wraps_exclude_file"
-          done
-        fi
-        rsync -a --ignore-existing --exclude-from="$_wraps_exclude_file" "$CAM_MOUNT/Wraps/" "/mutable/Wraps/" >> "$LOG_FILE" 2>&1 \
-          || log "Failed to reverse-sync Wraps from cam drive"
-        rm -f "$_wraps_exclude_file"
-        log "Reverse-synced Wraps from cam drive to /mutable/Wraps."
-      fi
-      if [ -d "$CAM_MOUNT/LicensePlate" ] && [ -n "$(ls -A "$CAM_MOUNT/LicensePlate" 2>/dev/null)" ]
-      then
-        mkdir -p /mutable/LicensePlate
-        rsync -a --ignore-existing "$CAM_MOUNT/LicensePlate/" "/mutable/LicensePlate/" >> "$LOG_FILE" 2>&1 \
-          || log "Failed to reverse-sync LicensePlate from cam drive"
-        log "Reverse-synced LicensePlate from cam drive."
-      fi
-      unmount_mount_point "$CAM_MOUNT"
-    fi
-  fi
-
   # Clear stale autofs mount-option cache files for media disks.
   # These are regenerated on next access. Stale files can cause mount
   # failures after disk images are recreated (wizard re-run / disk wipe).
-  for img in music_disk.bin lightshow_disk.bin boombox_disk.bin
-  do
-    rm -f "/backingfiles/${img}.opts"
-  done
-
-  log "Done reverse-syncing disk media to host paths."
+  rm -f /backingfiles/music_disk.bin.opts
 }
 
-# Serializes gadget teardown/bring-up between the main loop, the gadget
-# stall watchdog, and the Rust server's own gadget cycles (lock-chime
-# cam-disk sync, toggle-drives — see crates/usb_gadget/src/cycle_lock.rs).
-# Without it one party could re-enable the gadget while another has
-# cam_disk.bin mounted for a sync (two writers on one block device —
-# filesystem corruption, car stops recording).
-GADGET_CYCLE_LOCK=/tmp/sentryusb_gadget_cycle.lock
-
-# Run "$@" holding the gadget-cycle lock. Single definition so the fd
-# number and lock path can never drift between call sites — a mismatch
-# would silently stop the mutual exclusion.
 function with_gadget_lock () {
   (
     flock 209
@@ -295,25 +167,16 @@ function connect_usb_drives_to_host_locked() {
   # unreachable while the car drove away), the gadget is still active and
   # mounting cam_disk.bin for the sync below would give the Pi and the car
   # simultaneous access to the same block device, corrupting the filesystem
-  # and causing the Tesla to stop writing dashcam footage.
+  # and causing the car to stop writing dashcam footage.
   if /root/bin/disable_gadget.sh 2>/dev/null; then
     log "Disabled stale USB gadget before sync"
     fix_errors_in_images
   fi
   sync_disk_media_to_host
-  # Randomize lock chime BEFORE sync_user_media_to_cam so the fresh random pick
-  # (recorded in /mutable/LockChime/.active_name) gets copied into the cam disk
-  # during the sync step.
-  local port="${SENTRYUSB_PORT:-80}"
-  curl -sf -X POST "http://127.0.0.1:${port}/api/lockchime/randomize-on-connect" > /dev/null 2>&1 || true
-  sync_user_media_to_cam
-  # Pre-trigger autofs mounts for media directories while disk images
-  # are free (before the gadget takes over). This ensures the web UI
-  # can display Music/LightShow/Boombox files immediately after boot.
-  for d in Music LightShow Boombox
-  do
-    ls "/var/www/html/fs/$d" > /dev/null 2>&1 || true
-  done
+  # Pre-trigger the autofs mount for the music directory while the disk
+  # image is free (before the gadget takes over), so the web UI can
+  # display Music files immediately after boot.
+  ls "/var/www/html/fs/Music" > /dev/null 2>&1 || true
   if ! /root/bin/enable_gadget.sh; then
     log "ERROR: enable_gadget.sh failed (exit $?)"
   fi
@@ -321,149 +184,8 @@ function connect_usb_drives_to_host_locked() {
   sleep 5
 }
 
-function away_mode_active () {
-  local flag="/mutable/sentryusb_away_mode.json"
-  [ -f "$flag" ] || return 1
-  # The Go server updates remaining_sec in the flag file every 30s,
-  # so this works reliably regardless of whether the Pi has an RTC.
-  local remaining
-  remaining=$(grep -o '"remaining_sec":[0-9]*' "$flag" | cut -d: -f2)
-  [ -n "$remaining" ] && [ "$remaining" -gt 0 ] 2>/dev/null
-}
-
-function travel_mode_active () {
-  # Travel Mode keeps the USB gadget presented to the car at all times: the
-  # archive flow still snapshots and uploads, but every step that would
-  # disconnect the gadget from the car is skipped. Read TRAVEL_MODE_ENABLED
-  # FRESH on each call (like away_mode_active re-reads its flag) so the web-UI
-  # toggle takes effect without restarting archiveloop. Search config paths in
-  # the same order as sentryusb_config::find_config_path(); first existing wins.
-  local conf val
-  for conf in /root/sentryusb.conf /boot/firmware/sentryusb.conf /boot/sentryusb.conf
-  do
-    [ -f "$conf" ] || continue
-    # Source in an isolated subshell so the value is parsed by bash itself
-    # (handles export/quotes), exactly like envsetup.sh, with no side effects.
-    val=$( set +eu; . "$conf" >/dev/null 2>&1; printf '%s' "${TRAVEL_MODE_ENABLED:-}" )
-    case "${val,,}" in
-      yes|true|1|on) return 0 ;;
-    esac
-    return 1
-  done
-  return 1
-}
-
-function travel_mode_interval () {
-  # Cycle pacing for Travel Mode. Precedence: explicit TRAVEL_MODE_INTERVAL
-  # (power-user env/conf override) > "half snapshots" menu toggle
-  # (TRAVEL_MODE_HALF_SNAPSHOTS, read fresh like travel_mode_active so a
-  # mid-trip toggle applies without restarting archiveloop) > the user's
-  # SNAPSHOT_INTERVAL. Halving shrinks the window in which a full cam disk
-  # can lose footage the car deletes before it was snapshotted + uploaded.
-  if [ -n "${TRAVEL_MODE_INTERVAL:-}" ]; then
-    echo "$TRAVEL_MODE_INTERVAL"
-    return
-  fi
-  local base="${SNAPSHOT_INTERVAL:-3480}"
-  local conf val
-  for conf in /root/sentryusb.conf /boot/firmware/sentryusb.conf /boot/sentryusb.conf
-  do
-    [ -f "$conf" ] || continue
-    val=$( set +eu; . "$conf" >/dev/null 2>&1; printf '%s' "${TRAVEL_MODE_HALF_SNAPSHOTS:-}" )
-    case "${val,,}" in
-      yes|true|1|on)
-        echo $((base / 2))
-        return
-        ;;
-    esac
-    break
-  done
-  echo "$base"
-}
-
-function travel_mode_fast_retry_active () {
-  # "Fast retry" menu toggle for intermittent uplinks (Starlink under a
-  # bridge, cellular dead zones): when a Travel Mode archive cycle fails,
-  # retry after a short delay instead of waiting out the full snapshot
-  # interval. Read TRAVEL_MODE_FAST_RETRY fresh each call, exactly like
-  # travel_mode_active, so the web-UI toggle applies without a restart.
-  local conf val
-  for conf in /root/sentryusb.conf /boot/firmware/sentryusb.conf /boot/sentryusb.conf
-  do
-    [ -f "$conf" ] || continue
-    val=$( set +eu; . "$conf" >/dev/null 2>&1; printf '%s' "${TRAVEL_MODE_FAST_RETRY:-}" )
-    case "${val,,}" in
-      yes|true|1|on) return 0 ;;
-    esac
-    return 1
-  done
-  return 1
-}
-
-function travel_mode_retry_interval () {
-  # Delay before a fast-retry attempt. TRAVEL_MODE_RETRY_INTERVAL is a
-  # power-user env/conf override; clamp anything non-numeric or too small
-  # to sane values so a bad override can't turn the loop into a hot spin.
-  local v="${TRAVEL_MODE_RETRY_INTERVAL:-60}"
-  case "$v" in
-    ''|*[!0-9]*) v=60 ;;
-  esac
-  if [ "$v" -lt 15 ]; then v=15; fi
-  echo "$v"
-}
-
-function travel_mode_pace () {
-  # Travel Mode cycle pacing. The always-on VPN never goes unreachable, so
-  # wait_for_archive_to_be_unreachable would block forever and halt
-  # archiving — instead sleep a fixed interval and let the next iteration
-  # take a fresh snapshot and archive its new clips. If the last cycle
-  # failed and the fast-retry toggle is on, shrink the wait so a brief
-  # uplink dropout (Starlink under a bridge) doesn't stall archiving for
-  # the full snapshot interval.
-  local interval
-  if [ "${ARCHIVE_CYCLE_FAILED:-0}" = "1" ] && travel_mode_fast_retry_active; then
-    interval=$(travel_mode_retry_interval)
-    log "Travel Mode: last archive cycle failed, fast retry in ${interval}s"
-  else
-    interval=$(travel_mode_interval)
-    log "Travel Mode: next snapshot+archive cycle in ${interval}s"
-  fi
-
-  # Sleep in short slices, watching for the manual-sync canary that
-  # trigger-sync (POST /api/system/trigger-sync) drops. In normal mode the
-  # canary unsticks the two reachability wait states, but Travel Mode
-  # spends its idle time here instead — without this, "Start Archive"
-  # would be a silent no-op until the interval expired. Consuming the
-  # canary also keeps a stale one from faking a later reachability probe.
-  local deadline=$((SECONDS + interval))
-  local remaining slice
-  while [ "$SECONDS" -lt "$deadline" ]; do
-    if [ -e /tmp/archive_is_reachable ]; then
-      if rm -f -- /tmp/archive_is_reachable; then
-        log "Travel Mode: manual sync requested, starting the next cycle early"
-        return 0
-      fi
-      log "Travel Mode: unable to consume manual sync request"
-    fi
-    remaining=$((deadline - SECONDS))
-    slice=5
-    if [ "$remaining" -lt "$slice" ]; then slice=$remaining; fi
-    [ "$slice" -gt 0 ] && sleep "$slice"
-  done
-  return 0
-}
-
 function run_archive_cycle () {
   # Wrapper around archive_clips that owns the loop-level failure state.
-  # ARCHIVE_RETRY_ATTEMPT must be derived from the PREVIOUS cycle's result
-  # before it is cleared: it tells archive_teslacam_clips to suppress
-  # per-attempt push notifications so minute-cadence fast retries don't
-  # spam the phone (first failure and eventual success still notify).
-  if [ "${ARCHIVE_CYCLE_FAILED:-0}" = "1" ] && travel_mode_active && travel_mode_fast_retry_active; then
-    ARCHIVE_RETRY_ATTEMPT=1
-  else
-    ARCHIVE_RETRY_ATTEMPT=0
-  fi
   ARCHIVE_CYCLE_FAILED=0
   archive_clips || ARCHIVE_CYCLE_FAILED=1
 }
@@ -499,18 +221,6 @@ function wifi_cycle () {
     sleep 1
   done
 
-  # Recreate ap0 and bring the AP back ONLY while an Away Mode session is
-  # active. In normal mode the whole point of the cycle is to remove ap0 so
-  # wlan0 can scan — unconditionally re-upping the AP here used to resurrect
-  # it after the user had disabled Away Mode.
-  if away_mode_active; then
-    if ! iw dev ap0 info &>/dev/null; then
-      iw dev wlan0 interface add ap0 type __ap 2>/dev/null || true
-    fi
-    iw wlan0 set power_save off 2>/dev/null || true
-    iw ap0 set power_save off 2>/dev/null || true
-    nmcli con up SENTRYUSB_AP 2>/dev/null || true
-  fi
 }
 
 function wait_for_archive_to_be_reachable () {
@@ -530,11 +240,8 @@ function wait_for_archive_to_be_reachable () {
       break
     fi
     # WiFi recovery while waiting for home network.
-    # When Away Mode is active the AP has exclusive radio access — skip
-    # all scanning and wifi_cycle so the AP stays up uninterrupted.
     scan_counter=$((scan_counter + 1))
-    if ! away_mode_active; then
-      # Normal mode: AP is off, scan freely
+    if true; then
       if (( scan_counter % 30 == 0 )); then
         nmcli device wifi rescan 2>/dev/null || true
       fi
@@ -695,7 +402,7 @@ function trim_free_space() {
 }
 
 function fix_errors_in_images () {
-  for i in cam music boombox lightshow wraps
+  for i in cam music
   do
     img="/backingfiles/${i}_disk.bin"
     if [ -e "$img" ]
@@ -839,7 +546,7 @@ function clean_cam_mount {
   then
     # Remove files, oldest first, until there is at least 20GB of free space
  
-    (cd "${CAM_MOUNT}"; find . -type f -a \( -path './TeslaCam/*' -o -path './TeslaTrackMode/*' \) -printf '%P\0') > /tmp/rmcandidates.txt
+    (cd "${CAM_MOUNT}"; find . -type f -a -path "./${RECORDING_ROOT:-}*" -printf '%P\0') > /tmp/rmcandidates.txt
     if [ -s /tmp/rmcandidates.txt ]
     then
       (cd "${CAM_MOUNT}"; xargs -a /tmp/rmcandidates.txt -0 ls -cr1) > /tmp/rmcandidatesbytime.txt
@@ -861,9 +568,10 @@ function clean_cam_mount {
     rm -f /tmp/rmcandidates.txt /tmp/rmcandidatesbytime.txt
   fi
 
-  # delete directories that are now empty
-  find "$CAM_MOUNT/TeslaCam/RecentClips" "$CAM_MOUNT/TeslaCam/SavedClips" \
-    "$CAM_MOUNT/TeslaCam/SentryClips" "$CAM_MOUNT/TeslaTrackMode" -mindepth 1 -type d -empty -delete || true
+  # delete directories that are now empty (never the recording root itself)
+  if [ -n "${RECORDING_ROOT:-}" ] && [ -d "$CAM_MOUNT/$RECORDING_ROOT" ]; then
+    find "$CAM_MOUNT/$RECORDING_ROOT" -mindepth 1 -type d -empty -delete || true
+  fi
 
   # Trim the camera archive to reduce the number of blocks in the snapshot.
   trim_free_space "$CAM_MOUNT"
@@ -873,23 +581,11 @@ function clean_cam_mount {
   log "done cleaning cam mount"
 }
 
-# Directory structure car uses:
-# TeslaCam/
-#   RecentClips/
-#      videos.mp4
-#   SavedClips/
-#     datetime/
-#       videos.mp4
-#       event.json
-#       thumb.png
-#   SentryClips/
-#     datetime/
-#       videos.mp4
-#       event.json
-#       thumb.png
-# TeslaTrackMode/
-#   lapvideo.mp4
-#   laptelemetry.csv
+# On-drive directory structure (GM Surround Vision profile):
+#   <RECORDING_ROOT>/            # Android/media/…/SurroundVisionRecorder
+#     FRONT_YYYY_MM_DD_T_HH_MM_SS.mp4
+#     LEFT_…  RIGHT_…  REAR_…    # one file per camera per 5-min segment
+# The car rolling-deletes files older than its firmware window (2 h).
 # Read the SoC temperature directly from the thermal zone, formatted to match the
 # temperature_monitor output. Echoes nothing on devices with no thermal sensor.
 # Called inline at the moment of an archive failure so the value reflects the
@@ -910,16 +606,16 @@ function soc_temperature () {
   fi
 }
 
-function archive_teslacam_clips () {
-  log "Checking saved folder count..."
+function archive_recordings () {
+  log "Checking for recordings to archive..."
 
-  local -r overlaylower=/mutable/TeslaCam
+  local -r overlaylower="${RECORDINGS_TREE:-/mutable/Recordings}"
   local -r overlayupper=/tmp/cam/upper
   local -r overlaywork=/tmp/cam/work
   local -r overlaymerged=/tmp/cam/merged
 
   rm -rf "$overlayupper" "$overlaywork" "$overlaymerged"
-  mkdir -p "$overlayupper" "$overlaywork" "$overlaymerged"
+  mkdir -p "$overlaylower" "$overlayupper" "$overlaywork" "$overlaymerged"
 
   if ! mount -t overlay overlay -o "lowerdir=$overlaylower,upperdir=$overlayupper,workdir=$overlaywork" "$overlaymerged"; then
     log "ERROR: failed to mount overlay (lower=$overlaylower upper=$overlayupper merged=$overlaymerged)"
@@ -927,87 +623,61 @@ function archive_teslacam_clips () {
   fi
 
   # Build list of the files to be archived.
-  local -r sentrylist=/tmp/sentry_files
-  local -r sentrylist_archived=/tmp/sentry_files_archived
-  local -r sentrylist_previously_archived=/mutable/sentry_files_archived
+  local -r reclist=/tmp/recording_files
+  local -r reclist_archived=/tmp/recording_files_archived
+  local -r reclist_previously_archived=/mutable/recordings_archived
   local -r ignorelist=/tmp/ignore_files
 
+  # Everything the snapshot link farm captured is a candidate — the car
+  # rolling-deletes the source, so "archive everything" IS the product.
+  # ARCHIVE_RECORDINGS=false in the conf opts out (local snapshots only);
+  # the default comes from the vehicle profile via profile_env.sh.
   # Find files by name only. Don't follow the symlinks yet, since that
   # would cause all snapshots to be mounted.
-  local -a savedclipsopt
-  local -a sentryclipsopt
-  local -a trackmodeclipsopt
-  local -a recentclipsopt
-  if [ "${ARCHIVE_SAVEDCLIPS:-true}" = "true" ]
+  if [ "${ARCHIVE_RECORDINGS:-${RECORDINGS_ARCHIVE_DEFAULT:-true}}" = "true" ]
   then
-    savedclipsopt=("-path" "./SavedClips/*")
+    (cd "$overlaylower"; find . -path "./Continuous/*" -type l -fprintf "$reclist" '%P\n')
   else
-    savedclipsopt=("-false")
+    true > "$reclist"
   fi
-  if [ "${ARCHIVE_SENTRYCLIPS:-true}" = "true" ]
-  then
-    sentryclipsopt=("-o" "-path" "./SentryClips/*")
-  fi
-  if [ "${ARCHIVE_TRACKMODECLIPS:-true}" = "true" ]
-  then
-    trackmodeclipsopt=("-o" "-path" "./TeslaTrackMode/*")
-  fi
-  if [ "${ARCHIVE_RECENTCLIPS:-false}" = "true" ]
-  then
-    recentclipsopt=("-o" "-path" "./RecentClips/*")
-  fi
-  (cd "$overlaylower"; find . \( \( "${savedclipsopt[@]}" "${sentryclipsopt[@]}" "${trackmodeclipsopt[@]}" "${recentclipsopt[@]}" \) -type l \) \
-        -a -fprintf "$sentrylist" '%P\n')
 
   # Copy lists of previously-archived files from /mutable
-  if [ -r "${sentrylist_previously_archived}" ]
+  if [ -r "${reclist_previously_archived}" ]
   then
-    cp "${sentrylist_previously_archived}" "${sentrylist_archived}"
+    cp "${reclist_previously_archived}" "${reclist_archived}"
   fi
 
   # Remove files that no longer exist in snapshots from the
   # "previously archived" list, so the list doesn't keep growing.
-  intersect "${sentrylist_archived}" "${sentrylist}"
+  intersect "${reclist_archived}" "${reclist}"
 
   # Remove previously-archived files from the archive candidate list
-  prunefile "${sentrylist}" "${sentrylist_archived}"
+  prunefile "${reclist}" "${reclist_archived}"
 
-  # ${sentrylist} is now a list of files that haven't been archived yet.
-  # Remove short recordings (.mp4 under 100000 bytes) from this list.
-  # This requires following the links and looking at the files
-  # themselves. One batched `stat -L` does the whole list; the previous
-  # xargs|echo|eval pipeline re-parsed file paths as shell text, so a
-  # clip name with spaces broke the filter and shell metacharacters in
-  # a crafted filename on the cam volume would have been EXECUTED.
-  # `-d '\n'` keeps each line one path; broken symlinks just drop out
-  # (stat errors to /dev/null), matching the old find -L behavior.
-  if [ -s "${sentrylist}" ]
+  # ${reclist} is now a list of files that haven't been archived yet.
+  # Remove short recordings (.mp4 under CLIP_MIN_BYTES — truncated tails
+  # from a power cut) from this list. This requires following the links
+  # and looking at the files themselves. One batched `stat -L` does the
+  # whole list; `-d '\n'` keeps each line one path; broken symlinks just
+  # drop out (stat errors to /dev/null).
+  if [ -s "${reclist}" ]
   then
-    (cd "$overlaymerged"; xargs -a "${sentrylist}" -d '\n' stat -L --format='%s %n' 2>/dev/null) \
-      | awk '$1 < 100000 { sub(/^[0-9]+ /, ""); if (/\.mp4$/) print }' > "${ignorelist}"
+    (cd "$overlaymerged"; xargs -a "${reclist}" -d '\n' stat -L --format='%s %n' 2>/dev/null) \
+      | awk -v min="${CLIP_MIN_BYTES:-100000}" '$1 < min { sub(/^[0-9]+ /, ""); if (/\.mp4$/) print }' > "${ignorelist}"
   else
     true > "${ignorelist}"
   fi
 
   # remove the short files from the list of files to be archived
-  prunefile "${sentrylist}" "${ignorelist}"
+  prunefile "${reclist}" "${ignorelist}"
 
   # apply custom removals/additions
-  filterfile "${sentrylist}"
+  filterfile "${reclist}"
 
-  local -r sentry_count=$(grep -c -v TeslaTrackMode "$sentrylist")
-  local -r trackmode_count=$(grep -c TeslaTrackMode "$sentrylist")
+  local -r total_count=$(wc -l < "$reclist")
   local -r ignore_count=$(wc -l < "$ignorelist")
-  local -r total_count=$((sentry_count + trackmode_count))
 
-  # extract some noteworthy info from the file list
-  local -r saved_event_count=$(grep 'SavedClips/' < "$sentrylist" | sed 's/[^\/]\+$//' | sort -u  | wc -l)
-  local -r sentry_event_count=$(grep 'SentryClips/' < "$sentrylist" | sed 's/[^\/]\+$//' | sort -u  | wc -l)
-
-  local -r event_count=$((saved_event_count + sentry_event_count))
-
-  log "There are $event_count event folder(s) with $sentry_count file(s) and $trackmode_count track mode file(s) to move." \
-      " $ignore_count short recording(s) will be skipped."
+  log "There are $total_count file(s) to move. $ignore_count short recording(s) will be skipped."
 
   local archive_success=true
   if [[ "$total_count" -gt 0 ]]
@@ -1015,20 +685,8 @@ function archive_teslacam_clips () {
     log "Starting recording archiving"
     local -r start_ts=$(date --utc --date "now" +%s)
 
-    local message="Archiving "
+    local message="Archiving $total_count file(s)"
     local fail_temp=""
-    if [[ $sentry_count -gt 0 && $trackmode_count -gt 0 ]]
-    then
-      message+="$trackmode_count track mode file(s) and $sentry_count file(s) including $event_count event folder(s)"
-    elif [[ $sentry_count -gt 0 && $event_count -gt 0 ]]
-    then
-      message+="$sentry_count file(s) including $event_count event folder(s)"
-    elif [[ $sentry_count -gt 0 ]]
-    then
-      message+="$sentry_count file(s)"
-    else
-      message+="$trackmode_count track mode file(s)"
-    fi
 
     # If a prior archive run was interrupted (e.g. reboot), surface how many
     # files it completed before dying. The monitor persists this every 5s.
@@ -1042,38 +700,15 @@ function archive_teslacam_clips () {
     fi
 
     message+=" starting at $(date)"
-    if [ "${ARCHIVE_RETRY_ATTEMPT:-0}" = "1" ]; then
-      # Fast-retry attempt after a failed cycle: the user already got the
-      # failure push; don't re-announce the start every minute.
-      log "Fast retry attempt: suppressing archive-start notification"
-    else
-      ARCHIVE_TOTAL_COUNT=$total_count /root/bin/send-push-message "$NOTIFICATION_TITLE:" "$message" start archive_start || log "failed to send mobile app notification"
-      /root/bin/send-live-activity start "$total_count" || true
-    fi
+    ARCHIVE_TOTAL_COUNT=$total_count /root/bin/send-push-message "$NOTIFICATION_TITLE:" "$message" start archive_start || log "failed to send mobile app notification"
+    /root/bin/send-live-activity start "$total_count" || true
 
     # setup trigger files
     local -r triggerdir=/tmp/triggers
     local -r triggerlist=/tmp/triggers.txt
     rm -rf "${triggerdir}"
-    mkdir -p "${triggerdir}/SentryClips"
-    mkdir -p "${triggerdir}/SavedClips"
-    mkdir -p "${triggerdir}/RecentClips"
+    mkdir -p "${triggerdir}"
     true > "${triggerlist}"
-    if [ -n "${TRIGGER_FILE_SAVED+x}" ]
-    then
-      touch "${triggerdir}/SavedClips/${TRIGGER_FILE_SAVED}"
-      echo "SavedClips/${TRIGGER_FILE_SAVED}" >> "${triggerlist}"
-    fi
-    if [ -n "${TRIGGER_FILE_SENTRY+x}" ]
-    then
-      touch "${triggerdir}/SentryClips/${TRIGGER_FILE_SENTRY}"
-      echo "SentryClips/${TRIGGER_FILE_SENTRY}" >> "${triggerlist}"
-    fi
-    if [ -n "${TRIGGER_FILE_RECENT+x}" ]
-    then
-      touch "${triggerdir}/RecentClips/${TRIGGER_FILE_RECENT}"
-      echo "RecentClips/${TRIGGER_FILE_RECENT}" >> "${triggerlist}"
-    fi
     if [ -n "${TRIGGER_FILE_ANY+x}" ]
     then
       touch "${triggerdir}/${TRIGGER_FILE_ANY}"
@@ -1081,12 +716,10 @@ function archive_teslacam_clips () {
     fi
 
     write_archive_status "{\"phase\":\"archiving\",\"current\":0,\"total\":$total_count}"
-    archive_progress_monitor "$total_count" "${sentrylist}" "$overlaymerged" &
+    archive_progress_monitor "$total_count" "${reclist}" "$overlaymerged" &
     local progress_pid=$!
 
-    local travel_active=0
-    if travel_mode_active; then travel_active=1; fi
-    if TRAVEL_MODE_ACTIVE="$travel_active" /root/bin/archive-clips.sh "$overlaymerged" "${sentrylist}" "${triggerdir}" "${triggerlist}"
+    if /root/bin/archive-clips.sh "$overlaymerged" "${reclist}" "${triggerdir}" "${triggerlist}"
     then
       message="Archiving completed successfully. "
     else
@@ -1115,65 +748,37 @@ function archive_teslacam_clips () {
     kill "$progress_pid" 2>/dev/null || true
     wait "$progress_pid" 2>/dev/null || true
 
-    local -i sentry_archived=0
-    local -i trackmode_archived=0
+    local -i files_archived=0
 
     while read -r line
     do
       if [[ ! -L "$overlaymerged/$line" ]]
       then
-        case $line in
-          TeslaTrackMode*)
-            trackmode_archived=$((trackmode_archived + 1))
-            ;;
-          *)
-            sentry_archived=$((sentry_archived + 1))
-            ;;
-        esac
-        echo "$line" >> "${sentrylist_archived}"
+        files_archived=$((files_archived + 1))
+        echo "$line" >> "${reclist_archived}"
       fi
-    done < ${sentrylist}
+    done < ${reclist}
 
     # copy the list of archived files back to /mutable if it has changed
-    if ! diff -q -N "${sentrylist_archived}" "${sentrylist_previously_archived}" > /dev/null
+    if ! diff -q -N "${reclist_archived}" "${reclist_previously_archived}" > /dev/null
     then
-        cp "${sentrylist_archived}" "${sentrylist_previously_archived}.new"
-        mv "${sentrylist_previously_archived}.new" "${sentrylist_previously_archived}"
+        cp "${reclist_archived}" "${reclist_previously_archived}.new"
+        mv "${reclist_previously_archived}.new" "${reclist_previously_archived}"
     fi
 
     # Batch reached its end (success or failure) — clear the in-progress marker
     # so the next run's start notification doesn't claim a stale "prior run" count.
     rm -f /mutable/archive_in_progress.json
 
-    message+="Archived "
-    if [[ $sentry_count -gt 0 && $trackmode_count -gt 0 ]]
-    then
-      message+="${trackmode_archived} trackmode files and ${sentry_archived} other files"
-    elif [[ $sentry_count -gt 0 ]]
-    then
-      message+="${sentry_archived} files"
-    else
-      message+="${trackmode_archived} trackmode files"
-    fi
+    message+="Archived ${files_archived} files"
     local -r end_ts=$(date --utc --date "now" +%s)
     local -r delta=$((end_ts - start_ts))
     message+=" in $(convert_seconds_to_nice_time $delta)"
     if [ "$archive_success" = "false" ] && [ -n "$fail_temp" ]; then
       message+=". SoC temp at failure: $fail_temp"
     fi
-    if [ "${ARCHIVE_RETRY_ATTEMPT:-0}" = "1" ] && [ "$archive_success" = "false" ]; then
-      # Still failing on a fast retry: log it, but don't push a failure
-      # notification every minute. The eventual success (or the first
-      # failure of a normal cycle) still notifies.
-      log "Fast retry attempt failed: suppressing archive-finish notification (${message})"
-    else
-      /root/bin/send-push-message "$NOTIFICATION_TITLE:" "${message}" finish archive_complete
-      # Live activity: only end what was started — retry attempts never
-      # sent a start, so an end here would be unmatched.
-      if [ "${ARCHIVE_RETRY_ATTEMPT:-0}" != "1" ]; then
-        /root/bin/send-live-activity end complete || true
-      fi
-    fi
+    /root/bin/send-push-message "$NOTIFICATION_TITLE:" "${message}" finish archive_complete
+    /root/bin/send-live-activity end complete || true
 
     # Check RTC battery health (Pi 5 only) — warn on every archive if dead/missing
     if [ "${RTC_BATTERY_ENABLED:-false}" = "true" ] && isPi5; then
@@ -1199,11 +804,7 @@ function archive_teslacam_clips () {
   then
     if [ "$archive_success" = "true" ]
     then
-      if travel_mode_active; then
-        log "Travel Mode: deferring freespace cleanup to keep the USB gadget connected to the car"
-      else
-        clean_cam_mount freespace
-      fi
+      clean_cam_mount freespace
     else
       log "Skipping cleaning step after archive error"
     fi
@@ -1212,8 +813,7 @@ function archive_teslacam_clips () {
   fi
 
   # Report the real outcome so archive_clips can propagate failure to the
-  # loop's fast-retry pacing (previously the trailing if/else made this
-  # function return 0 even when archive-clips.sh failed).
+  # loop's retry pacing.
   [ "$archive_success" = "true" ]
 }
 
@@ -1234,90 +834,11 @@ function has_cam_disk () {
   [ -f /backingfiles/cam_disk.bin ]
 }
 
-function cloud_upload_step () {
-  # Cloud upload as a real archiveloop stage. Runs after post-archive-process,
-  # inside the awake_start/awake_stop window so the car (and therefore Pi
-  # power) stays alive for the duration. Polls the local API until pending
-  # hits 0 or we hit a hard cap / stall. Failures (WiFi loss, API blip,
-  # cloud-side error) are logged but never abort archiveloop — next cycle
-  # resumes from whatever's still pending.
-  local port="${SENTRYUSB_PORT:-80}"
-  local api="http://127.0.0.1:${port}"
-
-  local status_json
-  if ! status_json=$(curl -sf -m 5 "$api/api/cloud/status" 2>/dev/null); then
-    log "Cloud upload: API unreachable, skipping"
-    return 0
-  fi
-  if ! echo "$status_json" | grep -q '"paired":true'; then
-    log "Cloud upload: Pi not paired, skipping"
-    return 0
-  fi
-
-  local pending
-  pending=$(echo "$status_json" | grep -o '"pendingRouteCount":[0-9]*' | cut -d: -f2)
-  pending=${pending:-0}
-  if [ "$pending" -eq 0 ]; then
-    log "Cloud upload: nothing to upload (0 pending)"
-    return 0
-  fi
-
-  log "Cloud upload: starting upload of $pending route(s)..."
-
-  # Kick the sweep. Fire-and-forget — actual progress is observed via /status.
-  curl -sf -m 5 -X POST "$api/api/cloud/upload-now" -d '' > /dev/null 2>&1 || true
-
-  # Hard cap = 30 min total. Stall detection = no decrease in pending for
-  # 2 min ⇒ give up (cloud is rejecting, WiFi is dead, etc — next cycle retries).
-  local deadline=$(( $(date +%s) + 1800 ))
-  local last_pending=$pending
-  local stalled_for=0
-  local last_logged=$pending
-
-  while [ "$(date +%s)" -lt "$deadline" ]; do
-    sleep 10
-    if ! status_json=$(curl -sf -m 5 "$api/api/cloud/status" 2>/dev/null); then
-      log "Cloud upload: status check failed (WiFi/API issue); retrying"
-      continue
-    fi
-    pending=$(echo "$status_json" | grep -o '"pendingRouteCount":[0-9]*' | cut -d: -f2)
-    pending=${pending:-0}
-
-    if [ "$pending" -eq 0 ]; then
-      log "Cloud upload: complete (all routes uploaded)"
-      return 0
-    fi
-
-    if [ "$pending" -ge "$last_pending" ]; then
-      stalled_for=$((stalled_for + 10))
-      if [ "$stalled_for" -ge 120 ]; then
-        local last_err
-        last_err=$(echo "$status_json" | grep -o '"lastUploadError":"[^"]*"' | cut -d: -f2- | tr -d '"')
-        log "Cloud upload: stalled at $pending pending for 2 min (lastError=${last_err:-none}); will retry next cycle"
-        return 0
-      fi
-    else
-      stalled_for=0
-      last_pending=$pending
-      # Log progress at most every ~25 routes to avoid spam.
-      if [ $(( last_logged - pending )) -ge 25 ]; then
-        log "Cloud upload: progress — $pending route(s) remaining"
-        last_logged=$pending
-      fi
-    fi
-  done
-
-  log "Cloud upload: hit 30 min cap with $pending pending; will retry next cycle"
-  return 0
-}
-
 function archive_clips () {
   log "Archiving..."
 
-  # Track whether the clip-archiving part of this cycle succeeded, so the
-  # caller (run_archive_cycle) can pace a Travel Mode fast retry. Failures
-  # in the post-archive extras (music, processing, cloud) don't count —
-  # only clips left behind by a broken uplink justify a rapid retry.
+  # Track whether the clip-archiving part of this cycle succeeded.
+  # Failures in the post-archive extras (music sync) don't count.
   local clips_ok=true
 
   if ! /root/bin/connect-archive.sh
@@ -1333,7 +854,7 @@ function archive_clips () {
   if ! has_cam_disk
   then
     log "Skipping archiving (no cam disk)"
-  elif archive_teslacam_clips
+  elif archive_recordings
   then
     log "Finished archiving."
   else
@@ -1342,34 +863,27 @@ function archive_clips () {
   fi
 
   # If the user drove away during archive, the gadget is still presented to
-  # the car (clean_cam_mount was skipped inside archive_teslacam_clips). Skip
-  # all post-archive cleanup — every step below cycles the USB gadget, which
-  # would interrupt the car's recording. The skipped work (music sync, drive-
-  # map, cloud upload) will run on the next archive cycle when the user is
-  # parked at home again.
+  # the car (clean_cam_mount was skipped inside archive_recordings). Skip
+  # all post-archive cleanup — every step below cycles the USB gadget,
+  # which would interrupt the car's recording. The skipped music sync runs
+  # on the next archive cycle when the car is parked at home again.
   if ! archive_is_reachable; then
-    log "Archive became unreachable during clip archiving (user likely drove away); skipping music sync and post-archive processing to keep USB drive stable for the car"
+    log "Archive became unreachable during clip archiving (user likely drove away); skipping music sync to keep USB drive stable for the car"
     touch /tmp/flag_post_archive
     clear_archive_status
     /root/bin/disconnect-archive.sh 2>> "$LOG_FILE" || true
-    # In Travel Mode this is the uplink dropping mid-archive (the "Starlink
-    # under a bridge" case) — report failure so fast retry can kick in.
     return 1
   fi
 
   if { timeout 5 [ -d "${MUSIC_ARCHIVE_MOUNT:-}" -a -d "$MUSIC_MOUNT" ]; } || \
      { [ "${ARCHIVE_SYSTEM:-none}" = "rsync" ] && [ -n "${MUSIC_SHARE_NAME:-}" ] && [ -f /backingfiles/music_disk.bin ]; }
   then
-    if travel_mode_active; then
-      log "Travel Mode: skipping music sync (would disconnect the USB gadget from the car)"
+    log "Copying music..."
+    if copy_music_files
+    then
+      log "Finished copying music."
     else
-      log "Copying music..."
-      if copy_music_files
-      then
-        log "Finished copying music."
-      else
-        log "ERROR: copy_music_files failed (exit $?)"
-      fi
+      log "ERROR: copy_music_files failed (exit $?)"
     fi
   else
     log "Music archive not configured or unreachable (MUSIC_ARCHIVE_MOUNT=${MUSIC_ARCHIVE_MOUNT:-unset})"
@@ -1377,24 +891,10 @@ function archive_clips () {
 
   touch /tmp/flag_post_archive  #Set post-archive flag for optional temperature logging
   clear_archive_status
-  # Reconnect cam drive before post-archive processing.
-  # Processing reads local snapshots, not the cam disk — the car can resume
-  # recording immediately instead of waiting for processing to finish.
-  # In Travel Mode the gadget was never disconnected (cleanup was deferred),
-  # so skip the reconnect cycle to avoid interrupting the car's recording.
-  if ! travel_mode_active; then
-    connect_usb_drives_to_host
-  fi
-  /root/bin/post-archive-process.sh || log "ERROR: post-archive-process.sh failed (exit $?)"
-  cloud_upload_step
-  # Same live-activity pairing rule as in archive_teslacam_clips: retry
-  # attempts never sent a start, so don't send an unmatched end.
-  if [ "${ARCHIVE_RETRY_ATTEMPT:-0}" != "1" ]; then
-    /root/bin/send-live-activity end complete || true
-  fi
-  if ! archive_is_reachable; then
-    log "Archive became unreachable during drive processing, user likely drove away"
-  fi
+  # Reconnect cam drive right away — the car can resume recording
+  # immediately; nothing below touches the cam disk.
+  connect_usb_drives_to_host
+  /root/bin/send-live-activity end complete || true
   /root/bin/disconnect-archive.sh 2>> "$LOG_FILE" || true
 
   [ "$clips_ok" = "true" ]
@@ -1469,214 +969,12 @@ function snapshotloop {
   echo -n snapshotloop > /proc/self/comm
   while true
   do
-    sleep "${SNAPSHOT_INTERVAL:-3480}"
+    sleep "${SNAPSHOT_INTERVAL:-${SNAPSHOT_INTERVAL_DEFAULT:-900}}"
     /root/bin/waitforidle || true
     /root/bin/make_snapshot.sh
   done
 }
 
-# True when the car has been reachable over BLE recently. Reads the
-# telemetry daemon's once-a-minute heartbeat in /mutable/sentryusb-ble.log
-# (state_age = seconds since the last successful BLE state sample). The
-# heartbeat's own car= label is derived from cam_disk.bin mtime — the very
-# signal the watchdog is judging — so it must NOT be used here (circular);
-# state_age comes from the telemetry DB and is independent.
-# No sqlite3 CLI exists on the Pi, hence log parsing instead of a DB query.
-function car_is_awake_via_ble () {
-  local f=/mutable/sentryusb-ble.log
-  [ -f "$f" ] || return 1
-  local now mt state_age
-  now=$(date +%s)
-  mt=$(stat --format=%Y "$f" 2>/dev/null) || return 1
-  # Heartbeat itself stale => telemetry daemon down => awake state unknown.
-  # Fail safe: report not-awake so the watchdog never cycles blind.
-  (( now - mt < 180 )) || return 1
-  state_age=$(tail -c 400 "$f" 2>/dev/null | tail -n 1 | sed -n 's/.*state_age=\([0-9]\{1,\}\)s.*/\1/p')
-  [ -n "$state_age" ] && (( state_age <= 120 ))
-}
-
-# Snapshot everything a post-mortem needs BEFORE recovery destroys it.
-# journald is volatile on these installs — this file on /mutable is the
-# only place the kernel's view of a wedged gadget survives a reboot.
-function dump_gadget_stall_evidence () {
-  local out="$1"
-  {
-    echo "===== gadget stall evidence $(date) ====="
-    echo "--- /sys/class/udc state ---"
-    for u in /sys/class/udc/*/state; do echo "$u: $(cat "$u" 2>/dev/null)"; done
-    echo "--- gadget configfs ---"
-    echo "UDC: $(cat /sys/kernel/config/usb_gadget/sentryusb/UDC 2>/dev/null)"
-    for l in /sys/kernel/config/usb_gadget/sentryusb/functions/mass_storage.0/lun.*/file; do
-      echo "$l: $(cat "$l" 2>/dev/null)"
-    done
-    echo "--- cam_disk.bin ---"
-    stat /backingfiles/cam_disk.bin 2>/dev/null
-    echo "--- file-storage kernel thread io ---"
-    for p in $(pgrep -f file-storage 2>/dev/null); do
-      echo "pid $p:"; cat "/proc/$p/io" 2>/dev/null
-    done
-    echo "--- dmesg tail ---"
-    dmesg | tail -150
-  } > "$out" 2>&1 || true
-}
-
-# Detect the drive dying under the car and re-present it. On 2026-07-08 the
-# car stopped writing mid-drive while configfs still reported the gadget
-# bound; Tesla never retries a dropped drive on its own, so the outage
-# lasted until the car power-cycled the USB port (~6 min). A disable/enable
-# cycle re-enumerates the drive like a fresh plug and the car re-mounts it
-# within seconds.
-#
-# Triggers (gadget must be bound, car must be awake via BLE):
-#   1. UDC link state leaves "configured" and stays degraded >= 60s.
-#   2. Car writes to cam_disk.bin were flowing this boot, then stopped
-#      for >= GADGET_STALL_SECS (default 180) — and the archive is
-#      UNREACHABLE. The reachability gate matters: at home, "car stopped
-#      writing while awake" is what every normal arrival looks like once
-#      the dashcam turns off, so trigger 2 would fire a false cycle +
-#      notification on every drive home. Away from home (the incident
-#      scenario) that pattern really is a stall. A real at-home stall is
-#      still covered by trigger 1 plus the next archive cycle's own
-#      gadget re-present.
-# A car that is awake but legitimately not recording away from home can
-# still trip trigger 2 once; the cycle is harmless then (drive idle,
-# ~15s blip) and the rate limit keeps it from repeating.
-function gadget_stall_watchdog () {
-  echo -n gadgetwatchdog > /proc/self/comm
-  local cam=/backingfiles/cam_disk.bin
-  local stall_secs="${GADGET_STALL_SECS:-180}"
-  # One cooldown between recovery cycles plus a hard per-boot cap: a real
-  # stall needs one cycle; anything repeating is a deeper problem where
-  # blind cycling just churns the car.
-  local recovery_cooldown=600
-  local max_recoveries=3
-  local fresh_seen=0
-  local udc_bad_since=0
-  local last_recovery=0
-  local recoveries=0
-  local limit_logged=0
-
-  while true
-  do
-    sleep "${GADGET_WATCHDOG_INTERVAL:-30}"
-
-    # Only act while we intend to present the drive. During archiveloop's
-    # own gadget-down windows (music sync, boot, lock-chime cycle) this is
-    # false and the watchdog idles.
-    if ! usb_gadget_is_active
-    then
-      fresh_seen=0
-      udc_bad_since=0
-      continue
-    fi
-    [ -f "$cam" ] || continue
-
-    local now mtime age reason=""
-    now=$(date +%s)
-    mtime=$(stat --format=%Y "$cam" 2>/dev/null) || continue
-    age=$(( now - mtime ))
-    (( age < 90 )) && fresh_seen=1
-
-    local udc_state
-    udc_state=$(cat /sys/class/udc/*/state 2>/dev/null | head -1)
-    if [ "$udc_state" = "configured" ] || [ -z "$udc_state" ]
-    then
-      udc_bad_since=0
-    elif (( udc_bad_since == 0 ))
-    then
-      udc_bad_since=$now
-    fi
-
-    if [ -e /tmp/gadget_watchdog_force ]
-    then
-      rm -f /tmp/gadget_watchdog_force
-      reason="forced via /tmp/gadget_watchdog_force (test hook)"
-    elif ! car_is_awake_via_ble
-    then
-      continue
-    elif (( udc_bad_since > 0 && now - udc_bad_since >= 60 ))
-    then
-      reason="UDC state '$udc_state' for $(( now - udc_bad_since ))s while car awake"
-    elif (( fresh_seen == 1 && age >= stall_secs ))
-    then
-      # Home suppression for the write-stall trigger (see function header).
-      # Reset fresh_seen so this doesn't re-probe reachability every 30s
-      # until the car actually writes again.
-      if archive_is_reachable
-      then
-        fresh_seen=0
-        continue
-      fi
-      reason="car stopped writing for ${age}s while awake and away from home"
-    else
-      continue
-    fi
-
-    if (( recoveries >= max_recoveries ))
-    then
-      if (( limit_logged == 0 ))
-      then
-        limit_logged=1
-        log "Gadget stall watchdog: $reason — but recovery limit reached (${max_recoveries}/boot), not cycling again this boot"
-      fi
-      continue
-    fi
-    if (( last_recovery > 0 && now - last_recovery < recovery_cooldown ))
-    then
-      continue
-    fi
-
-    local evidence="/mutable/gadget_stall_$(date +%Y%m%d_%H%M%S).log"
-    log "Gadget stall watchdog: $reason — capturing evidence to $evidence, then re-presenting drive"
-    dump_gadget_stall_evidence "$evidence"
-
-    # Subshell exits 0 only when a cycle was actually attempted; a skip
-    # (lock busy, state changed under the lock) exits 3 so the counters
-    # and the push notification below don't fire for a non-event.
-    if (
-      # Bounded wait: if a gadget cycle elsewhere is wedged in an
-      # uninterruptible configfs write (the very failure class this
-      # watchdog targets), a plain flock would block forever and take
-      # the watchdog down with it. Skip and retry next loop instead.
-      if ! flock -w 60 209
-      then
-        log "Gadget stall watchdog: gadget lock busy for 60s, skipping recovery attempt"
-        exit 3
-      fi
-      # Re-verify under the lock — the main loop may have legitimately
-      # taken the gadget down between our decision and acquiring the lock.
-      if usb_gadget_is_active \
-         && ! findmnt --mountpoint "$CAM_MOUNT" > /dev/null \
-         && ! findmnt --mountpoint "$MUSIC_MOUNT" > /dev/null
-      then
-        /root/bin/disable_gadget.sh || log "Gadget stall watchdog: disable_gadget failed (exit $?)"
-        sleep 2
-        if /root/bin/enable_gadget.sh
-        then
-          log "Gadget stall watchdog: drive re-presented to the car"
-        else
-          log "Gadget stall watchdog: ERROR enable_gadget failed (exit $?)"
-        fi
-      else
-        log "Gadget stall watchdog: state changed before recovery could run, skipping cycle"
-        exit 3
-      fi
-    ) 209>"$GADGET_CYCLE_LOCK"
-    then
-      /root/bin/send-push-message "$NOTIFICATION_TITLE:" \
-        "USB drive stall detected ($reason). Re-presented the drive to the car. Evidence: $evidence" \
-        warning gadget_stall 2>/dev/null || true
-      last_recovery=$now
-      recoveries=$((recoveries + 1))
-      fresh_seen=0
-      udc_bad_since=0
-    fi
-  done
-}
-
-# Mirror the kernel log to persistent storage. journald is volatile here,
-# so without this a reboot destroys the only record of dwc2/mass-storage
-# trouble (exactly what happened on 2026-07-08).
 function kmsgmirror {
   echo -n kmsgmirror > /proc/self/comm
   local out=/mutable/kernel.log
@@ -1815,63 +1113,35 @@ if has_cam_disk
 then
   snapshotloop &
   freespacemanager &
-  gadget_stall_watchdog &
 fi
 logrotator &
 wifichecker &
 timesyncloop &
 kmsgmirror &
 
-# Travel Mode crash-restart guard: the service runs with Restart=always, so
-# any archiveloop crash re-enters this startup path with the system still in
-# whatever state the crash left it. The configfs gadget survives process
-# death — after a service restart (as opposed to a reboot) the car is still
-# connected and writing through it. Running the normal startup sequence in
-# that state would fsck-repair cam_disk.bin while the car writes to it (two
-# writers on one block device), run a cleaning pass, and cycle the gadget:
-# exactly the mid-trip disconnect Travel Mode exists to prevent. Skip it all
-# and leave the gadget untouched — archiving reads snapshots, not the live
-# image, so nothing downstream needs this. After a real reboot UDC is empty
-# (usb_gadget_is_active fails), so the full sequence still runs and the car
-# re-enumerates the drive as it always does after boot.
-if travel_mode_active && usb_gadget_is_active
+fix_errors_in_images
+
+if has_cam_disk
 then
-  log "Travel Mode: USB gadget still bound at startup (service restart) — keeping it connected; skipping boot-time fsck, cleaning and gadget cycle"
-  # a crashed run may have left a stale in-progress marker
-  clear_archive_status
-  if has_cam_disk
-  then
-    # default (fsck) mode is safe here: it runs on the reflink copy, never
-    # the live image — same as every mid-loop snapshot while the car records
-    /root/bin/make_snapshot.sh || log "ERROR: make_snapshot.sh failed (exit $?)"
-  fi
-else
-  fix_errors_in_images
+  # always remove files that fsck recoverd
+  clean_cam_mount boot
+fi
 
-  if has_cam_disk
-  then
-    # always remove files that fsck recoverd
-    clean_cam_mount boot
-  fi
+# Present the drive to the car BEFORE the boot snapshot. The snapshot is
+# a reflink copy of the live image — safe while the car writes, exactly
+# like every mid-loop snapshot — and taking it here used to cost the car
+# ~50 extra seconds without a drive on every power-on.
+connect_usb_drives_to_host
 
-  # Present the drive to the car BEFORE the boot snapshot. The snapshot is
-  # a reflink copy of the live image — safe while the car writes, exactly
-  # like every mid-loop snapshot — and taking it here used to cost the car
-  # ~50 extra seconds without a drive on every power-on. The lock chime is
-  # synced inside connect (before enable), so the car still sees a single
-  # plug-in with everything already in place.
-  connect_usb_drives_to_host
-
-  if has_cam_disk
-  then
-    # Snapshot immediately — no waitforidle. In sentry mode the car never
-    # idles for the 5s gap, so waitforidle would burn its full 90s cap on
-    # every boot AND widen the window in which the car can rotate away
-    # clips before this snapshot captures them. A mid-write copy is fine:
-    # make_snapshot fscks the copy (default mode), and a partial in-flight
-    # clip was always possible across the power-loss boundary anyway.
-    /root/bin/make_snapshot.sh || log "ERROR: boot make_snapshot.sh failed (exit $?)"
-  fi
+if has_cam_disk
+then
+  # Snapshot immediately — no waitforidle. While recording the car never
+  # idles for the 5s gap, so waitforidle would burn its full 90s cap on
+  # every boot AND widen the window in which the car can rotate away
+  # clips before this snapshot captures them. A mid-write copy is fine:
+  # make_snapshot fscks the copy (default mode), and a partial in-flight
+  # clip was always possible across the power-loss boundary anyway.
+  /root/bin/make_snapshot.sh || log "ERROR: boot make_snapshot.sh failed (exit $?)"
 fi
 
 if archive_is_reachable
@@ -1892,32 +1162,14 @@ then
     wait_for_archive_to_be_reachable
   fi
 
-  # Travel Mode: skip keep-awake. On the road the car is driving or in
-  # Sentry (won't sleep), so it's unnecessary. awake_stop is NOT gated:
-  # it is Travel Mode-aware internally (skips the Sentry-OFF command,
-  # still reaps the nudge loop / BLE lock), so calling it unconditionally
-  # covers the case where Travel Mode was enabled mid-cycle after
-  # awake_start already spawned the nudge loop.
-  if ! travel_mode_active; then
-    /root/bin/awake_start || true
-  fi
-
   run_archive_cycle
-
-  /root/bin/awake_stop || true
 
   doubleblink
 
   # Skip the gadget cycle if the user drove away during archive — the gadget
   # is still presented to the car and re-cycling it would interrupt recording.
-  # In Travel Mode the gadget was never disconnected, so skip the cycle too.
-  if archive_is_reachable && ! travel_mode_active; then
+  if archive_is_reachable; then
     connect_usb_drives_to_host
-  fi
-
-  if travel_mode_active; then
-    travel_mode_pace
-  elif archive_is_reachable; then
     wait_for_archive_to_be_unreachable
   fi
 fi
@@ -1944,12 +1196,6 @@ do
     wait_for_archive_to_be_reachable
   fi
 
-  # Travel Mode: skip keep-awake; awake_stop stays unconditional
-  # (see rationale at the first archive above).
-  if ! travel_mode_active; then
-    /root/bin/awake_start || true
-  fi
-
   sleep "${ARCHIVE_DELAY:-20}"
 
   # take a snapshot before archive_clips starts deleting files
@@ -1962,20 +1208,12 @@ do
 
   run_archive_cycle
 
-  /root/bin/awake_stop || true
-
   doubleblink
 
   # Skip the gadget cycle if the user drove away during archive — the gadget
   # is still presented to the car and re-cycling it would interrupt recording.
-  # In Travel Mode the gadget was never disconnected, so skip the cycle too.
-  if archive_is_reachable && ! travel_mode_active; then
+  if archive_is_reachable; then
     connect_usb_drives_to_host
-  fi
-
-  if travel_mode_active; then
-    travel_mode_pace
-  elif archive_is_reachable; then
     wait_for_archive_to_be_unreachable
   fi
 
