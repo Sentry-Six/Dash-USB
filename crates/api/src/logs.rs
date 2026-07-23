@@ -33,18 +33,11 @@ const MAX_TAIL_BYTES: u64 = 512 * 1024;
 ///
 /// Returns the tail of the log file as `text/plain`, matching the Go original.
 pub async fn get_log(
-    State(s): State<AppState>,
+    State(_s): State<AppState>,
     Path(name): Path<String>,
 ) -> Response {
     if name.contains("..") || name.contains('/') || name.contains('\\') {
         return (StatusCode::BAD_REQUEST, "invalid log name").into_response();
-    }
-
-    // Special-case: the Bluetooth tab isn't a static file — it's a
-    // live dump built from systemctl + sysfs + telemetry DB +
-    // journalctl. Delegate to the dedicated handler.
-    if name == "bluetooth" {
-        return crate::ble_debug::get_ble_debug(State(s)).await;
     }
 
     // Tail-reading a log seeks + reads up to 512 KB off the SD card — keep

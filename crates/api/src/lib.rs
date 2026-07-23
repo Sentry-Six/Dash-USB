@@ -1,6 +1,4 @@
 pub mod auth;
-pub mod ble;
-pub mod ble_debug;
 pub mod router;
 pub mod drives_handler;
 pub mod status;
@@ -8,9 +6,6 @@ pub mod system;
 pub mod files;
 pub mod lock_chime;
 pub mod terminal;
-pub mod keep_awake;
-pub mod away_mode;
-pub mod travel_mode;
 pub mod notifications;
 pub mod notification_center;
 pub mod setup;
@@ -27,7 +22,6 @@ pub mod logs;
 pub mod devices;
 pub mod cloud;
 pub mod snapshots;
-pub mod keep_accessory;
 pub mod charging;
 pub mod storage_repair;
 

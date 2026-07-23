@@ -12,7 +12,6 @@ members = [
     "crates/setup",
     "crates/cloud_crypto",
     "crates/cloud_uploader",
-    "crates/tesla_ble",
 ]
 
 [workspace.package]

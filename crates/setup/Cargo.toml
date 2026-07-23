@@ -13,7 +13,6 @@ sentryusb-config = { path = "../config", package = "sentryusb-config" }
 sentryusb-shell = { path = "../shell", package = "sentryusb-shell" }
 sentryusb-gadget = { path = "../usb_gadget", package = "sentryusb-gadget" }
 # Rust-side BLE keypair generation.
-sentryusb-tesla-ble = { path = "../tesla_ble", package = "sentryusb-tesla-ble" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"

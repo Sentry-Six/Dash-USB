@@ -1,7 +1,5 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -11,43 +9,6 @@ use serde::Deserialize;
 use crate::router::AppState;
 use sentryusb_drives::{DriveStore, aggregate_telemetry, grouper};
 
-/// Path must match what `awake_stop` expects so existing deployments
-/// keep working unchanged.
-const KEEP_AWAKE_WANTED_FLAG: &str = "/tmp/keep_awake_webui_wanted";
-
-fn keep_awake_owners() -> &'static Mutex<HashSet<String>> {
-    static OWNERS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    OWNERS.get_or_init(|| Mutex::new(HashSet::new()))
-}
-
-/// Register `owner` as wanting keep-awake. Writes the wanted-flag on the
-/// 0→1 transition so `awake_stop`'s top-of-script handoff guard sees it.
-/// Idempotent.
-pub fn register_keep_awake_want(owner: &str) {
-    let mut set = keep_awake_owners().lock().unwrap();
-    let was_empty = set.is_empty();
-    set.insert(owner.to_string());
-    if was_empty {
-        let _ = std::fs::write(KEEP_AWAKE_WANTED_FLAG, b"");
-    }
-}
-
-/// Release `owner`. Removes the wanted-flag on the 1→0 transition.
-pub fn release_keep_awake_want(owner: &str) {
-    let mut set = keep_awake_owners().lock().unwrap();
-    set.remove(owner);
-    if set.is_empty() {
-        let _ = std::fs::remove_file(KEEP_AWAKE_WANTED_FLAG);
-    }
-}
-
-/// Clear the wanted-flag and reset the registry. Call on startup so a
-/// crashed prior run doesn't leave a stale flag deferring `awake_stop`
-/// forever.
-pub fn clear_keep_awake_wanted() {
-    keep_awake_owners().lock().unwrap().clear();
-    let _ = std::fs::remove_file(KEEP_AWAKE_WANTED_FLAG);
-}
 
 /// Drive-specific state.
 #[derive(Clone)]
@@ -85,53 +46,6 @@ fn read_archive_status() -> Option<serde_json::Value> {
     serde_json::from_str(&data).ok()
 }
 
-/// Sources envsetup.sh + exports the shared PID file so awake_start/awake_stop
-/// coordinate with archiveloop's own keep-awake management.
-pub(crate) const AWAKE_PREAMBLE: &str = r#"source /root/bin/envsetup.sh 2>/dev/null || true
-declare -F log > /dev/null 2>&1 || {
-  function log { echo "$(date): $*" >> "${LOG_FILE:-/mutable/archiveloop.log}" 2>/dev/null || true; }
-  export -f log
-}
-export KEEP_AWAKE_PID_FILE=/tmp/keep_awake_nudge_pid
-"#;
-
-pub(crate) fn shell_quote(s: &str) -> String {
-    let escaped = s.replace('\'', r#"'\''"#);
-    format!("'{}'", escaped)
-}
-
-/// Launch awake_start in the background. `expires_at_unix` is passed through
-/// so nudge logs can show time remaining.
-pub(crate) fn start_keep_awake_with(reason: &str, expires_at_unix: Option<i64>) {
-    let mut script = AWAKE_PREAMBLE.to_string();
-    script.push_str(&format!("export KEEP_AWAKE_REASON={}\n", shell_quote(reason)));
-    if let Some(ts) = expires_at_unix {
-        script.push_str(&format!("export KEEP_AWAKE_EXPIRES_AT={}\n", ts));
-    }
-    script.push_str("/root/bin/awake_start");
-    tokio::spawn(async move {
-        if let Err(e) = sentryusb_shell::run("/bin/bash", &["-c", &script]).await {
-            tracing::warn!("[drives] awake_start failed: {}", e);
-        }
-    });
-}
-
-pub(crate) fn stop_keep_awake_bg() {
-    let script = format!("{}/root/bin/awake_stop", AWAKE_PREAMBLE);
-    tokio::spawn(async move {
-        if let Err(e) = sentryusb_shell::run("/bin/bash", &["-c", &script]).await {
-            tracing::warn!("[drives] awake_stop failed: {}", e);
-        }
-    });
-}
-
-fn start_keep_awake(reason: &'static str) {
-    start_keep_awake_with(reason, None);
-}
-
-fn stop_keep_awake() {
-    stop_keep_awake_bg();
-}
 
 #[derive(Deserialize, Default)]
 pub struct ProcessQuery {
@@ -456,15 +370,7 @@ pub async fn process_files(
 
     let processor = state.drives.processor.clone();
     tokio::spawn(async move {
-        if !post_archive {
-            register_keep_awake_want("processor");
-            start_keep_awake("Drive Processing");
-        }
         let result = processor.process_new().await;
-        if !post_archive {
-            release_keep_awake_want("processor");
-            stop_keep_awake();
-        }
         if let Err(e) = result {
             tracing::warn!("drive processing error: {}", e);
         }
@@ -494,11 +400,7 @@ pub async fn reprocess_all(
 
     let processor = state.drives.processor.clone();
     tokio::spawn(async move {
-        register_keep_awake_want("processor");
-        start_keep_awake("Drive Processing");
         let result = processor.reprocess_all().await;
-        release_keep_awake_want("processor");
-        stop_keep_awake();
         if let Err(e) = result {
             tracing::warn!("drive reprocessing error: {}", e);
         }

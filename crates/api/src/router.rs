@@ -2,12 +2,9 @@ use axum::extract::DefaultBodyLimit;
 use axum::routing::{delete, get, post, put};
 use axum::Router;
 
-use std::sync::Arc;
-
 use crate::auth::AuthState;
 use crate::cloud::CloudHandlerState;
 use crate::drives_handler::DriveState;
-use crate::keep_awake::KeepAwakeManager;
 use crate::status::NetSampler;
 
 /// Shared application state available to all handlers.
@@ -16,7 +13,6 @@ pub struct AppState {
     pub hub: sentryusb_ws::Hub,
     pub auth: AuthState,
     pub drives: DriveState,
-    pub keep_awake: Arc<KeepAwakeManager>,
     pub cloud: CloudHandlerState,
     pub net_sampler: NetSampler,
 }
@@ -60,13 +56,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/files/download-zip", get(crate::files::download_zip))
         .route("/api/files/download-zip-multi", post(crate::files::download_zip_multi))
         // Logs
-        // Bundle endpoint must come BEFORE the /{name} catch-all,
-        // otherwise axum would treat "bluetooth/bundle" as `name=bluetooth/bundle`
-        // and the path validator (which rejects '/' in name) would 400.
-        .route(
-            "/api/logs/bluetooth/bundle",
-            get(crate::ble_debug::get_ble_bundle),
-        )
         .route("/api/logs/{name}", get(crate::logs::get_log))
         // Diagnostics & health
         .route("/api/diagnostics/refresh", post(crate::healthcheck::refresh_diagnostics))
@@ -76,32 +65,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/system/reboot", post(crate::system::reboot))
         .route("/api/system/shutdown", post(crate::system::shutdown))
         .route("/api/system/toggle-drives", post(crate::system::toggle_drives))
-        .route("/api/system/keep-accessory", post(crate::keep_accessory::set_keep_accessory))
-        .route("/api/system/keep-accessory-config", get(crate::keep_accessory::keep_accessory_config_get).put(crate::keep_accessory::keep_accessory_config_set))
-        .route("/api/system/keep-accessory-gps", get(crate::keep_accessory::keep_accessory_gps_get))
         .route("/api/system/gadget-enable", post(crate::system::gadget_enable))
         .route("/api/system/gadget-disable", post(crate::system::gadget_disable))
         .route("/api/system/trigger-sync", post(crate::system::trigger_sync))
-        .route("/api/system/ble-pair", post(crate::system::ble_pair))
+        // Phone-app (Dash Connect) GATT pairing reset — unrelated to any
+        // vehicle BLE; clears app bonds/PIN and restarts the peripheral.
         .route("/api/system/ble-reset-pair", post(crate::system::ble_reset_pair))
-        .route("/api/system/ble-status", get(crate::system::ble_status))
-        .route("/api/system/ble-enabled", get(crate::ble::ble_enabled_get))
-        .route("/api/system/ble-enabled", post(crate::ble::ble_enabled_set))
-        .route(
-            "/api/system/ble-keep-awake-enabled",
-            get(crate::ble::ble_keep_awake_enabled_get),
-        )
-        .route(
-            "/api/system/ble-keep-awake-enabled",
-            post(crate::ble::ble_keep_awake_enabled_set),
-        )
-        .route("/api/system/ble-vin", post(crate::ble::ble_vin_set))
-        .route("/api/system/ble-connected", get(crate::ble::ble_connected))
-        .route("/api/system/ble-install", post(crate::ble::ble_install))
-        .route("/api/system/ble-latest-sample", get(crate::ble::ble_latest_sample))
-        .route("/api/system/ble-adapters", get(crate::ble::ble_adapters))
-        .route("/api/system/ble-adapter", post(crate::ble::ble_adapter_set))
-        .route("/api/system/ble-force-poll", post(crate::ble::ble_force_poll))
         .route("/api/system/speedtest", get(crate::system::speedtest))
         .route("/api/system/rtc-status", get(crate::system::get_rtc_status))
         .route("/api/system/clock-status", get(crate::system::get_clock_status))
@@ -223,35 +192,6 @@ pub fn build_router(state: AppState) -> Router {
             "/api/charging/{id}/cost",
             put(crate::charging::set_charge_cost),
         )
-        // Keep-awake
-        .route("/api/keep-awake/start", post(crate::keep_awake::start))
-        .route("/api/keep-awake/stop", post(crate::keep_awake::stop))
-        // Frontend (useKeepAwake.tsx:123, 152) disables Keep Awake via
-        // `DELETE /api/keep-awake`. Route to the same `stop` handler so
-        // both shapes work — matches the `DELETE /api/away-mode` pattern.
-        .route("/api/keep-awake", axum::routing::delete(crate::keep_awake::stop))
-        .route("/api/keep-awake/status", get(crate::keep_awake::status))
-        .route("/api/keep-awake/heartbeat", post(crate::keep_awake::heartbeat))
-        // Away mode
-        .route("/api/away-mode/enable", post(crate::away_mode::enable))
-        .route("/api/away-mode/disable", post(crate::away_mode::disable))
-        // Frontend calls `DELETE /api/away-mode` to turn Away Mode off —
-        // keep the more specific POST handlers above and alias the bare
-        // path here so both shapes work.
-        .route("/api/away-mode", delete(crate::away_mode::disable))
-        .route("/api/away-mode/status", get(crate::away_mode::status))
-        // Away mode — Automatic (geofence) mode: switch modes + the home
-        // geofence (center shared with keep-accessory, radius its own).
-        .route("/api/away-mode/mode", post(crate::away_mode::set_mode))
-        .route(
-            "/api/away-mode/config",
-            get(crate::away_mode::config_get).put(crate::away_mode::config_set),
-        )
-        // Travel Mode — secret-menu toggle: keep the USB gadget presented to
-        // the car at all times so recording stays continuous while archiving
-        // on the road (read fresh by archiveloop's travel_mode_active).
-        .route("/api/travel-mode/status", get(crate::travel_mode::status))
-        .route("/api/travel-mode", post(crate::travel_mode::set))
         // Terminal WebSocket
         .route("/api/terminal", get(crate::terminal::handle_terminal))
         // WebSocket

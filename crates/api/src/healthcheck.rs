@@ -342,41 +342,9 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
 
     // ── BLE ───────────────────────────────────────────────────────────────
     //
-    // Two INDEPENDENT BLE subsystems, reported separately so "BLE inactive"
-    // can never be misread (the #1 source of confused bug reports):
-    //
-    //   * sentryusb-telemetry — the Rust sampler that holds the *car* BLE
-    //     link (central → Tesla) and writes battery/temps/charge. This is
-    //     what users mean by "is my car data working". The old health check
-    //     never looked at it, so a dead car link still showed all-green.
-    //   * sentryusb-ble — the Python GATT *peripheral* for the phone app
-    //     (Wi-Fi setup + API proxy). Nothing to do with the car; an inactive
-    //     app service must not read as "car BLE is broken".
+    // The phone-app GATT peripheral (companion-app pairing: Wi-Fi setup +
+    // API proxy). No vehicle data flows over BLE in Dash USB.
     let mut ble = Vec::new();
-
-    let ble_enabled = crate::ble::is_ble_enabled()
-        || std::path::Path::new("/root/.ble/key_private.pem").exists();
-
-    // Car link — only meaningful once BLE is set up. Inactive while enabled
-    // is the real "BLE is broken / data is stale" signal.
-    if ble_enabled {
-        let tele_running = sentryusb_shell::run(
-            "systemctl", &["is-active", "--quiet", "sentryusb-telemetry"],
-        ).await.is_ok();
-        ble.push(item(
-            "Tesla car link (telemetry sampler)",
-            if tele_running { "pass" } else { "fail" },
-            if tele_running {
-                None
-            } else {
-                Some(
-                    "sentryusb-telemetry inactive — no live car data (battery/temps/charge \
-                     will be stale)"
-                        .to_string(),
-                )
-            },
-        ));
-    }
 
     // Phone-app peripheral — explicitly labelled so an inactive app GATT
     // service is never confused with a dead car link.

@@ -500,33 +500,11 @@ pub async fn get_config(
         if std::path::Path::new(p).exists() { "yes".into() } else { "no".into() }
     };
 
-    // `uses_ble` controls whether the BLE pair card renders in Device
-    // settings. Historically it was VIN-gated, meaning users who didn't
-    // pick BLE during initial setup couldn't even see the card to opt
-    // in later. Now it returns "yes" whenever BLE *could* be used:
-    //   * user has explicitly enabled BLE in settings, OR
-    //   * a VIN is already set (legacy install), OR
-    //   * a BLE keypair has been generated (opted in at some point), OR
-    //   * pairing artifacts exist (paired marker present).
-    // Fresh installs that never touched BLE still return "no", so the
-    // card stays hidden until the user enables BLE — preserving the
-    // clean default for non-Tesla / non-BLE users. (tesla-control is
-    // gone; the keypair is the native "opted in" signal.)
-    let uses_ble = if crate::ble::is_ble_enabled()
-        || std::path::Path::new("/root/.ble/key_private.pem").exists()
-        || std::path::Path::new("/root/.ble/paired").exists()
-    {
-        "yes".to_string()
-    } else {
-        "no".to_string()
-    };
-
     (StatusCode::OK, Json(serde_json::json!({
         "has_cam": has("/backingfiles/cam_disk.bin"),
         "has_music": has("/backingfiles/music_disk.bin"),
         "has_lightshow": has("/backingfiles/lightshow_disk.bin"),
         "has_boombox": has("/backingfiles/boombox_disk.bin"),
-        "uses_ble": uses_ble,
     })))
 }
 

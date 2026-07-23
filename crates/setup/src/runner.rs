@@ -269,9 +269,6 @@ pub async fn run_full_setup(emitter: SetupEmitter) -> Result<()> {
     // RTC.
     crate::system::configure_rtc(&env, &emitter).await?;
 
-    // Tesla BLE peripheral (silent if VIN unset or already configured).
-    crate::archive::configure_tesla_ble(&env, &emitter).await?;
-
     // Read-only filesystem.
     crate::readonly::make_readonly(&env, &emitter).await?;
 

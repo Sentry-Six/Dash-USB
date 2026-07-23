@@ -67,16 +67,10 @@ pub struct NotificationSettings {
     pub archive_complete: bool,
     pub archive_error: bool,
     pub temperature: bool,
-    #[serde(rename = "keep_awake_failure")]
-    pub keep_awake: bool,
     pub update: bool,
     pub drives: bool,
     pub rtc_battery: bool,
     pub music_sync: bool,
-    /// Keep-Accessory automation events (e.g. "Pi going offline" when the
-    /// 12V outlet is released at home). Only relevant for 12V-powered Pis.
-    #[serde(default = "default_true")]
-    pub keep_accessory: bool,
     /// Boot-time storage auto repair events (success/failure/needs-manual).
     #[serde(default = "default_true")]
     pub storage_repair: bool,
@@ -93,12 +87,10 @@ impl Default for NotificationSettings {
             archive_complete: true,
             archive_error: true,
             temperature: true,
-            keep_awake: true,
             update: true,
             drives: true,
             rtc_battery: true,
             music_sync: true,
-            keep_accessory: true,
             storage_repair: true,
         }
     }
@@ -119,12 +111,10 @@ fn load_settings() -> NotificationSettings {
         archive_complete: bool_pref(&prefs, "notify_archive_complete", true),
         archive_error: bool_pref(&prefs, "notify_archive_error", true),
         temperature: bool_pref(&prefs, "notify_temperature", true),
-        keep_awake: bool_pref(&prefs, "notify_keep_awake_failure", true),
         update: bool_pref(&prefs, "notify_update", true),
         drives: bool_pref(&prefs, "notify_drives", true),
         rtc_battery: bool_pref(&prefs, "notify_rtc_battery", true),
         music_sync: bool_pref(&prefs, "notify_music_sync", true),
-        keep_accessory: bool_pref(&prefs, "notify_keep_accessory", true),
         storage_repair: bool_pref(&prefs, "notify_storage_repair", true),
     }
 }
@@ -140,12 +130,10 @@ fn save_settings(s: &NotificationSettings) {
     put(&mut prefs, "notify_archive_complete", s.archive_complete);
     put(&mut prefs, "notify_archive_error", s.archive_error);
     put(&mut prefs, "notify_temperature", s.temperature);
-    put(&mut prefs, "notify_keep_awake_failure", s.keep_awake);
     put(&mut prefs, "notify_update", s.update);
     put(&mut prefs, "notify_drives", s.drives);
     put(&mut prefs, "notify_rtc_battery", s.rtc_battery);
     put(&mut prefs, "notify_music_sync", s.music_sync);
-    put(&mut prefs, "notify_keep_accessory", s.keep_accessory);
     put(&mut prefs, "notify_storage_repair", s.storage_repair);
     crate::preferences::save_prefs(&prefs);
 }
@@ -272,12 +260,10 @@ pub(crate) fn is_type_enabled(notification_type: Option<&str>) -> bool {
         "archive_complete" => s.archive_complete,
         "archive_error" => s.archive_error,
         "temperature" => s.temperature,
-        "keep_awake_failure" => s.keep_awake,
         "update" => s.update,
         "drives" => s.drives,
         "rtc_battery" => s.rtc_battery,
         "music_sync" => s.music_sync,
-        "keep_accessory" => s.keep_accessory,
         "storage_repair" => s.storage_repair,
         // Unknown types default to allowed.
         _ => true,
@@ -341,12 +327,10 @@ pub async fn check_notification_type(
         "archive_complete" => s.archive_complete,
         "archive_error" => s.archive_error,
         "temperature" => s.temperature,
-        "keep_awake_failure" => s.keep_awake,
         "update" => s.update,
         "drives" => s.drives,
         "rtc_battery" => s.rtc_battery,
         "music_sync" => s.music_sync,
-        "keep_accessory" => s.keep_accessory,
         "storage_repair" => s.storage_repair,
         _ => true,
     };
@@ -378,8 +362,8 @@ mod tests {
         let json = r#"{
             "archive_start": true, "archive_complete": true,
             "archive_error": true, "temperature": true,
-            "keep_awake_failure": true, "update": true, "drives": true,
-            "rtc_battery": true, "music_sync": true, "keep_accessory": true
+            "update": true, "drives": true,
+            "rtc_battery": true, "music_sync": true
         }"#;
         let s: NotificationSettings = serde_json::from_str(json).unwrap();
         assert!(s.storage_repair);

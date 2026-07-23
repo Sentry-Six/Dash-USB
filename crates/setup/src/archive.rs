@@ -7,7 +7,6 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use tracing::info;
 
 use crate::env::SetupEnv;
 use crate::error::ConfigError;
@@ -156,171 +155,10 @@ async fn ensure_rsync(emitter: &SetupEmitter) -> Result<()> {
     Ok(())
 }
 
-/// True only when BLE is being used as the keep-awake mechanism.
-/// A VIN alone means BLE telemetry is set up — that doesn't block
-/// other keep-awake providers or require a Sentry case.
-fn ble_used_for_keep_awake(env: &SetupEnv) -> bool {
-    env.is_set("TESLA_BLE_VIN")
-        && matches!(
-            env.config.get("BLE_KEEP_AWAKE_ENABLED").map(|s| s.trim()),
-            Some("yes") | Some("true") | Some("1")
-        )
-}
-
-/// Check that at most one keep-awake provider is configured.
-///
-/// "Configured" means present AND non-empty (see [`SetupEnv::is_set`]).
-/// An empty `export KEY=''` — written when the wizard switches away from
-/// a provider — does NOT count, matching the runtime in `run/awake_start`
-/// (`${VAR:+x}`). Counting empties here is what bricked devices into a
-/// setup boot loop after a keep-awake method change.
-fn validate_wake_apis(env: &SetupEnv) -> Result<()> {
-    let mut providers = Vec::new();
-    if env.is_set("TESSIE_API_TOKEN") {
-        providers.push("Tessie");
-    }
-    if env.is_set("TESLAFI_API_TOKEN") {
-        providers.push("TeslaFi");
-    }
-    if ble_used_for_keep_awake(env) {
-        providers.push("BLE");
-    }
-    if env.is_set("KEEP_AWAKE_WEBHOOK_URL") {
-        providers.push("Webhook");
-    }
-    if providers.len() > 1 {
-        return Err(ConfigError(format!(
-            "Multiple keep-awake providers configured ({}) — only 1 can be enabled \
-             at a time. Edit /root/sentryusb.conf and keep just one.",
-            providers.join(", ")
-        ))
-        .into());
-    }
-    Ok(())
-}
-
-/// Validate SENTRY_CASE value if any wake API is enabled.
-fn validate_sentry_case(env: &SetupEnv) -> Result<()> {
-    let has_api = env.is_set("TESSIE_API_TOKEN")
-        || env.is_set("TESLAFI_API_TOKEN")
-        || ble_used_for_keep_awake(env)
-        || env.is_set("KEEP_AWAKE_WEBHOOK_URL");
-
-    if has_api {
-        let case = env.get("SENTRY_CASE", "");
-        if !["1", "2", "3"].contains(&case.as_str()) {
-            return Err(ConfigError(
-                "SENTRY_CASE must be 1, 2, or 3 when a wake API is configured".into(),
-            )
-            .into());
-        }
-    }
-    Ok(())
-}
-
-/// Ensure bluez is installed and generate the BLE keypair. Caller-
-/// agnostic: invoked by `configure_tesla_ble` during setup and by the
-/// settings-page lazy-install endpoint on a live system. Idempotent —
-/// returns Ok(()) immediately if the keypair already exists.
-///
-/// No longer downloads tesla-control / tesla-keygen: keygen, pairing and
-/// every BLE command are native now (the `tesla_ble` crate +
-/// `sentryusb-ble-action`, which ships in the image). The function name
-/// is kept so the existing `ble-install` endpoint call site is stable.
-///
-/// Progress messages route through `progress` so callers can dispatch
-/// them to whatever surface they have (setup `SetupEmitter`,
-/// WebSocket broadcast, logs).
-pub async fn install_tesla_ble_binaries<F>(progress: F) -> Result<()>
-where
-    F: Fn(&str),
-{
-    if std::path::Path::new("/root/.ble/key_private.pem").exists() {
-        return Ok(());
-    }
-
-    // Root partition is mounted read-only in steady state on the Pi.
-    // Best-effort flip to rw so the writes below can land. No-op /
-    // missing-script case (mid-pi-gen, dev machines) is harmless.
-    let _ = std::process::Command::new("bash")
-        .args(["-c", "/root/bin/remountfs_rw"])
-        .status();
-
-    // Install bluez
-    if sentryusb_shell::run("dpkg", &["-s", "bluez"]).await.is_err() {
-        progress("Installing bluez...");
-        crate::apt::apt_install(
-            &progress,
-            &["bluez"],
-            Duration::from_secs(600),
-        ).await?;
-    }
-
-    // Install pi-bluetooth if available
-    if sentryusb_shell::run("bash", &["-c", "apt-cache search pi-bluetooth | grep -q pi-bluetooth"]).await.is_ok() {
-        if sentryusb_shell::run("dpkg", &["-s", "pi-bluetooth"]).await.is_err() {
-            let _ = crate::apt::apt_install(
-                &progress,
-                &["pi-bluetooth"],
-                Duration::from_secs(600),
-            ).await;
-        }
-    }
-
-    // Generate BLE keys if they don't exist. Uses our Rust-side
-    // P-256 generator (sentryusb_tesla_ble::keys::generate_keypair)
-    // — no longer shells out to tesla-keygen. Writes PKCS#8 PEM for
-    // the private key (vs tesla-keygen's SEC1 format); our loader
-    // accepts both, so existing installs that already have a SEC1
-    // key file from tesla-keygen keep working untouched.
-    if !std::path::Path::new("/root/.ble/key_private.pem").exists() {
-        let dir = std::path::Path::new("/root/.ble");
-        sentryusb_tesla_ble::keys::generate_keypair(dir)
-            .context("generating Tesla BLE keypair")?;
-        std::fs::write("/root/.ble/key_pending_pairing", "")?;
-        progress("Generated Tesla BLE keys. Pairing required via web UI.");
-    }
-
-    Ok(())
-}
-
-/// Configure Tesla BLE if VIN is set. Returns true if the phase did work.
-///
-/// Idempotent: if the binaries are already installed and keys exist, we do
-/// nothing and return false so the caller can skip announcing a phase.
-pub async fn configure_tesla_ble(env: &SetupEnv, emitter: &SetupEmitter) -> Result<bool> {
-    // BLE is opt-in: skip entirely if no VIN is configured.
-    if env
-        .config
-        .get("TESLA_BLE_VIN")
-        .map(|v| v.is_empty())
-        .unwrap_or(true)
-    {
-        info!("Tesla BLE not enabled");
-        return Ok(false);
-    }
-
-    // The only durable artifact is the keypair — keygen, pairing and
-    // every command are native now (no tesla-control/tesla-keygen to
-    // install). If it already exists there's nothing to do.
-    if std::path::Path::new("/root/.ble/key_private.pem").exists() {
-        return Ok(false);
-    }
-
-    emitter.begin_phase("tesla_ble", "Tesla BLE peripheral");
-    emitter.progress("Configuring Tesla BLE...");
-
-    install_tesla_ble_binaries(|msg| emitter.progress(msg)).await?;
-
-    Ok(true)
-}
-
 /// Full archive configuration flow. Returns true if the phase did work.
 pub async fn configure_archive(env: &SetupEnv, emitter: &SetupEmitter) -> Result<bool> {
     let archive_system = ArchiveSystem::from_config(&env.get("ARCHIVE_SYSTEM", "none"))?;
 
-    validate_wake_apis(env)?;
-    validate_sentry_case(env)?;
     validate_archive_config(env, archive_system)?;
 
     // Idempotency: rsync installed, archive service already installed, already enabled.

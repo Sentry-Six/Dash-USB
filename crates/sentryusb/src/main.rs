@@ -224,17 +224,7 @@ async fn main() {
         importing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
-    // Keep-awake manager: busy if archiveloop is archiving OR the drive
-    // processor is running.
-    let is_busy_processor = processor.clone();
-    let is_busy: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
-        sentryusb_api::drives_handler::is_archiving() || is_busy_processor.is_running()
-    });
-    // Wipe any stale wanted-flag from a crashed prior run so the first
-    // awake_stop after boot isn't deferred forever.
-    sentryusb_api::drives_handler::clear_keep_awake_wanted();
-    let keep_awake = sentryusb_api::keep_awake::KeepAwakeManager::new(is_busy);
-    phase!("processor_keepawake_initialized");
+    phase!("processor_initialized");
 
     // SentryCloud upload pipeline. Background tasks pull pending routes
     // from the local DB, encrypt under the per-Pi key, and POST to
@@ -257,7 +247,6 @@ async fn main() {
         hub: hub.clone(),
         auth: auth.clone(),
         drives: drive_state,
-        keep_awake,
         cloud: sentryusb_api::cloud::CloudHandlerState {
             uploader: cloud_uploader,
         },
@@ -273,18 +262,6 @@ async fn main() {
     // check telemetry is handled separately in check_for_update().
     sentryusb_api::update::spawn_install_beacon();
 
-    // Resume Away Mode if the flag file still has time remaining.
-    sentryusb_api::away_mode::restore_from_file();
-    // One-shot: migrate legacy "VIN implies BLE on" users to explicit
-    // BLE_ENABLED + BLE_KEEP_AWAKE_ENABLED flags so they don't lose
-    // either feature across the decoupling change. Idempotent —
-    // skips if `BLE_KEEP_AWAKE_ENABLED` is already present.
-    sentryusb_api::ble::migrate_legacy_ble_flag();
-    // Note (#336): the BLE_KEEP_AWAKE_VIA_SAMPLER seed call was removed.
-    // The 4-valued flag is no longer read by the sampler — keep-awake
-    // now always dispatches `charge-port-close` inline at the end of an
-    // active tick (see "Sampler keep-awake CPC dispatch" in
-    // tesla_telemetry/src/main.rs). Existing conf lines remain inert.
     // Boot-time storage auto repair (opt-in via the storage_auto_repair
     // preference). Detects a /backingfiles that failed to mount at boot
     // and runs the guarded xfs_repair ladder; see api::storage_repair.
