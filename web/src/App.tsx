@@ -89,7 +89,7 @@ function AppContent() {
   }, [])
 
   // Poll while configuring — wait for setup to finish. The backend sets
-  // SENTRYUSB_SETUP_FINISHED *before* the 5-second delay and final
+  // DASHUSB_SETUP_FINISHED *before* the 5-second delay and final
   // `systemctl reboot`, so going straight to "ready" here would land the
   // user on the dashboard just in time for the Pi to kill the network.
   // Transition to "finalizing" first and let that effect wait for the

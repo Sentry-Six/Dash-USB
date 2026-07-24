@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 
 /**
- * Current installed version of Sentry USB, from `/api/system/version`.
+ * Current installed version of Dash USB, from `/api/system/version`.
  * Returns `null` until the first fetch settles, then the version string
  * (or "unknown" if the endpoint failed).
  */

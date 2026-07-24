@@ -103,12 +103,12 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
     }
     // ── Picked binary (multi-binary scheme) ──
     //
-    // /opt/sentryusb/active-variant is written by sentryusb-pick-binary at
+    // /opt/dashusb/active-variant is written by dashusb-pick-binary at
     // every service start. Presence indicates the new multi-binary layout
     // is active; the value identifies which per-CPU variant got picked.
     // First place to look when triaging "why is my Pi 5 not getting LSE
     // atomics" or "did my upgrade migrate to the new layout."
-    match std::fs::read_to_string("/opt/sentryusb/active-variant") {
+    match std::fs::read_to_string("/opt/dashusb/active-variant") {
         Ok(s) => {
             let variant = s.trim().to_string();
             if variant.is_empty() {
@@ -211,7 +211,7 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
     // because archiveloop invokes these by path.
     let mut core = Vec::new();
     let core_files: &[(&str, &str, bool)] = &[
-        ("/opt/sentryusb/sentryusb", "SentryUSB binary", true),
+        ("/opt/dashusb/dashusb", "DashUSB binary", true),
         ("/root/bin/archiveloop", "archiveloop script", false),
         ("/root/bin/envsetup.sh", "envsetup.sh", false),
         ("/root/bin/enable_gadget.sh", "enable_gadget.sh", true),
@@ -252,12 +252,12 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
     if std::path::Path::new(config_path).exists() {
         cfg.push(item("Config file", "pass", Some(config_path.to_string())));
     } else {
-        cfg.push(item("Config file", "fail", Some("No sentryusb.conf found".to_string())));
+        cfg.push(item("Config file", "fail", Some("No dashusb.conf found".to_string())));
     }
     let setup_markers = [
-        "/sentryusb/SENTRYUSB_SETUP_FINISHED",
-        "/boot/firmware/SENTRYUSB_SETUP_FINISHED",
-        "/boot/SENTRYUSB_SETUP_FINISHED",
+        "/dashusb/DASHUSB_SETUP_FINISHED",
+        "/boot/firmware/DASHUSB_SETUP_FINISHED",
+        "/boot/DASHUSB_SETUP_FINISHED",
     ];
     let setup_finished = setup_markers.iter().find(|p| std::path::Path::new(p).exists());
     match setup_finished {
@@ -265,7 +265,7 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
         None => cfg.push(item(
             "Setup finished",
             "fail",
-            Some("SENTRYUSB_SETUP_FINISHED marker not found".to_string()),
+            Some("DASHUSB_SETUP_FINISHED marker not found".to_string()),
         )),
     }
     match std::fs::read_to_string("/etc/fstab") {
@@ -299,7 +299,7 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
     let mut gad = Vec::new();
     if sentryusb_gadget::is_active() {
         gad.push(item("Gadget UDC bound", "pass", None));
-        let lun0 = "/sys/kernel/config/usb_gadget/sentryusb/functions/mass_storage.0/lun.0/file";
+        let lun0 = "/sys/kernel/config/usb_gadget/dashusb/functions/mass_storage.0/lun.0/file";
         match std::fs::read_to_string(lun0) {
             Ok(s) if !s.trim().is_empty() => {
                 gad.push(item("lun.0 backing file", "pass", Some(s.trim().to_string())));
@@ -327,7 +327,7 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
                 )),
             )),
         }
-    } else if std::path::Path::new("/sys/kernel/config/usb_gadget/sentryusb").exists() {
+    } else if std::path::Path::new("/sys/kernel/config/usb_gadget/dashusb").exists() {
         gad.push(item(
             "Gadget UDC bound",
             "warn",
@@ -347,7 +347,7 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
     // Phone-app peripheral — explicitly labelled so an inactive app GATT
     // service is never confused with a dead car link.
     let ble_running = sentryusb_shell::run(
-        "systemctl", &["is-active", "--quiet", "sentryusb-ble"],
+        "systemctl", &["is-active", "--quiet", "dashusb-ble"],
     ).await.is_ok();
     ble.push(item(
         "App pairing service (iOS/Android)",
@@ -356,17 +356,17 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
             None
         } else {
             Some(
-                "sentryusb-ble inactive — phone-app pairing unavailable (does NOT affect \
+                "dashusb-ble inactive — phone-app pairing unavailable (does NOT affect \
                  car data)"
                     .to_string(),
             )
         },
     ));
-    let dbus_policy = std::path::Path::new("/etc/dbus-1/system.d/com.sentryusb.ble.conf").exists();
+    let dbus_policy = std::path::Path::new("/etc/dbus-1/system.d/com.dashusb.ble.conf").exists();
     ble.push(item(
         "D-Bus policy",
         if dbus_policy { "pass" } else { "warn" },
-        if dbus_policy { None } else { Some("com.sentryusb.ble.conf missing".to_string()) },
+        if dbus_policy { None } else { Some("com.dashusb.ble.conf missing".to_string()) },
     ));
     categories.push(HealthCategory { name: "BLE".to_string(), items: ble });
 
@@ -399,17 +399,17 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
     }
 
     // ── Services ──────────────────────────────────────────────────────────
-    // sentryusb-archive is the archiveloop unit — marked critical so a
+    // dashusb-archive is the archiveloop unit — marked critical so a
     // crashed archive loop shows up as RED on the dashboard instead of
     // being invisible (the previous list omitted it, so users would see
     // "all green" while their Tesla footage wasn't being archived).
     let mut svcs = Vec::new();
     for (svc, critical) in &[
-        ("sentryusb", true),
-        ("sentryusb-archive", true),
+        ("dashusb", true),
+        ("dashusb-archive", true),
         ("avahi-daemon", false),
         ("bluetooth", false),
-        ("sentryusb-ble", false),
+        ("dashusb-ble", false),
     ] {
         let active = sentryusb_shell::run(
             "systemctl", &["is-active", "--quiet", svc],
@@ -450,9 +450,9 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
             sys.push(item("Uptime", "pass", Some(format!("{}h {}m", h, m))));
         }
     }
-    let setup_ok = std::path::Path::new("/sentryusb/SENTRYUSB_SETUP_FINISHED").exists()
-        || std::path::Path::new("/boot/firmware/SENTRYUSB_SETUP_FINISHED").exists()
-        || std::path::Path::new("/boot/SENTRYUSB_SETUP_FINISHED").exists();
+    let setup_ok = std::path::Path::new("/dashusb/DASHUSB_SETUP_FINISHED").exists()
+        || std::path::Path::new("/boot/firmware/DASHUSB_SETUP_FINISHED").exists()
+        || std::path::Path::new("/boot/DASHUSB_SETUP_FINISHED").exists();
     sys.push(item(
         "Setup completed",
         if setup_ok { "pass" } else { "warn" },
@@ -496,22 +496,22 @@ pub async fn refresh_diagnostics(State(_s): State<AppState>) -> (StatusCode, Jso
     }
 }
 
-/// Inline diagnostics gathering script — replaces the old `setup-sentryusb diagnose` command.
+/// Inline diagnostics gathering script — replaces the old `setup-dashusb diagnose` command.
 const DIAGNOSTICS_SCRIPT: &str = r#"{
-  echo "====== SentryUSB Diagnostics ======"
+  echo "====== DashUSB Diagnostics ======"
   echo "Date: $(date)"
   echo "Hostname: $(hostname)"
   echo "Uptime: $(uptime)"
   echo ""
 
   echo "====== version ======"
-  cat /opt/sentryusb/version 2>/dev/null || echo "unknown"
+  cat /opt/dashusb/version 2>/dev/null || echo "unknown"
   uname -a
   cat /sys/firmware/devicetree/base/model 2>/dev/null; echo
   echo ""
 
   echo "====== disk / images ======"
-  df -h /sentryusb/ / /backingfiles/ /mutable/ 2>/dev/null
+  df -h /dashusb/ / /backingfiles/ /mutable/ 2>/dev/null
   for img in cam music; do
     f="/backingfiles/${img}_disk.bin"
     if [ -f "$f" ]; then
@@ -521,10 +521,10 @@ const DIAGNOSTICS_SCRIPT: &str = r#"{
   echo ""
 
   echo "====== USB gadget ======"
-  if [ -d /sys/kernel/config/usb_gadget/sentryusb ]; then
+  if [ -d /sys/kernel/config/usb_gadget/dashusb ]; then
     echo "Gadget: active"
     for i in 0 1 2 3 4 5; do
-      lun="/sys/kernel/config/usb_gadget/sentryusb/functions/mass_storage.0/lun.${i}/file"
+      lun="/sys/kernel/config/usb_gadget/dashusb/functions/mass_storage.0/lun.${i}/file"
       [ -e "$lun" ] && echo "  lun${i}: $(cat "$lun")"
     done
   else
@@ -538,7 +538,7 @@ const DIAGNOSTICS_SCRIPT: &str = r#"{
   echo ""
 
   echo "====== services ======"
-  for svc in sentryusb sentryusb-archive sentryusb-ble avahi-daemon bluetooth; do
+  for svc in dashusb dashusb-archive dashusb-ble avahi-daemon bluetooth; do
     status=$(systemctl is-active "$svc" 2>/dev/null || echo "not found")
     echo "  $svc: $status"
   done
@@ -554,7 +554,7 @@ const DIAGNOSTICS_SCRIPT: &str = r#"{
   echo ""
 
   echo "====== drive-import logs (journalctl, last 7 days) ======"
-  journalctl -u sentryusb --since "7 days ago" --no-pager 2>/dev/null \
+  journalctl -u dashusb --since "7 days ago" --no-pager 2>/dev/null \
     | grep -E "import_json|group_clips|hide_tessie_overlapping_sei|upload_data|drive cache:" \
     | tail -200 \
     || echo "no matching journalctl entries"

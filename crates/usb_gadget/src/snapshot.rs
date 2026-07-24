@@ -588,7 +588,7 @@ mod tests {
         // The regression: the WebUI delete handler (and make_snapshot.sh's
         // discard path) pass a full path. The old `contains('/')` guard
         // rejected this outright, so deletes failed via the thin-wrapper
-        // `release_snapshot.sh` → `sentryusb snapshot release "$@"` route.
+        // `release_snapshot.sh` → `dashusb snapshot release "$@"` route.
         assert_eq!(
             normalize_snap_name("/backingfiles/snapshots/snap-000001").as_deref(),
             Some("snap-000001"),

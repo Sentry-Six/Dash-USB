@@ -213,28 +213,28 @@ pub async fn make_readonly(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
         let _ = sentryusb_shell::run("chmod", &["700", "/mutable/.bluetooth"]).await;
     }
 
-    // ---- SentryUSB runtime credentials (/root/.sentryusb) ----
+    // ---- DashUSB runtime credentials (/root/.dashusb) ----
     // The cloud uploader and notification setup write credential JSON to
-    // /root/.sentryusb at RUNTIME — cloud pairing and notification config are
+    // /root/.dashusb at RUNTIME — cloud pairing and notification config are
     // post-setup user actions, so there is no read-write window during setup.
     // On a read-only root that write fails ("set credentials") and cloud
     // pairing hangs forever on "waiting for browser to finish". Bind-mount
-    // from .sentryusb (dot-prefixed so the folder is hidden from
+    // from .dashusb (dot-prefixed so the folder is hidden from
     // Finder/Explorer when the drive is plugged into a computer) so the
     // credentials persist on the writable /mutable partition.
-    if !Path::new("/mutable/.sentryusb").is_dir() {
-        emitter.progress("Creating /mutable/.sentryusb for cloud/notification credential persistence");
-        let _ = std::fs::create_dir_all("/mutable/.sentryusb");
-        if Path::new("/root/.sentryusb").is_dir()
-            && std::fs::read_dir("/root/.sentryusb")
+    if !Path::new("/mutable/.dashusb").is_dir() {
+        emitter.progress("Creating /mutable/.dashusb for cloud/notification credential persistence");
+        let _ = std::fs::create_dir_all("/mutable/.dashusb");
+        if Path::new("/root/.dashusb").is_dir()
+            && std::fs::read_dir("/root/.dashusb")
                 .map(|mut e| e.next().is_some())
                 .unwrap_or(false)
         {
             let _ = sentryusb_shell::run(
-                "cp", &["-a", "/root/.sentryusb/.", "/mutable/.sentryusb/"],
+                "cp", &["-a", "/root/.dashusb/.", "/mutable/.dashusb/"],
             ).await;
         }
-        let _ = sentryusb_shell::run("chmod", &["700", "/mutable/.sentryusb"]).await;
+        let _ = sentryusb_shell::run("chmod", &["700", "/mutable/.dashusb"]).await;
     }
 
     // ---- DHCP lease directories: real dirs for tmpfs (not symlinks) ----
@@ -407,9 +407,9 @@ fn already_readonly(env: &SetupEnv) -> bool {
 }
 
 pub async fn ensure_boot_rw() {
-    // /sentryusb is the Rust-preferred symlink; /teslausb is the legacy name
+    // /dashusb is the Rust-preferred symlink; /teslausb is the legacy name
     // some upgraded installs still have. /boot/firmware is the bookworm path.
-    for mp in &["/sentryusb", "/teslausb", "/boot/firmware", "/boot"] {
+    for mp in &["/dashusb", "/teslausb", "/boot/firmware", "/boot"] {
         if is_mount_point(mp).await {
             let _ = sentryusb_shell::run("mount", &[mp, "-o", "remount,rw"]).await;
             break;
@@ -521,7 +521,7 @@ async fn install_nm_dns_config(emitter: &SetupEmitter) -> Result<()> {
     emitter.progress("Configuring NetworkManager DNS handling (dns=none + dispatcher)");
     std::fs::create_dir_all("/etc/NetworkManager/conf.d")?;
     std::fs::write(
-        "/etc/NetworkManager/conf.d/sentryusb-dns.conf",
+        "/etc/NetworkManager/conf.d/dashusb-dns.conf",
         "[main]\ndns=none\n",
     )?;
 
@@ -543,11 +543,11 @@ async fn install_dhcpcd_hook(emitter: &SetupEmitter) -> Result<()> {
     emitter.progress("Installing dhcpcd hook for resolv.conf");
     std::fs::create_dir_all("/lib/dhcpcd/dhcpcd-hooks")?;
     std::fs::write(
-        "/lib/dhcpcd/dhcpcd-hooks/90-sentryusb-resolv",
+        "/lib/dhcpcd/dhcpcd-hooks/90-dashusb-resolv",
         DHCPCD_HOOK,
     )?;
     let _ = sentryusb_shell::run(
-        "chmod", &["0644", "/lib/dhcpcd/dhcpcd-hooks/90-sentryusb-resolv"],
+        "chmod", &["0644", "/lib/dhcpcd/dhcpcd-hooks/90-dashusb-resolv"],
     ).await;
     Ok(())
 }
@@ -566,11 +566,11 @@ async fn install_dhclient_hook(emitter: &SetupEmitter) -> Result<()> {
     emitter.progress("Installing ifupdown hook for resolv.conf");
     std::fs::create_dir_all("/etc/dhcp/dhclient-exit-hooks.d")?;
     std::fs::write(
-        "/etc/dhcp/dhclient-exit-hooks.d/sentryusb-resolv",
+        "/etc/dhcp/dhclient-exit-hooks.d/dashusb-resolv",
         DHCLIENT_HOOK,
     )?;
     let _ = sentryusb_shell::run(
-        "chmod", &["0755", "/etc/dhcp/dhclient-exit-hooks.d/sentryusb-resolv"],
+        "chmod", &["0755", "/etc/dhcp/dhclient-exit-hooks.d/dashusb-resolv"],
     ).await;
     Ok(())
 }
@@ -696,26 +696,26 @@ fn update_fstab() -> Result<()> {
         );
     }
 
-    // Bind-mount /mutable/.sentryusb over /root/.sentryusb so the cloud
+    // Bind-mount /mutable/.dashusb over /root/.dashusb so the cloud
     // uploader and notification setup can persist credential JSON written at
     // runtime on the read-only root FS. Without this, cloud pairing fails at
     // "set credentials" and hangs. x-systemd.before ensures the bind is in
     // place before the daemon reads/writes credentials at startup.
-    std::fs::create_dir_all("/root/.sentryusb")?;
+    std::fs::create_dir_all("/root/.dashusb")?;
     std::fs::set_permissions(
-        "/root/.sentryusb",
+        "/root/.dashusb",
         std::os::unix::fs::PermissionsExt::from_mode(0o700),
     )?;
-    if !fstab_has_mountpoint(&fstab, "/root/.sentryusb") {
+    if !fstab_has_mountpoint(&fstab, "/root/.dashusb") {
         fstab.push_str(
-            "/mutable/.sentryusb /root/.sentryusb none \
-             bind,nofail,x-systemd.requires-mounts-for=/mutable,x-systemd.before=sentryusb.service 0 0\n",
+            "/mutable/.dashusb /root/.dashusb none \
+             bind,nofail,x-systemd.requires-mounts-for=/mutable,x-systemd.before=dashusb.service 0 0\n",
         );
     }
 
     // Repair bind entries written by v3.13.0–v3.14.3, which lack `nofail`
     // (setup re-run after a #158 recovery, or a pre-fix line already present).
-    for mp in ["/var/lib/bluetooth", "/root/.sentryusb"] {
+    for mp in ["/var/lib/bluetooth", "/root/.dashusb"] {
         add_nofail_to_bind(&mut fstab, mp);
     }
 
@@ -783,7 +783,7 @@ esac
 "#;
 
 const DHCPCD_HOOK: &str = r#"# Write DHCP-provided DNS servers to /tmp/resolv.conf.
-# /etc/resolv.conf is a symlink to /tmp/resolv.conf on SentryUSB.
+# /etc/resolv.conf is a symlink to /tmp/resolv.conf on DashUSB.
 if [ -n "${new_domain_name_servers:-}" ]; then
   {
     for ns in $new_domain_name_servers; do
@@ -794,7 +794,7 @@ if [ -n "${new_domain_name_servers:-}" ]; then
 fi
 "#;
 
-const DHCLIENT_HOOK: &str = r#"# Write DHCP-provided DNS to /tmp/resolv.conf (SentryUSB read-only root).
+const DHCLIENT_HOOK: &str = r#"# Write DHCP-provided DNS to /tmp/resolv.conf (DashUSB read-only root).
 if [ -n "${new_domain_name_servers:-}" ]; then
   {
     for ns in $new_domain_name_servers; do

@@ -7,7 +7,7 @@
 //!   * [`early_verify`] — hardware model, XFS+reflink support,
 //!     required config keys. Runs BEFORE any destructive operation
 //!     and BEFORE the dwc2 overlay phase. Checks that are safe to
-//!     run on a stock Pi OS image without any SentryUSB-specific
+//!     run on a stock Pi OS image without any DashUSB-specific
 //!     kernel modules loaded yet.
 //!   * [`verify_udc`] — at least one UDC driver exposed under
 //!     `/sys/class/udc/`. MUST run **after** the dwc2 overlay phase
@@ -96,11 +96,11 @@ fn check_supported_hardware(env: &SetupEnv) -> Result<()> {
         }
         PiModel::PiZeroW => bail!(
             "STOP: unsupported hardware: Raspberry Pi Zero W. \
-             SentryUSB requires Pi Zero 2 W or newer (Pi 3, Pi 4, Pi 5)."
+             DashUSB requires Pi Zero 2 W or newer (Pi 3, Pi 4, Pi 5)."
         ),
         PiModel::Pi2 => bail!(
             "STOP: unsupported hardware: Raspberry Pi 2. \
-             (only Pi Zero 2 W, Pi 3, Pi 4, and Pi 5 have the necessary hardware to run SentryUSB)"
+             (only Pi Zero 2 W, Pi 3, Pi 4, and Pi 5 have the necessary hardware to run DashUSB)"
         ),
         PiModel::Rock4CPlus => Ok(()),
         PiModel::Other => {
@@ -183,7 +183,7 @@ async fn check_xfs_support(emitter: &SetupEmitter) -> Result<()> {
     .await
     .context("truncate xfs test image")?;
 
-    // reflink=1 is the feature Sentry USB actually needs (copy-on-write
+    // reflink=1 is the feature Dash USB actually needs (copy-on-write
     // snapshots of the cam image). If mkfs can make the fs but mount
     // fails, the kernel doesn't support the required features.
     emitter.progress("Formatting test image with XFS (reflink=1)");
@@ -221,7 +221,7 @@ fn check_required_config(env: &SetupEnv) -> Result<()> {
         // User-config error (a missing key fails identically on retry) →
         // ConfigError so the boot-loop auto-resume halts and surfaces it.
         return Err(ConfigError(
-            "STOP: Define the variable CAM_SIZE in sentryusb.conf like this: \
+            "STOP: Define the variable CAM_SIZE in dashusb.conf like this: \
              export CAM_SIZE=32"
                 .into(),
         )
@@ -443,7 +443,7 @@ mod tests {
         // a brownout-prone Pi), must auto-resume and retry, NOT halt setup as
         // a config error. Keep it transient so it self-heals.
         let mut env = env_with(&[]);
-        env.data_drive = Some("/no/such/sentryusb/drive".to_string());
+        env.data_drive = Some("/no/such/dashusb/drive".to_string());
         let emitter = SetupEmitter::new(|_| {}, |_, _| {});
         let err = check_available_space(&env, &emitter).await.unwrap_err();
         assert!(

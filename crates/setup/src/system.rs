@@ -21,7 +21,7 @@ use crate::SetupEmitter;
 /// configuration" UI phase. The caller announces that phase once; we just do
 /// the work quietly.
 pub async fn configure_hostname(env: &SetupEnv, emitter: &SetupEmitter) -> Result<bool> {
-    let hostname = env.get("SENTRYUSB_HOSTNAME", "sentryusb");
+    let hostname = env.get("DASHUSB_HOSTNAME", "dashusb");
     let current = std::fs::read_to_string("/etc/hostname").unwrap_or_default();
     let current = current.trim();
     if current == hostname {
@@ -152,8 +152,8 @@ fn avahi_ipv4_only_rewrite() -> Option<String> {
 /// daemon config already advertises IPv4-only, do nothing and return
 /// `false` so the caller can skip announcing this phase.
 pub async fn configure_avahi(env: &SetupEnv, emitter: &SetupEmitter) -> Result<bool> {
-    let hostname = env.get("SENTRYUSB_HOSTNAME", "sentryusb");
-    let service_file = "/etc/avahi/services/sentryusb.service";
+    let hostname = env.get("DASHUSB_HOSTNAME", "dashusb");
+    let service_file = "/etc/avahi/services/dashusb.service";
     let desired = format!(
         r#"<?xml version="1.0" standalone='no'?>
 <!DOCTYPE service-group SYSTEM "avahi-service.dtd">
@@ -197,13 +197,13 @@ pub async fn configure_avahi(env: &SetupEnv, emitter: &SetupEmitter) -> Result<b
 
     if let Some(new_conf) = conf_rewrite {
         emitter.progress("Restricting mDNS advertising to IPv4...");
-        let prev = format!("{AVAHI_DAEMON_CONF}.sentryusb-prev");
+        let prev = format!("{AVAHI_DAEMON_CONF}.dashusb-prev");
         if !Path::new(&prev).exists() {
             let _ = std::fs::copy(AVAHI_DAEMON_CONF, &prev);
         }
         // Write-then-rename so a power loss mid-write can't leave a
         // truncated conf that stops avahi from starting.
-        let tmp = format!("{AVAHI_DAEMON_CONF}.sentryusb-tmp");
+        let tmp = format!("{AVAHI_DAEMON_CONF}.dashusb-tmp");
         std::fs::write(&tmp, new_conf)?;
         if let Ok(meta) = std::fs::metadata(AVAHI_DAEMON_CONF) {
             let _ = std::fs::set_permissions(&tmp, meta.permissions());
@@ -476,7 +476,7 @@ fn sed_delete_line_matching<F: Fn(&str) -> bool>(path: &str, pred: F) -> Result<
 /// script).
 pub fn install_archive_service() -> Result<()> {
     let service = r#"[Unit]
-Description=SentryUSB archiveloop service
+Description=DashUSB archiveloop service
 DefaultDependencies=no
 After=mutable.mount backingfiles.mount
 
@@ -489,7 +489,7 @@ Restart=always
 WantedBy=backingfiles.mount
 "#;
 
-    std::fs::write("/lib/systemd/system/sentryusb-archive.service", service)?;
+    std::fs::write("/lib/systemd/system/dashusb-archive.service", service)?;
     Ok(())
 }
 
@@ -636,13 +636,13 @@ pub async fn configure_timezone(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
 /// each returns the bare zone name (e.g. "America/New_York"). Returns
 /// `None` only when ALL providers fail, so the caller can fall back.
 pub(crate) async fn resolve_timezone_via_geoip() -> Option<String> {
-    // First-party ONLY: SentryUSB's own server geolocates the caller's IP
+    // First-party ONLY: DashUSB's own server geolocates the caller's IP
     // (MaxMind GeoLite2) and returns it as JSON, so IP processing stays
-    // under the SentryUSB privacy policy (sentryusb.com/legal/privacy) with
+    // under the DashUSB privacy policy (sentry-six.com/legal/privacy) with
     // NO third party. We deliberately do NOT fall back to public geo-IP
     // services — if this is unreachable / rate-limited we leave the system
     // default (UTC) and the boot-time retry resolves it on a later boot.
-    const ENDPOINTS: &[&str] = &["https://sentryusb.com/api/geoip/me"];
+    const ENDPOINTS: &[&str] = &["https://sentry-six.com/api/geoip/me"];
     for url in ENDPOINTS {
         if let Ok(out) = sentryusb_shell::run("curl", &["-s", "--max-time", "5", url]).await {
             if let Some(tz) = extract_timezone(&out) {
@@ -654,7 +654,7 @@ pub(crate) async fn resolve_timezone_via_geoip() -> Option<String> {
 }
 
 /// Pull an IANA zone from the first-party geo-IP response. The
-/// `sentryusb.com/api/geoip/me` endpoint returns JSON with a `timeZone`
+/// `sentry-six.com/api/geoip/me` endpoint returns JSON with a `timeZone`
 /// field (e.g. `{"timeZone":"America/New_York", ...}`); we also accept
 /// `timezone`/`time_zone`, nested `location.time_zone`, and a bare-text
 /// body — defensively, so a future response-shape tweak won't break it.
@@ -665,7 +665,7 @@ fn extract_timezone(body: &str) -> Option<String> {
         // Flat key (preferred: `{"timezone":"America/New_York", ...}`)
         // or GeoLite2's native nested `{"location":{"time_zone":"..."}}`.
         let candidates = [
-            v.get("timeZone").and_then(|x| x.as_str()), // sentryusb.com/api/geoip/me
+            v.get("timeZone").and_then(|x| x.as_str()), // sentry-six.com/api/geoip/me
             v.get("timezone").and_then(|x| x.as_str()),
             v.get("time_zone").and_then(|x| x.as_str()),
             v.get("tz").and_then(|x| x.as_str()),
@@ -883,7 +883,7 @@ mod timezone_extract_tests {
 
     #[test]
     fn parses_first_party_geoip_json() {
-        // Shape of sentryusb.com/api/geoip/me (camelCase `timeZone`).
+        // Shape of sentry-six.com/api/geoip/me (camelCase `timeZone`).
         // Placeholder values — RFC 5737 documentation IP, no real location.
         let body = r#"{"ip":"203.0.113.7","country":"US","region":"CA","city":"Mountain View","timeZone":"America/Los_Angeles"}"#;
         assert_eq!(extract_timezone(body).as_deref(), Some("America/Los_Angeles"));
@@ -930,7 +930,7 @@ fn current_timezone() -> Option<String> {
 ///
 /// Dispatches on Pi model:
 ///   * Pi 5: uses the built-in RTC via `/dev/rtc0`; installs
-///     `sentryusb-hwclock.service` for boot-time hctosys sync and optionally
+///     `dashusb-hwclock.service` for boot-time hctosys sync and optionally
 ///     enables trickle charging via `dtparam=rtc_bbat_vchg`.
 ///   * Other models: adds a DS3231 I²C overlay to config.txt (for users
 ///     wiring in an external RTC module).
@@ -952,7 +952,7 @@ async fn configure_rtc_pi5(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
     let trickle = env.get_bool("RTC_TRICKLE_CHARGE", false);
 
     // Quick idempotency check. If already in the desired state, silent skip.
-    let service_path = "/lib/systemd/system/sentryusb-hwclock.service";
+    let service_path = "/lib/systemd/system/dashusb-hwclock.service";
     let config = std::fs::read_to_string(&config_path).unwrap_or_default();
     let service_installed = Path::new(service_path).exists();
     let trickle_present = config.lines().any(|l| l.starts_with("dtparam=rtc_bbat_vchg"));
@@ -980,10 +980,10 @@ async fn configure_rtc_pi5(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
             let _ = sentryusb_shell::run("systemctl", &["disable", "fake-hwclock.service"]).await;
         }
 
-        emitter.progress("Creating sentryusb-hwclock.service");
-        std::fs::write(service_path, SENTRYUSB_HWCLOCK_SERVICE)?;
+        emitter.progress("Creating dashusb-hwclock.service");
+        std::fs::write(service_path, DASHUSB_HWCLOCK_SERVICE)?;
         let _ = sentryusb_shell::run("systemctl", &["daemon-reload"]).await;
-        let _ = sentryusb_shell::run("systemctl", &["enable", "sentryusb-hwclock.service"]).await;
+        let _ = sentryusb_shell::run("systemctl", &["enable", "dashusb-hwclock.service"]).await;
 
         // Sync current system time to the RTC right now so reboots during
         // the rest of setup have a good time source.
@@ -997,8 +997,8 @@ async fn configure_rtc_pi5(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
         emitter.progress("RTC battery support disabled, ensuring fake-hwclock is active");
 
         if Path::new(service_path).exists() {
-            let _ = sentryusb_shell::run("systemctl", &["stop", "sentryusb-hwclock.service"]).await;
-            let _ = sentryusb_shell::run("systemctl", &["disable", "sentryusb-hwclock.service"]).await;
+            let _ = sentryusb_shell::run("systemctl", &["stop", "dashusb-hwclock.service"]).await;
+            let _ = sentryusb_shell::run("systemctl", &["disable", "dashusb-hwclock.service"]).await;
             let _ = std::fs::remove_file(service_path);
             let _ = sentryusb_shell::run("systemctl", &["daemon-reload"]).await;
         }
@@ -1115,8 +1115,8 @@ with open('/dev/rtc0', 'wb') as f:
     }
 }
 
-const SENTRYUSB_HWCLOCK_SERVICE: &str = r#"[Unit]
-Description=SentryUSB hardware clock sync
+const DASHUSB_HWCLOCK_SERVICE: &str = r#"[Unit]
+Description=DashUSB hardware clock sync
 DefaultDependencies=no
 After=dev-rtc0.device
 Before=time-sync.target sysinit.target

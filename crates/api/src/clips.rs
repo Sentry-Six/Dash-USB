@@ -138,7 +138,7 @@ pub async fn get_clips(
     // symlinks into on-demand (autofs) snapshot mounts — the first read
     // can block for seconds while the kernel mounts the image. Run it on
     // the blocking pool so it can't stall the async reactor and drop the
-    // WebSocket heartbeat ("Reconnecting to SentryUSB…").
+    // WebSocket heartbeat ("Reconnecting to DashUSB…").
     let category = category.to_string();
     let before = params.before;
     let response = tokio::task::spawn_blocking(move || {

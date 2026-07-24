@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils"
 const CONFIG_GROUPS: Record<string, { label: string; keys: string[] }> = {
   network: {
     label: "Network",
-    keys: ["SENTRYUSB_HOSTNAME", "AP_SSID", "AP_PASS", "AP_IP"],
+    keys: ["DASHUSB_HOSTNAME", "AP_SSID", "AP_PASS", "AP_IP"],
   },
   storage: {
     label: "Storage",
@@ -115,7 +115,7 @@ function migrateLegacyKeys(parsed: Record<string, string>): Record<string, strin
   return out
 }
 
-/** Parse a sentryusb.conf file (export KEY=VALUE lines) */
+/** Parse a dashusb.conf file (export KEY=VALUE lines) */
 function parseConfFile(text: string): Record<string, string> {
   const result: Record<string, string> = {}
   const exportRegex = /^\s*export\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$/
@@ -159,7 +159,7 @@ function friendlyLabel(key: string): string {
   const labels: Record<string, string> = {
     SSID: "WiFi SSID",
     WIFIPASS: "WiFi Password",
-    SENTRYUSB_HOSTNAME: "Hostname",
+    DASHUSB_HOSTNAME: "Hostname",
     AP_SSID: "AP SSID",
     AP_PASS: "AP Password",
     AP_IP: "AP IP Address",
@@ -502,7 +502,7 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
                       {restoringUpload ? "Restoring..." : "Upload backup file from your computer"}
                     </button>
                     <p className="text-center text-[10px] text-slate-600">
-                      Select a <code className="rounded bg-white/5 px-1 py-0.5 text-slate-500">sentryusb-backup-*.json</code> file
+                      Select a <code className="rounded bg-white/5 px-1 py-0.5 text-slate-500">dashusb-backup-*.json</code> file
                     </p>
                     {uploadError && (
                       <p className="text-center text-xs text-red-400">{uploadError}</p>

@@ -10,7 +10,7 @@
 //!     `/dev/sda2`), and the repair refuses to touch the root disk.
 //!   * It is only offered when `/backingfiles` lives on a *separate external*
 //!     drive — `external` in the health response gates the card.
-//!   * It NEVER stops the `sentryusb` service: that service is the web server
+//!   * It NEVER stops the `dashusb` service: that service is the web server
 //!     running this very handler. Only the archive loop and the USB gadget are
 //!     quiesced; the UI keeps serving from the (separate) root card.
 //!   * The non-destructive path runs automatically (`xfs_repair -n`, plain
@@ -260,7 +260,7 @@ const MSG_HARD_FAIL: &str = "Backing-files corruption detected at boot. Automati
 const MSG_REPEAT_CORRUPTION: &str = "Backing-files corruption detected again after a recent auto repair. Not retrying automatically — the SSD may be failing. Check power/cable/enclosure and run repair manually.";
 
 /// Title for storage-repair push notifications. Mirrors the runtime
-/// scripts' `$NOTIFICATION_TITLE` (sentryusb.conf), same fallback as
+/// scripts' `$NOTIFICATION_TITLE` (dashusb.conf), same fallback as
 /// tesla_telemetry's keep-awake failure push.
 fn notification_title() -> String {
     let (active, _) = sentryusb_config::parse_file(sentryusb_config::find_config_path())
@@ -269,7 +269,7 @@ fn notification_title() -> String {
         .get("NOTIFICATION_TITLE")
         .cloned()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "SentryUSB".to_string())
+        .unwrap_or_else(|| "DashUSB".to_string())
 }
 
 /// Fire-and-record a storage_repair push (all configured channels +
@@ -688,9 +688,9 @@ async fn run_repair(hub: sentryusb_ws::Hub, device: String, mode: RepairMode) {
         format!("Repairing {device} (XFS backingfiles); auto={auto} force_allowed={force_allowed}"),
     );
 
-    // ── 1. Quiesce — NEVER stop the `sentryusb` service (it's us). ──
+    // ── 1. Quiesce — NEVER stop the `dashusb` service (it's us). ──
     log.line("quiesce", "Stopping the archive loop and USB gadget (the web UI stays up)…");
-    let _ = run_capture(t, "systemctl", &["stop", "sentryusb-archive"]).await;
+    let _ = run_capture(t, "systemctl", &["stop", "dashusb-archive"]).await;
     let _ = run_capture(t, "bash", &["-c", "killall archiveloop 2>/dev/null || true"]).await;
     match tokio::task::spawn_blocking(sentryusb_gadget::disable).await {
         Ok(Ok(())) => log.line("quiesce", "USB gadget disabled."),

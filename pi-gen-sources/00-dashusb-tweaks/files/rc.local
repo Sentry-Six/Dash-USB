@@ -18,26 +18,26 @@ then
   printf "My IP address is %s\n" "$_IP"
 fi
 
-if [ ! -L /sentryusb ]
+if [ ! -L /dashusb ]
 then
-  rm -rf /sentryusb
+  rm -rf /dashusb
   if [ -d /boot/firmware ] && findmnt --fstab /boot/firmware &> /dev/null
   then
-    ln -s /boot/firmware /sentryusb
+    ln -s /boot/firmware /dashusb
   else
-    ln -s /boot /sentryusb
+    ln -s /boot /dashusb
   fi
 fi
 
-if [ -f /sentryusb/run_once ]
+if [ -f /dashusb/run_once ]
 then
-  cp /sentryusb/run_once /tmp/
+  cp /dashusb/run_once /tmp/
   chmod +x /tmp/run_once
   /tmp/run_once || echo "run_once failed"
-  mv /sentryusb/run_once /sentryusb/ran_once || true
+  mv /dashusb/run_once /dashusb/ran_once || true
 fi
 
-SETUP_LOGFILE=/sentryusb/sentryusb-setup.log
+SETUP_LOGFILE=/dashusb/dashusb-setup.log
 
 function write_all_leds {
   for led in /sys/class/leds/*
@@ -106,7 +106,7 @@ function enable_wifi () {
   setup_progress "Detecting whether to configure wifi"
   if [[ -n "$SSID" ]] && [[ -n "$WIFIPASS" ]]
   then
-    if [ ! -e /sentryusb/WIFI_ENABLED ]
+    if [ ! -e /dashusb/WIFI_ENABLED ]
     then
       if [ -x /root/bin/remountfs_rw ]
       then
@@ -123,18 +123,18 @@ function enable_wifi () {
         fi
       else
         setup_progress "Configuring wpa_supplicant"
-        cp /sentryusb/wpa_supplicant.conf.sample /sentryusb/wpa_supplicant.conf
-        sed -i -e "s/TEMPSSID/${SSID}/g" /sentryusb/wpa_supplicant.conf
-        sed -i -e "s/TEMPPASS/${WIFIPASS}/g" /sentryusb/wpa_supplicant.conf
-        cp /sentryusb/wpa_supplicant.conf /etc/wpa_supplicant/wpa_supplicant.conf
+        cp /dashusb/wpa_supplicant.conf.sample /dashusb/wpa_supplicant.conf
+        sed -i -e "s/TEMPSSID/${SSID}/g" /dashusb/wpa_supplicant.conf
+        sed -i -e "s/TEMPPASS/${WIFIPASS}/g" /dashusb/wpa_supplicant.conf
+        cp /dashusb/wpa_supplicant.conf /etc/wpa_supplicant/wpa_supplicant.conf
       fi
 
       # set the host name now if possible, so it's effective immediately after the reboot
       local old_host_name
       old_host_name=$(cat /etc/hostname)
-      if [[ -n "$SENTRYUSB_HOSTNAME" ]] && [[ "$SENTRYUSB_HOSTNAME" != "$old_host_name" ]]
+      if [[ -n "$DASHUSB_HOSTNAME" ]] && [[ "$DASHUSB_HOSTNAME" != "$old_host_name" ]]
       then
-        local new_host_name="$SENTRYUSB_HOSTNAME"
+        local new_host_name="$DASHUSB_HOSTNAME"
         echo "$new_host_name" > /etc/hostname
         if grep -q "^127\.0\.1\.1" /etc/hosts; then
           sed -i -e "s/^127\.0\.1\.1.*/127.0.1.1\t$new_host_name/" /etc/hosts
@@ -150,7 +150,7 @@ function enable_wifi () {
       done
       systemctl enable ssh
 
-      touch /sentryusb/WIFI_ENABLED
+      touch /dashusb/WIFI_ENABLED
       setup_progress "Rebooting..."
       exec reboot
     fi
@@ -176,22 +176,22 @@ EOF
   source "$1"
 }
 
-if [ -e "/sentryusb/sentryusb.conf" ]
+if [ -e "/dashusb/dashusb.conf" ]
 then
   if [ -e /root/bin/remountfs_rw ]
   then
     /root/bin/remountfs_rw
   fi
-  mv /sentryusb/sentryusb.conf /root/
-  dos2unix /root/sentryusb.conf
+  mv /dashusb/dashusb.conf /root/
+  dos2unix /root/dashusb.conf
   # A config on the boot partition means the user wants headless setup.
   # Create the started marker so the boot-loop below will proceed.
-  touch "/sentryusb/SENTRYUSB_SETUP_STARTED"
+  touch "/dashusb/DASHUSB_SETUP_STARTED"
 fi
-if [ -e "/root/sentryusb.conf" ]
+if [ -e "/root/dashusb.conf" ]
 then
-  safesource /root/sentryusb.conf
-elif [ -e "/sentryusb/sentryusb.conf.sample" ]
+  safesource /root/dashusb.conf
+elif [ -e "/dashusb/dashusb.conf.sample" ]
 then
   setup_progress "no config file found, but sample file is present."
 else
@@ -206,19 +206,19 @@ enable_wifi
 # Only continue setup if it was explicitly started (via the web wizard or manually)
 # and hasn't finished yet. Without the STARTED check, a fresh install would auto-run
 # setup on boot before the user had a chance to configure via the wizard.
-if [ -e "/sentryusb/SENTRYUSB_SETUP_STARTED" ] && [ ! -e "/sentryusb/SENTRYUSB_SETUP_FINISHED" ]
+if [ -e "/dashusb/DASHUSB_SETUP_STARTED" ] && [ ! -e "/dashusb/DASHUSB_SETUP_FINISHED" ]
 then
   if [ -e /root/bin/remountfs_rw ]
   then
     /root/bin/remountfs_rw
   fi
 
-  if [ -e "/root/sentryusb.conf" ]
+  if [ -e "/root/dashusb.conf" ]
   then
-    source "/root/sentryusb.conf"
+    source "/root/dashusb.conf"
   else
     # No conf file found, can't complete setup
-    setup_progress "Setup appears not to have completed, but you didn't provide a sentryusb.conf."
+    setup_progress "Setup appears not to have completed, but you didn't provide a dashusb.conf."
   fi
 
   # Make the bin dir if needed to grab the setup script into it and persist
@@ -227,14 +227,14 @@ then
     mkdir "/root/bin"
   fi
 
-  if [ ! -e "/root/bin/setup-sentryusb" ]
+  if [ ! -e "/root/bin/setup-dashusb" ]
   then
     REPO=${REPO:-Sentry-Six}
-    REPO_NAME=${REPO_NAME:-Sentry-USB-Rusty}
+    REPO_NAME=${REPO_NAME:-Dash-USB}
     BRANCH=${BRANCH:-main}
     # Script doesn't exist, grab it.
     setup_progress "Grabbing main setup file."
-    if ! get_script /root/bin setup-sentryusb setup/pi
+    if ! get_script /root/bin setup-dashusb setup/pi
     then
       setup_progress "Failed to retrieve setup script. Check network settings."
       error_strobe &
@@ -245,7 +245,7 @@ then
   setup_progress "Starting setup."
 
   # Start setup. This should take us all the way through to reboot
-  if ! /root/bin/setup-sentryusb
+  if ! /root/bin/setup-dashusb
   then
     error_strobe &
     exit 0
@@ -255,7 +255,7 @@ then
   exec reboot
 fi
 
-# we're done. If setup completed successfully, sentryusb will have been
+# we're done. If setup completed successfully, dashusb will have been
 # started as a systemd service at this point
 
 exit 0

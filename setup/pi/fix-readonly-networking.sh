@@ -1,9 +1,9 @@
 #!/bin/bash
-# Fix networking on SentryUSB installs that used the old read-only setup,
+# Fix networking on DashUSB installs that used the old read-only setup,
 # where /var/lib/NetworkManager and related dirs were symlinked to /mutable.
 # That caused WiFi/AP to fail after reboot when the USB drive wasn't ready.
 # Run as root after: /root/bin/remountfs_rw
-# Then run this script (e.g. via setup-sentryusb fix_networking). Reboot after.
+# Then run this script (e.g. via setup-dashusb fix_networking). Reboot after.
 
 set -e
 
@@ -119,7 +119,7 @@ echo 'f /tmp/resolv.conf 0644 root root - nameserver 1.1.1.1' > /etc/tmpfiles.d/
 if command -v nmcli &>/dev/null; then
   log_progress "Configuring NetworkManager DNS handling (dns=none + dispatcher)"
   mkdir -p /etc/NetworkManager/conf.d
-  cat > /etc/NetworkManager/conf.d/sentryusb-dns.conf << 'EOF'
+  cat > /etc/NetworkManager/conf.d/dashusb-dns.conf << 'EOF'
 [main]
 dns=none
 EOF
@@ -151,9 +151,9 @@ fi
 if command -v dhcpcd &>/dev/null; then
   log_progress "Installing dhcpcd hook for resolv.conf"
   mkdir -p /lib/dhcpcd/dhcpcd-hooks
-  cat > /lib/dhcpcd/dhcpcd-hooks/90-sentryusb-resolv << 'DHCPHOOK'
+  cat > /lib/dhcpcd/dhcpcd-hooks/90-dashusb-resolv << 'DHCPHOOK'
 # Write DHCP-provided DNS servers to /tmp/resolv.conf.
-# /etc/resolv.conf is a symlink to /tmp/resolv.conf on SentryUSB.
+# /etc/resolv.conf is a symlink to /tmp/resolv.conf on DashUSB.
 if [ -n "${new_domain_name_servers:-}" ]; then
   {
     for ns in $new_domain_name_servers; do
@@ -163,7 +163,7 @@ if [ -n "${new_domain_name_servers:-}" ]; then
   } > /tmp/resolv.conf
 fi
 DHCPHOOK
-  chmod 0644 /lib/dhcpcd/dhcpcd-hooks/90-sentryusb-resolv
+  chmod 0644 /lib/dhcpcd/dhcpcd-hooks/90-dashusb-resolv
 fi
 
 # -- ifupdown: hook for systems using /etc/network/interfaces + dhclient --
@@ -172,8 +172,8 @@ fi
 if [ -d /etc/network ] && ! command -v nmcli &>/dev/null && ! command -v dhcpcd &>/dev/null; then
   log_progress "Installing ifupdown hook for resolv.conf"
   mkdir -p /etc/dhcp/dhclient-exit-hooks.d
-  cat > /etc/dhcp/dhclient-exit-hooks.d/sentryusb-resolv << 'DHCLIENTHOOK'
-# Write DHCP-provided DNS to /tmp/resolv.conf (SentryUSB read-only root).
+  cat > /etc/dhcp/dhclient-exit-hooks.d/dashusb-resolv << 'DHCLIENTHOOK'
+# Write DHCP-provided DNS to /tmp/resolv.conf (DashUSB read-only root).
 if [ -n "${new_domain_name_servers:-}" ]; then
   {
     for ns in $new_domain_name_servers; do
@@ -183,7 +183,7 @@ if [ -n "${new_domain_name_servers:-}" ]; then
   } > /tmp/resolv.conf
 fi
 DHCLIENTHOOK
-  chmod 0755 /etc/dhcp/dhclient-exit-hooks.d/sentryusb-resolv
+  chmod 0755 /etc/dhcp/dhclient-exit-hooks.d/dashusb-resolv
 fi
 
 # ---- Disable systemd-resolved (conflicts with our resolv.conf management) ----

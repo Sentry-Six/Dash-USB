@@ -2,7 +2,7 @@
 //!
 //! Credentials come from the environment (AWS_ACCESS_KEY_ID /
 //! AWS_SECRET_ACCESS_KEY / optional AWS_SESSION_TOKEN) when set, falling
-//! back to the values from sentryusb.conf. The fallback matters: systemd
+//! back to the values from dashusb.conf. The fallback matters: systemd
 //! starts the server without sourcing the conf, so env-only lookups left
 //! SNS permanently broken for installs configured through the web UI.
 //! Region is parsed from the topic ARN, then the conf, then AWS_REGION.
@@ -30,9 +30,9 @@ pub async fn send(
     message: &str,
 ) -> Result<()> {
     let access_key = env_or_conf("AWS_ACCESS_KEY_ID", access_key_conf)
-        .ok_or_else(|| anyhow::anyhow!("AWS_ACCESS_KEY_ID not set (env or sentryusb.conf)"))?;
+        .ok_or_else(|| anyhow::anyhow!("AWS_ACCESS_KEY_ID not set (env or dashusb.conf)"))?;
     let secret_key = env_or_conf("AWS_SECRET_ACCESS_KEY", secret_key_conf)
-        .ok_or_else(|| anyhow::anyhow!("AWS_SECRET_ACCESS_KEY not set (env or sentryusb.conf)"))?;
+        .ok_or_else(|| anyhow::anyhow!("AWS_SECRET_ACCESS_KEY not set (env or dashusb.conf)"))?;
     let session_token = std::env::var("AWS_SESSION_TOKEN").ok().filter(|v| !v.is_empty());
 
     let region = region_from_arn(topic_arn)

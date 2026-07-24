@@ -6,7 +6,7 @@
 //! - Newest-first ordering, max 500 entries.
 //! - Query params: `limit`, `offset`, `type` (filter).
 //! - Settings are stored in the user-preferences map with `notify_<type>` keys.
-//! - Read fallback: primary `/mutable/sentryusb-notifications.json`, legacy
+//! - Read fallback: primary `/mutable/dashusb-notifications.json`, legacy
 //!   `/mutable/.notification_history.json` (older Rust port wrote there).
 
 use std::collections::HashMap;
@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::router::AppState;
 
-const HISTORY_PATH: &str = "/mutable/sentryusb-notifications.json";
+const HISTORY_PATH: &str = "/mutable/dashusb-notifications.json";
 const LEGACY_HISTORY_PATH: &str = "/mutable/.notification_history.json";
 const MAX_HISTORY: usize = 500;
 

@@ -1,0 +1,14 @@
+[Unit]
+Description=DashUSB: legacy LE advertising (Broadcom Pi-family chip workaround)
+After=bluetooth.service dashusb-ble.service
+Wants=bluetooth.service
+BindsTo=dashusb-ble.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/dashusb-ble-adv.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

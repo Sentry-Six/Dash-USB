@@ -1,6 +1,6 @@
 //! Snapshot automount — port of `configure-automount.sh`.
 //!
-//! Installs autofs, wires `/tmp/snapshots` to the `auto.sentryusb` map
+//! Installs autofs, wires `/tmp/snapshots` to the `auto.dashusb` map
 //! script, and converts existing per-snapshot `mnt` directories into
 //! symlinks pointing at the autofs path (so snapshots mount on-demand
 //! when something `cd`s into them, instead of all at boot).
@@ -16,7 +16,7 @@ use crate::SetupEmitter;
 /// already installed and the map file is in place.
 pub async fn configure_automount(emitter: &SetupEmitter) -> Result<bool> {
     let already_configured = sentryusb_shell::run("which", &["automount"]).await.is_ok()
-        && Path::new("/etc/auto.master.d/sentryusb.autofs").exists();
+        && Path::new("/etc/auto.master.d/dashusb.autofs").exists();
     if already_configured {
         return Ok(false);
     }
@@ -33,9 +33,9 @@ pub async fn configure_automount(emitter: &SetupEmitter) -> Result<bool> {
     // The Raspbian Stretch autofs package didn't ship /etc/auto.master.d.
     let _ = std::fs::create_dir_all("/etc/auto.master.d");
 
-    // `auto.sentryusb` is written into /root/bin by the runtime-scripts
+    // `auto.dashusb` is written into /root/bin by the runtime-scripts
     // phase. Writing it here would duplicate code and risk drift.
-    let map_script = "/root/bin/auto.sentryusb";
+    let map_script = "/root/bin/auto.dashusb";
     if !Path::new(map_script).exists() {
         anyhow::bail!(
             "{} not installed yet — runtime scripts phase must run before automount",
@@ -44,7 +44,7 @@ pub async fn configure_automount(emitter: &SetupEmitter) -> Result<bool> {
     }
 
     std::fs::write(
-        "/etc/auto.master.d/sentryusb.autofs",
+        "/etc/auto.master.d/dashusb.autofs",
         format!("/tmp/snapshots  {}\n", map_script),
     )?;
 

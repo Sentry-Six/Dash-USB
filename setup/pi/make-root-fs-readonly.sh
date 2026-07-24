@@ -22,7 +22,7 @@ log_progress "start"
 # Ensure the boot/firmware partition is writable.  During upgrades the old
 # remountfs_rw may only have remounted root (/), leaving the boot partition
 # (where cmdline.txt lives) read-only.  sed -i on CMDLINE_PATH would fail.
-for _mp in /sentryusb /teslausb /boot/firmware /boot; do
+for _mp in /dashusb /teslausb /boot/firmware /boot; do
   if findmnt "$_mp" > /dev/null 2>&1; then
     mount "$_mp" -o remount,rw 2>/dev/null || true
     break
@@ -260,7 +260,7 @@ if command -v nmcli &>/dev/null
 then
   log_progress "Configuring NetworkManager DNS handling (dns=none + dispatcher)"
   mkdir -p /etc/NetworkManager/conf.d
-  cat > /etc/NetworkManager/conf.d/sentryusb-dns.conf << 'EOF'
+  cat > /etc/NetworkManager/conf.d/dashusb-dns.conf << 'EOF'
 [main]
 dns=none
 EOF
@@ -293,9 +293,9 @@ if command -v dhcpcd &>/dev/null
 then
   log_progress "Installing dhcpcd hook for resolv.conf"
   mkdir -p /lib/dhcpcd/dhcpcd-hooks
-  cat > /lib/dhcpcd/dhcpcd-hooks/90-sentryusb-resolv << 'DHCPHOOK'
+  cat > /lib/dhcpcd/dhcpcd-hooks/90-dashusb-resolv << 'DHCPHOOK'
 # Write DHCP-provided DNS servers to /tmp/resolv.conf.
-# /etc/resolv.conf is a symlink to /tmp/resolv.conf on SentryUSB.
+# /etc/resolv.conf is a symlink to /tmp/resolv.conf on DashUSB.
 if [ -n "${new_domain_name_servers:-}" ]; then
   {
     for ns in $new_domain_name_servers; do
@@ -305,7 +305,7 @@ if [ -n "${new_domain_name_servers:-}" ]; then
   } > /tmp/resolv.conf
 fi
 DHCPHOOK
-  chmod 0644 /lib/dhcpcd/dhcpcd-hooks/90-sentryusb-resolv
+  chmod 0644 /lib/dhcpcd/dhcpcd-hooks/90-dashusb-resolv
 fi
 
 # -- ifupdown: hook for systems using /etc/network/interfaces + dhclient --
@@ -315,8 +315,8 @@ if [ -d /etc/network ] && ! command -v nmcli &>/dev/null && ! command -v dhcpcd 
 then
   log_progress "Installing ifupdown hook for resolv.conf"
   mkdir -p /etc/dhcp/dhclient-exit-hooks.d
-  cat > /etc/dhcp/dhclient-exit-hooks.d/sentryusb-resolv << 'DHCLIENTHOOK'
-# Write DHCP-provided DNS to /tmp/resolv.conf (SentryUSB read-only root).
+  cat > /etc/dhcp/dhclient-exit-hooks.d/dashusb-resolv << 'DHCLIENTHOOK'
+# Write DHCP-provided DNS to /tmp/resolv.conf (DashUSB read-only root).
 if [ -n "${new_domain_name_servers:-}" ]; then
   {
     for ns in $new_domain_name_servers; do
@@ -326,7 +326,7 @@ if [ -n "${new_domain_name_servers:-}" ]; then
   } > /tmp/resolv.conf
 fi
 DHCLIENTHOOK
-  chmod 0755 /etc/dhcp/dhclient-exit-hooks.d/sentryusb-resolv
+  chmod 0755 /etc/dhcp/dhclient-exit-hooks.d/dashusb-resolv
 fi
 
 # Disable systemd-resolved — it conflicts with our resolv.conf management
@@ -459,8 +459,8 @@ touch -t 197001010000 /etc/fstab
 
 # autofs by default has dependencies on various network services, because
 # one of its purposes is to automount NFS filesystems.
-# SentryUSB doesn't use NFS though, and removing those dependencies speeds
-# up SentryUSB startup.
+# DashUSB doesn't use NFS though, and removing those dependencies speeds
+# up DashUSB startup.
 if [ ! -e /etc/systemd/system/autofs.service ]
 then
   grep -v '^Wants=\|^After=' /lib/systemd/system/autofs.service  > /etc/systemd/system/autofs.service

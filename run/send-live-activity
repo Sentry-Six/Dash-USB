@@ -14,7 +14,7 @@ fi
 
 BACKEND_URL="https://notifications.sentry-six.com"
 ACTION="${1:-}"
-DEVICE_NAME="${NOTIFICATION_TITLE:-SentryUSB}"
+DEVICE_NAME="${NOTIFICATION_TITLE:-DashUSB}"
 
 case "$ACTION" in
   start)

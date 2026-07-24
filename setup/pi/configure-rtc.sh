@@ -72,10 +72,10 @@ if [ "$RTC_BATTERY_ENABLED" = "true" ]; then
   # This service ONLY handles boot-time RTC→system sync.
   # Periodic system→RTC sync is handled by archiveloop's timesyncloop,
   # because the Pi never gracefully shuts down (car just loses power).
-  log_progress "Creating sentryusb-hwclock.service"
-  cat > /lib/systemd/system/sentryusb-hwclock.service << 'UNIT'
+  log_progress "Creating dashusb-hwclock.service"
+  cat > /lib/systemd/system/dashusb-hwclock.service << 'UNIT'
 [Unit]
-Description=SentryUSB hardware clock sync
+Description=DashUSB hardware clock sync
 DefaultDependencies=no
 After=dev-rtc0.device
 Before=time-sync.target sysinit.target
@@ -102,7 +102,7 @@ WantedBy=sysinit.target
 UNIT
 
   systemctl daemon-reload
-  systemctl enable sentryusb-hwclock.service
+  systemctl enable dashusb-hwclock.service
 
   # Sync current system time to RTC
   rtc_sync_systohc
@@ -127,10 +127,10 @@ else
   log_progress "RTC battery support disabled, ensuring fake-hwclock is active"
 
   # Remove hwclock service if it exists
-  if [ -e /lib/systemd/system/sentryusb-hwclock.service ]; then
-    systemctl stop sentryusb-hwclock.service 2>/dev/null || true
-    systemctl disable sentryusb-hwclock.service 2>/dev/null || true
-    rm -f /lib/systemd/system/sentryusb-hwclock.service
+  if [ -e /lib/systemd/system/dashusb-hwclock.service ]; then
+    systemctl stop dashusb-hwclock.service 2>/dev/null || true
+    systemctl disable dashusb-hwclock.service 2>/dev/null || true
+    rm -f /lib/systemd/system/dashusb-hwclock.service
     systemctl daemon-reload
   fi
 

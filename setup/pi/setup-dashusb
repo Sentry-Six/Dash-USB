@@ -28,7 +28,7 @@ then
 fi
 
 function setup_progress () {
-  local setup_logfile=/sentryusb/sentryusb-setup.log
+  local setup_logfile=/dashusb/dashusb-setup.log
   if [ -w $setup_logfile ]
   then
     echo "$( date ) : $*" >> "$setup_logfile"
@@ -41,7 +41,7 @@ function setup_progress () {
 # there registers LE Audio services that trigger spurious Android pairing prompts.
 function configure_bluez_experimental () {
   local override btdaemon ver major minor
-  override=/etc/systemd/system/bluetooth.service.d/sentryusb-experimental.conf
+  override=/etc/systemd/system/bluetooth.service.d/dashusb-experimental.conf
   btdaemon=$(systemctl cat bluetooth.service 2>/dev/null | grep '^ExecStart=' | head -1 | sed 's/ExecStart=//' | awk '{print $1}')
   btdaemon=${btdaemon:-$(command -v bluetoothd || find /usr/lib/bluetooth /usr/sbin -maxdepth 1 -name bluetoothd -print -quit 2>/dev/null)}
   if [ -z "$btdaemon" ] || [ ! -x "$btdaemon" ]; then
@@ -146,9 +146,9 @@ if [ ! -e "$THISDIR/envsetup.sh" ]
 then
   # source the conf file directly to get REPO, BRANCH or download_sources
   # in case they're set
-  safesource /root/sentryusb.conf
+  safesource /root/dashusb.conf
   REPO=${REPO:-Sentry-Six}
-  REPO_NAME=${REPO_NAME:-Sentry-USB-Rusty}
+  REPO_NAME=${REPO_NAME:-Dash-USB}
   BRANCH=${BRANCH:-main}
   copy_script setup/pi/envsetup.sh "$THISDIR"
 fi
@@ -185,9 +185,9 @@ else
   fi
 fi
 
-BOOT_DISK=$(lsblk -dpno pkname "$(findmnt -D -no SOURCE --target /sentryusb)")
+BOOT_DISK=$(lsblk -dpno pkname "$(findmnt -D -no SOURCE --target /dashusb)")
 declare -rx BOOT_DISK
-BOOT_PARTITION_DEVICE=$(lsblk -dpno name "$(findmnt -D -no SOURCE --target /sentryusb)")
+BOOT_PARTITION_DEVICE=$(lsblk -dpno name "$(findmnt -D -no SOURCE --target /dashusb)")
 readonly BOOT_PARTITION_DEVICE
 readonly BOOT_DEVICE_PARTITION_PREFIX=${BOOT_PARTITION_DEVICE%?}
 export BOOT_DEVICE_PARTITION_PREFIX
@@ -220,9 +220,9 @@ then
       setup_progress "Shrinking root partition to match filesystem: ${fsnumsectors} sectors"
       echo "${rootpartstartsector},${fsnumsectors}" | sfdisk --force --no-reread "${BOOT_DISK}" -N "${ROOT_PART_NUM}"
       # Clean up initramfs config.txt entries
-      if [ -e /sentryusb/config.txt ] && grep -q SENTRYUSB-REMOVE /sentryusb/config.txt
+      if [ -e /dashusb/config.txt ] && grep -q SENTRYUSB-REMOVE /dashusb/config.txt
       then
-        sed -i '/SENTRYUSB-REMOVE/d' /sentryusb/config.txt
+        sed -i '/SENTRYUSB-REMOVE/d' /dashusb/config.txt
         rm -f "/boot/initrd.img-$(uname -r)"
       else
         update-initramfs -u 2>/dev/null || true
@@ -289,14 +289,14 @@ then
 
     # Ensure initramfs is available for the resize
     INITRD_NAME="initrd.img-$(uname -r)"
-    BOOT_PART="$(readlink -f /sentryusb)"
+    BOOT_PART="$(readlink -f /dashusb)"
     if [ ! -e "${BOOT_PART}/${INITRD_NAME}" ] && [ ! -e "/boot/${INITRD_NAME}" ]
     then
-      if [ -f /etc/os-release ] && grep -q Raspbian /etc/os-release && [ -e /sentryusb/config.txt ]
+      if [ -f /etc/os-release ] && grep -q Raspbian /etc/os-release && [ -e /dashusb/config.txt ]
       then
         setup_progress "Temporarily enabling initramfs for root resize"
         update-initramfs -c -k "$(uname -r)"
-        echo "initramfs ${INITRD_NAME} followkernel # SENTRYUSB-REMOVE" >> /sentryusb/config.txt
+        echo "initramfs ${INITRD_NAME} followkernel # SENTRYUSB-REMOVE" >> /dashusb/config.txt
       else
         rm -f "$RESIZE_MARKER"
         setup_progress "STOP: Cannot shrink root on this OS automatically. Reflash with Balena Etcher."
@@ -322,9 +322,9 @@ INCREASE_ROOT_SIZE=$(($(dehumanize "$INCREASE_ROOT_SIZE") / 512))
 
 if [ "$INCREASE_ROOT_SIZE" != "0" ] && [ ! -e "${BOOT_DEVICE_PARTITION_PREFIX}$((ROOT_PART_NUM+1))" ]
 then
-  if [ ! -e /root/SENTRYUSB_ROOT_PARTITION_INCREASED ]
+  if [ ! -e /root/DASHUSB_ROOT_PARTITION_INCREASED ]
   then
-    touch /root/SENTRYUSB_ROOT_PARTITION_INCREASED
+    touch /root/DASHUSB_ROOT_PARTITION_INCREASED
     ROOTSTART=$(partx --show -g -o START "${ROOT_PARTITION_DEVICE}")
     ROOTSIZE=$(partx --show -g -o SECTORS "${ROOT_PARTITION_DEVICE}")
     ROOTSIZE=$((ROOTSIZE + INCREASE_ROOT_SIZE))
@@ -356,9 +356,9 @@ then
 fi
 
 function headless_setup_mark_setup_success () {
-  rm -f /sentryusb/SENTRYUSB_SETUP_FAILED
-  rm -f /sentryusb/SENTRYUSB_SETUP_STARTED
-  touch /sentryusb/SENTRYUSB_SETUP_FINISHED
+  rm -f /dashusb/DASHUSB_SETUP_FAILED
+  rm -f /dashusb/DASHUSB_SETUP_STARTED
+  touch /dashusb/DASHUSB_SETUP_FINISHED
 }
 
 function flash () {
@@ -405,12 +405,12 @@ function get_common_scripts () {
   copy_script run/mountimage /root/bin
   copy_script run/enable_gadget.sh /root/bin
   copy_script run/disable_gadget.sh /root/bin
-  copy_script server/ble/sentryusb-ble.py /root/bin
-  ln -sf /root/bin/mountimage /sbin/mount.sentryusb
+  copy_script server/ble/dashusb-ble.py /root/bin
+  ln -sf /root/bin/mountimage /sbin/mount.dashusb
 }
 
 function install_ble_daemon () {
-  setup_progress "Installing SentryUSB BLE peripheral daemon..."
+  setup_progress "Installing DashUSB BLE peripheral daemon..."
 
   # Install required Python packages and BlueZ if not already present
   for pkg in python3-dbus python3-gi bluez; do
@@ -428,11 +428,11 @@ function install_ble_daemon () {
   # Radxa Zero 3W: the AIC8800 BT chip is on UART and needs hciattach to
   # create hci0. Unlike BCM4345C0 (4C+, Pi 4) which auto-attaches via
   # device-tree, the Zero 3W's DT has no bluetooth node — hciattach must
-  # run on every boot before sentryusb-ble can advertise.
+  # run on every boot before dashusb-ble can advertise.
   if grep -qi "ZERO 3" /proc/device-tree/model 2>/dev/null; then
     setup_progress "Radxa Zero 3W detected — installing AIC8800 BT UART attach service..."
     mkdir -p /etc/systemd/system
-    printf '[Unit]\nDescription=Attach AIC8800 Bluetooth via UART\nBefore=bluetooth.service sentryusb-ble.service\nAfter=local-fs.target\n\n[Service]\nType=forking\nExecStart=/usr/bin/hciattach -s 1500000 /dev/ttyS1 any 1500000 flow nosleep\nRemainAfterExit=yes\nExecStop=/usr/bin/killall hciattach\n\n[Install]\nWantedBy=multi-user.target\n' > /etc/systemd/system/aic8800-bluetooth.service
+    printf '[Unit]\nDescription=Attach AIC8800 Bluetooth via UART\nBefore=bluetooth.service dashusb-ble.service\nAfter=local-fs.target\n\n[Service]\nType=forking\nExecStart=/usr/bin/hciattach -s 1500000 /dev/ttyS1 any 1500000 flow nosleep\nRemainAfterExit=yes\nExecStop=/usr/bin/killall hciattach\n\n[Install]\nWantedBy=multi-user.target\n' > /etc/systemd/system/aic8800-bluetooth.service
     systemctl daemon-reload
     systemctl enable aic8800-bluetooth 2>/dev/null || true
     systemctl start aic8800-bluetooth 2>/dev/null || true
@@ -440,12 +440,12 @@ function install_ble_daemon () {
     setup_progress "AIC8800 BT UART attached"
   fi
 
-  chmod +x /root/bin/sentryusb-ble.py 2>/dev/null || true
+  chmod +x /root/bin/dashusb-ble.py 2>/dev/null || true
 
   # Install D-Bus policy file so BlueZ can call GATT methods on our daemon.
   # Required on Pi 5 / Bookworm where D-Bus policies are stricter.
-  copy_script server/ble/com.sentryusb.ble.conf /etc/dbus-1/system.d || true
-  if [ -f /etc/dbus-1/system.d/com.sentryusb.ble.conf ]; then
+  copy_script server/ble/com.dashusb.ble.conf /etc/dbus-1/system.d || true
+  if [ -f /etc/dbus-1/system.d/com.dashusb.ble.conf ]; then
     setup_progress "D-Bus policy installed for BLE daemon"
   fi
 
@@ -453,22 +453,22 @@ function install_ble_daemon () {
   configure_bluez_experimental
 
   # Install the systemd service file
-  copy_script server/ble/sentryusb-ble.service /etc/systemd/system || true
+  copy_script server/ble/dashusb-ble.service /etc/systemd/system || true
 
-  if [ -f /etc/systemd/system/sentryusb-ble.service ]; then
+  if [ -f /etc/systemd/system/dashusb-ble.service ]; then
     systemctl daemon-reload
-    systemctl enable sentryusb-ble 2>/dev/null || true
-    systemctl restart sentryusb-ble 2>/dev/null || true
+    systemctl enable dashusb-ble 2>/dev/null || true
+    systemctl restart dashusb-ble 2>/dev/null || true
     setup_progress "BLE peripheral daemon installed and started."
   else
-    setup_progress "WARNING: sentryusb-ble.service not found, BLE daemon not started."
+    setup_progress "WARNING: dashusb-ble.service not found, BLE daemon not started."
   fi
 }
 
 function update_sentryusb_binary () {
-  setup_progress "Updating SentryUSB binary..."
-  local BINARY_INSTALL_DIR="/opt/sentryusb"
-  local BINARY_NAME="sentryusb"
+  setup_progress "Updating DashUSB binary..."
+  local BINARY_INSTALL_DIR="/opt/dashusb"
+  local BINARY_NAME="dashusb"
   local BINARY_SUFFIX
 
   case "$(uname -m)" in
@@ -483,7 +483,7 @@ function update_sentryusb_binary () {
   esac
 
   local DOWNLOAD_URL="https://github.com/${REPO}/${REPO_NAME}/releases/latest/download/${BINARY_NAME}-${BINARY_SUFFIX}"
-  local TMP_BINARY="/tmp/sentryusb-new"
+  local TMP_BINARY="/tmp/dashusb-new"
 
   if curlwrapper -fsSL "$DOWNLOAD_URL" -o "$TMP_BINARY" 2>/dev/null; then
     chmod +x "$TMP_BINARY"
@@ -510,10 +510,10 @@ function update_sentryusb_binary () {
 }
 
 function update_sentryusb_service () {
-  setup_progress "Updating sentryusb systemd service definition..."
-  cat > /etc/systemd/system/sentryusb.service << 'EOF'
+  setup_progress "Updating dashusb systemd service definition..."
+  cat > /etc/systemd/system/dashusb.service << 'EOF'
 [Unit]
-Description=SentryUSB Web Server
+Description=DashUSB Web Server
 After=mutable.mount backingfiles.mount
 Wants=mutable.mount backingfiles.mount
 Conflicts=nginx.service
@@ -522,7 +522,7 @@ Conflicts=nginx.service
 Type=simple
 ExecStartPre=-/bin/systemctl stop nginx
 ExecStartPre=-/bin/systemctl disable nginx
-ExecStart=/opt/sentryusb/sentryusb --port 80
+ExecStart=/opt/dashusb/dashusb --port 80
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -532,8 +532,8 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
-  systemctl enable sentryusb 2>/dev/null || true
-  setup_progress "sentryusb.service updated."
+  systemctl enable dashusb 2>/dev/null || true
+  setup_progress "dashusb.service updated."
 }
 
 function disable_unused_services () {
@@ -549,7 +549,7 @@ function disable_unused_services () {
   done
 
   # systemd-binfmt registers kernel binary-format handlers (Java .jar, Wine, etc.)
-  # A dedicated SentryUSB device has no use for this — mask it to keep it off
+  # A dedicated DashUSB device has no use for this — mask it to keep it off
   # the boot critical chain where it adds ~600ms.
   if ! systemctl is-masked systemd-binfmt.service &>/dev/null; then
     systemctl mask systemd-binfmt.service 2>/dev/null || true
@@ -591,8 +591,8 @@ function install_avahi_service () {
       setup_progress "WARNING: Failed to install avahi-daemon"
   fi
   mkdir -p /etc/avahi/services
-  copy_script setup/pi/avahi-sentryusb.service /tmp
-  mv /tmp/avahi-sentryusb.service /etc/avahi/services/sentryusb.service
+  copy_script setup/pi/avahi-dashusb.service /tmp
+  mv /tmp/avahi-dashusb.service /etc/avahi/services/dashusb.service
   # Advertise IPv4 only: a AAAA answer for .local sends Windows/Chrome to the
   # Pi's rotating SLAAC address (slow, stale) and triggers Chrome Private
   # Network Access "CORS" blocks on the plain-http UI. Device IPv6 untouched.
@@ -717,7 +717,7 @@ function update_backingfiles_fstab_entry () {
   if [ -e "$filename" ]
   then
     mkdir -p "$mountpoint"
-    echo "$filename $mountpoint sentryusb noauto 0 0" >> /etc/fstab
+    echo "$filename $mountpoint dashusb noauto 0 0" >> /etc/fstab
     setup_progress "updated /etc/fstab for $mountpoint"
   fi
 }
@@ -869,7 +869,7 @@ function create_usb_drive_backing_files () {
 }
 
 function configure_hostname () {
-  local new_host_name="$SENTRYUSB_HOSTNAME"
+  local new_host_name="$DASHUSB_HOSTNAME"
   local old_host_name
   old_host_name=$(hostname)
 
@@ -1021,20 +1021,20 @@ function cmd_selfupdate {
 }
 
 function cmd_upgrade {
-  if [ ! -e /sentryusb/SENTRYUSB_SETUP_FINISHED ]
+  if [ ! -e /dashusb/DASHUSB_SETUP_FINISHED ]
   then
     echo "STOP: previous setup didn't finish, can't upgrade unfinished install"
     exit 1
   fi
-  copy_script setup/pi/setup-sentryusb /tmp &> /dev/null
+  copy_script setup/pi/setup-dashusb /tmp &> /dev/null
   copy_script setup/pi/envsetup.sh /tmp &> /dev/null
-  exec bash -c "/tmp/setup-sentryusb upgrade_prepare && NO_REBOOT_PROMPT=1 /tmp/setup-sentryusb && /tmp/setup-sentryusb upgrade_finish"
+  exec bash -c "/tmp/setup-dashusb upgrade_prepare && NO_REBOOT_PROMPT=1 /tmp/setup-dashusb && /tmp/setup-dashusb upgrade_finish"
 }
 
 function cmd_upgrade_prepare {
   setup_progress "preparing for full upgrade"
   (
-    systemctl stop sentryusb-archive || true
+    systemctl stop dashusb-archive || true
     killall archiveloop || true
     service smbd stop || true
     service autofs stop || true
@@ -1046,14 +1046,14 @@ function cmd_upgrade_prepare {
     /root/bin/disable_gadget.sh || true
     /root/bin/remountfs_rw
     # a previous bookworm install may have the makers in /boot, so move
-    # them to /sentryusb (/boot/firmware)
-    if [ ! /boot -ef /sentryusb ]
+    # them to /dashusb (/boot/firmware)
+    if [ ! /boot -ef /dashusb ]
     then
-      for i in WIFI_ENABLED SENTRYUSB_SETUP_STARTED SENTRYUSB_SETUP_FINISHED
+      for i in WIFI_ENABLED DASHUSB_SETUP_STARTED DASHUSB_SETUP_FINISHED
       do
         if [ -e "/boot/$i" ]
         then
-          mv "/boot/$i" /sentryusb
+          mv "/boot/$i" /dashusb
         fi
       done
     fi
@@ -1061,7 +1061,7 @@ function cmd_upgrade_prepare {
 }
 
 function cmd_upgrade_finish {
-  mv /tmp/setup-sentryusb /root/bin/setup-sentryusb
+  mv /tmp/setup-dashusb /root/bin/setup-dashusb
   mv /tmp/envsetup.sh /root/bin/envsetup.sh
   setup_progress "upgrade finished"
   for i in {5..1}
@@ -1077,15 +1077,15 @@ function cmd_upgrade_finish {
 # Much faster than a full upgrade — use this to add BLE support to an
 # existing install without re-running the entire setup.
 #
-# Usage: setup-sentryusb install_ble
+# Usage: setup-dashusb install_ble
 function cmd_install_ble {
-  if [ ! -e /sentryusb/SENTRYUSB_SETUP_FINISHED ]
+  if [ ! -e /dashusb/DASHUSB_SETUP_FINISHED ]
   then
     echo "STOP: run this only on a completed install. Run full setup first."
     exit 1
   fi
 
-  setup_progress "Installing/updating SentryUSB BLE peripheral daemon..."
+  setup_progress "Installing/updating DashUSB BLE peripheral daemon..."
 
   /root/bin/remountfs_rw
 
@@ -1100,13 +1100,13 @@ function cmd_install_ble {
 
   # Download latest BLE daemon and service file
   mkdir -p /root/bin
-  copy_script server/ble/sentryusb-ble.py /root/bin || true
-  chmod +x /root/bin/sentryusb-ble.py
-  copy_script server/ble/sentryusb-ble.service /etc/systemd/system || true
+  copy_script server/ble/dashusb-ble.py /root/bin || true
+  chmod +x /root/bin/dashusb-ble.py
+  copy_script server/ble/dashusb-ble.service /etc/systemd/system || true
 
   # Install D-Bus policy file for BLE daemon (required on Pi 5 / Bookworm)
-  copy_script server/ble/com.sentryusb.ble.conf /etc/dbus-1/system.d || true
-  if [ -f /etc/dbus-1/system.d/com.sentryusb.ble.conf ]; then
+  copy_script server/ble/com.dashusb.ble.conf /etc/dbus-1/system.d || true
+  if [ -f /etc/dbus-1/system.d/com.dashusb.ble.conf ]; then
     setup_progress "D-Bus policy installed for BLE daemon"
   fi
 
@@ -1115,25 +1115,25 @@ function cmd_install_ble {
 
   # Install Avahi mDNS advertisement so the iOS app can discover the Pi over WiFi
   mkdir -p /etc/avahi/services
-  copy_script setup/pi/avahi-sentryusb.service /tmp || true
-  [ -f /tmp/avahi-sentryusb.service ] && mv /tmp/avahi-sentryusb.service /etc/avahi/services/sentryusb.service
+  copy_script setup/pi/avahi-dashusb.service /tmp || true
+  [ -f /tmp/avahi-dashusb.service ] && mv /tmp/avahi-dashusb.service /etc/avahi/services/dashusb.service
 
   systemctl daemon-reload
   systemctl enable avahi-daemon 2>/dev/null || true
   systemctl restart avahi-daemon 2>/dev/null || true
   systemctl restart bluetooth 2>/dev/null || true
   sleep 3
-  systemctl enable sentryusb-ble 2>/dev/null || true
-  systemctl restart sentryusb-ble 2>/dev/null || true
+  systemctl enable dashusb-ble 2>/dev/null || true
+  systemctl restart dashusb-ble 2>/dev/null || true
 
   setup_progress "BLE daemon installed and started."
-  setup_progress "Check status with:  journalctl -u sentryusb-ble -n 20 --no-pager"
+  setup_progress "Check status with:  journalctl -u dashusb-ble -n 20 --no-pager"
 }
 
 # Fix WiFi/networking on installs that used the old read-only setup (symlinks to
 # /mutable). Run after remounting root rw. Safe to run multiple times.
 function cmd_fix_networking {
-  if [ ! -e /sentryusb/SENTRYUSB_SETUP_FINISHED ]; then
+  if [ ! -e /dashusb/DASHUSB_SETUP_FINISHED ]; then
     setup_progress "STOP: run this only on a completed install. Run full setup first."
     exit 1
   fi
@@ -1161,7 +1161,7 @@ function checkfsrw() {
 }
 
 function boot_is_not_on_root {
-  [ "$(stat -c "%d" /)" -ne "$(stat -L -c "%d" /sentryusb)" ]
+  [ "$(stat -c "%d" /)" -ne "$(stat -L -c "%d" /dashusb)" ]
 }
 
 function diagnose {
@@ -1236,7 +1236,7 @@ function diagnose {
     fi
     for i in 0 1 2 3 4 5 6
     do
-      LUN="/sys/kernel/config/usb_gadget/sentryusb/functions/mass_storage.0/lun.${i}/file"
+      LUN="/sys/kernel/config/usb_gadget/dashusb/functions/mass_storage.0/lun.${i}/file"
       if [ -e "$LUN" ]
       then
         echo "lun${i} connected, from file $(cat "$LUN")"
@@ -1263,7 +1263,7 @@ function diagnose {
     numsnapshots=$( mount | grep -c snapshot )
     echo "$numsnapshots snapshots mounted"
 
-    if [ ! -e /sentryusb/SENTRYUSB_SETUP_FINISHED ]
+    if [ ! -e /dashusb/DASHUSB_SETUP_FINISHED ]
     then
       echo 'ERROR: setup did not finish'
     fi
@@ -1274,7 +1274,7 @@ function diagnose {
     if ((archiveloopcount <= 2))
     then
       echo "archiveloop is not running"
-      journalctl -u sentryusb-archive | tail -30
+      journalctl -u dashusb-archive | tail -30
     fi
 
     local -r inodes=$(df --output=ipcent /mutable/ | sed 1d | sed 's/[^0-9]//g')
@@ -1302,7 +1302,7 @@ function diagnose {
     checkfsrw / ro
     if boot_is_not_on_root
     then
-      checkfsrw /sentryusb ro
+      checkfsrw /dashusb ro
     fi
     checkfsrw /backingfiles rw
     checkfsrw /mutable rw
@@ -1343,7 +1343,7 @@ function diagnose {
     else
       echo "no boombox disk image found"
     fi
-    df -h /sentryusb/ / /backingfiles/ /mutable/
+    df -h /dashusb/ / /backingfiles/ /mutable/
     echo -e "====== network ======"
     ifconfig
     iwconfig wlan0 | grep Link
@@ -1357,12 +1357,12 @@ function diagnose {
     else
       echo "ap0 interface does not exist"
     fi
-    if nmcli con show SENTRYUSB_AP &> /dev/null
+    if nmcli con show DASHUSB_AP &> /dev/null
     then
-      echo "SENTRYUSB_AP connection exists"
-      nmcli con show SENTRYUSB_AP 2>/dev/null | head -20 || true
+      echo "DASHUSB_AP connection exists"
+      nmcli con show DASHUSB_AP 2>/dev/null | head -20 || true
     else
-      echo "SENTRYUSB_AP connection not found in NetworkManager"
+      echo "DASHUSB_AP connection not found in NetworkManager"
     fi
     if systemctl is-active hostapd &> /dev/null
     then
@@ -1415,19 +1415,19 @@ function diagnose {
     else
       echo "BLE private key does NOT exist"
     fi
-    if [ -x /root/bin/sentryusb-ble-action ]
+    if [ -x /root/bin/dashusb-ble-action ]
     then
-      echo "sentryusb-ble-action binary exists (native BLE — tesla-control no longer used)"
+      echo "dashusb-ble-action binary exists (native BLE — tesla-control no longer used)"
     else
-      echo "sentryusb-ble-action binary does NOT exist"
+      echo "dashusb-ble-action binary does NOT exist"
     fi
     if [ -n "${TESLA_BLE_VIN:+x}" ]
     then
       echo "TESLA_BLE_VIN is set: ${TESLA_BLE_VIN}"
-      if [ -x /root/bin/sentryusb-ble-action ] && [ -f /root/.ble/key_private.pem ]
+      if [ -x /root/bin/dashusb-ble-action ] && [ -f /root/.ble/key_private.pem ]
       then
         # Native pairing probe: prints exactly one token.
-        ble_diag_token="$(timeout 40 /root/bin/sentryusb-ble-action session-info 2>/dev/null | tr -d '[:space:]')"
+        ble_diag_token="$(timeout 40 /root/bin/dashusb-ble-action session-info 2>/dev/null | tr -d '[:space:]')"
         case "$ble_diag_token" in
           PAIRED)
             echo "Car is reachable via BLE"
@@ -1473,9 +1473,9 @@ function diagnose {
     journalctl -u rc-local
 
     echo -e "====== setup log ======"
-    if [ -e /sentryusb/sentryusb-setup.log ]
+    if [ -e /dashusb/dashusb-setup.log ]
     then
-      cat /sentryusb/sentryusb-setup.log
+      cat /dashusb/dashusb-setup.log
     else
       echo "no setup log found"
     fi
@@ -1701,15 +1701,15 @@ configure_hostname
 
 tmpdir=/tmp/$$
 mkdir -p "$tmpdir"
-copy_script setup/pi/setup-sentryusb "$tmpdir"  &> /dev/null
-if cmp -s "$tmpdir/setup-sentryusb" "$0"
+copy_script setup/pi/setup-dashusb "$tmpdir"  &> /dev/null
+if cmp -s "$tmpdir/setup-dashusb" "$0"
 then
   setup_progress "$0 is up to date"
 else
   setup_progress "WARNING: $BRANCHNAME contains a different version of $0. It is recommended to run '$0 upgrade' to get the latest version."
 fi
 
-copy_script pi-gen-sources/00-sentryusb-tweaks/files/rc.local "$tmpdir" &> /dev/null
+copy_script pi-gen-sources/00-dashusb-tweaks/files/rc.local "$tmpdir" &> /dev/null
 if cmp -s "$tmpdir/rc.local" /etc/rc.local
 then
   setup_progress "rc.local is up to date"
@@ -1806,7 +1806,7 @@ copy_script setup/pi/configure-ssh.sh /tmp
 copy_script setup/pi/configure-rtc.sh /tmp
 /tmp/configure-rtc.sh
 
-# source setup-sentryusb from .bashrc to set up completion
+# source setup-dashusb from .bashrc to set up completion
 if ! grep -q envsetup.sh /root/.bashrc
 then
   echo "source /root/bin/envsetup.sh" >> /root/.bashrc
@@ -1814,15 +1814,15 @@ fi
 sed -i '/source \/root\/bin\/setup-teslausb/d' /root/.bashrc
 
 # UX courtesy reminders
-if ! grep -q SENTRYUSB_TIP1 /root/.bashrc
+if ! grep -q DASHUSB_TIP1 /root/.bashrc
 then
   cat >> /root/.bashrc <<- EOC
 	if [ -n "\$PS1" ]; then
-		cat << SENTRYUSB_TIP1
+		cat << DASHUSB_TIP1
 		The root partition is mounted read-only.
 		Run 'bin/remountfs_rw' to allow writing to it.
 
-		SENTRYUSB_TIP1
+		DASHUSB_TIP1
 	fi
 	EOC
 fi
@@ -1830,29 +1830,29 @@ fi
 DEFUSER=$(grep ":1000:1000:" /etc/passwd | awk -F : '{print $1}')
 if [ -n "$DEFUSER" ]
 then
-  if ! grep -q SENTRYUSB_TIP1 "/home/$DEFUSER/.bashrc"
+  if ! grep -q DASHUSB_TIP1 "/home/$DEFUSER/.bashrc"
   then
     cat >> "/home/$DEFUSER/.bashrc" <<- 'EOC'
 	if [ -n "$PS1" ]; then
 		_SENTRY_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 		_SENTRY_HOST=$(hostname -s 2>/dev/null)
-		cat << SENTRYUSB_TIP1
+		cat << DASHUSB_TIP1
 		Run 'sudo -i' if you need to make changes.
 
-		The SentryUSB web interface is at http://${_SENTRY_HOST} or http://${_SENTRY_IP}
+		The DashUSB web interface is at http://${_SENTRY_HOST} or http://${_SENTRY_IP}
 
-		SENTRYUSB_TIP1
+		DASHUSB_TIP1
 		unset _SENTRY_IP _SENTRY_HOST
 	fi
 	EOC
   fi
-  if grep -q "/boot/SENTRYUSB_SETUP_FINISHED" "/home/$DEFUSER/.bashrc"
+  if grep -q "/boot/DASHUSB_SETUP_FINISHED" "/home/$DEFUSER/.bashrc"
   then
-    sed -i "s@/boot/SENTRYUSB_SETUP_FINISHED@/sentryusb/SENTRYUSB_SETUP_FINISHED@" "/home/$DEFUSER/.bashrc"
+    sed -i "s@/boot/DASHUSB_SETUP_FINISHED@/dashusb/DASHUSB_SETUP_FINISHED@" "/home/$DEFUSER/.bashrc"
   fi
-  if grep -q "/boot/SENTRYUSB_SETUP_FINISHED" "/root/.bashrc"
+  if grep -q "/boot/DASHUSB_SETUP_FINISHED" "/root/.bashrc"
   then
-    sed -i "s@/boot/SENTRYUSB_SETUP_FINISHED@/sentryusb/SENTRYUSB_SETUP_FINISHED@" "/root/.bashrc"
+    sed -i "s@/boot/DASHUSB_SETUP_FINISHED@/dashusb/DASHUSB_SETUP_FINISHED@" "/root/.bashrc"
   fi
 fi
 

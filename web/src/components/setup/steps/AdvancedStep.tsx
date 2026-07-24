@@ -517,7 +517,7 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
         </div>
         <p className="mb-2 text-xs text-slate-500">
           GitHub source used for both initial setup tarball downloads and OTA
-          updates. Forks must keep the original repo name (Sentry-USB-Rusty)
+          updates. Forks must keep the original repo name (Dash-USB)
           and use semver-compatible release tags (e.g. v1.2.3).
         </p>
         <div className="grid gap-3 sm:grid-cols-2">

@@ -5,7 +5,7 @@
 # parameters on some chip revisions). Programs advertising directly over raw
 # HCI as connectable undirected (ADV_IND) at 100ms intervals.
 #
-# The SentryUSB apps filter scans by the "SentryUSB-" name prefix, so the
+# The DashUSB apps filter scans by the "DashUSB-" name prefix, so the
 # local name MUST appear in the scan response (BlueZ doesn't include the
 # name in this path by default, hence the explicit scan-rsp builder below).
 # Fresh flag = a central connect is in flight; don't re-assert advertising then.

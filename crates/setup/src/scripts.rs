@@ -8,7 +8,7 @@ use anyhow::Result;
 
 const REMOUNTFS_RW: &str = r#"#!/bin/bash
 mount / -o remount,rw
-for _mp in /sentryusb /boot/firmware /boot; do
+for _mp in /dashusb /boot/firmware /boot; do
   if findmnt "$_mp" > /dev/null 2>&1; then
     mount "$_mp" -o remount,rw
     break
@@ -39,19 +39,19 @@ mount -t "$fstype" -o "$opts,$moreopts" "$source" "$mountpoint"
 "#;
 
 const MAKE_SNAPSHOT: &str = r#"#!/bin/bash -eu
-# Thin wrapper around `sentryusb snapshot make` — kept because
+# Thin wrapper around `dashusb snapshot make` — kept because
 # archiveloop and external scripts call this path by filename.
 # Forwards "$@" so `make_snapshot.sh nofsck` reaches the Rust binary
 # which actually handles the flag (skips the loop-mount + fsck pass).
-sentryusb snapshot make "$@"
+dashusb snapshot make "$@"
 "#;
 
 const RELEASE_SNAPSHOT: &str = r#"#!/bin/bash -eu
-sentryusb snapshot release "$@"
+dashusb snapshot release "$@"
 "#;
 
 const MANAGE_FREE_SPACE: &str = r#"#!/bin/bash -eu
-sentryusb space manage "$@"
+dashusb space manage "$@"
 "#;
 
 const FORCE_SYNC: &str = r#"#!/bin/bash -eu
@@ -60,11 +60,11 @@ pkill -USR1 -f archiveloop || echo "archiveloop not running"
 "#;
 
 const ENABLE_GADGET: &str = r#"#!/bin/bash -eu
-sentryusb gadget enable "$@"
+dashusb gadget enable "$@"
 "#;
 
 const DISABLE_GADGET: &str = r#"#!/bin/bash -eu
-sentryusb gadget disable "$@"
+dashusb gadget disable "$@"
 "#;
 
 /// autofs map script for `/tmp/snapshots` — resolves snap-NNN names to the
@@ -155,7 +155,7 @@ cat "$optfile"
 // helper scripts above and silently relied on the Go-era pi-gen image
 // having pre-installed `archiveloop`, `archive-clips.sh`, etc. Anyone
 // running `curl | bash install-pi.sh` on a clean Pi OS would end up
-// with a working binary, a perfectly-formatted /root/sentryusb.conf,
+// with a working binary, a perfectly-formatted /root/dashusb.conf,
 // systemd-archive enabled… and an empty /root/bin/ where the script
 // the service tries to exec is supposed to live. Service crashloops,
 // no archive ever runs.
@@ -183,7 +183,7 @@ pub async fn install_runtime_scripts(emitter: &crate::SetupEmitter) -> Result<bo
         ("force_sync.sh", FORCE_SYNC),
         ("enable_gadget.sh", ENABLE_GADGET),
         ("disable_gadget.sh", DISABLE_GADGET),
-        ("auto.sentryusb", AUTO_SENTRYUSB),
+        ("auto.dashusb", AUTO_SENTRYUSB),
         ("auto.www", AUTO_WWW),
         // Archive flow — these are the universal scripts that don't depend
         // on which archive system the user picked. The per-system variants
@@ -221,7 +221,7 @@ pub async fn install_runtime_scripts(emitter: &crate::SetupEmitter) -> Result<bo
 
     #[cfg(unix)]
     {
-        let _ = std::os::unix::fs::symlink("/root/bin/mountimage", "/sbin/mount.sentryusb");
+        let _ = std::os::unix::fs::symlink("/root/bin/mountimage", "/sbin/mount.dashusb");
     }
 
     emitter.progress("Runtime scripts installed.");

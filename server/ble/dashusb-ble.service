@@ -1,6 +1,6 @@
 [Unit]
-Description=SentryUSB BLE Peripheral
-Documentation=https://github.com/Sentry-Six/Sentry-USB-Rusty
+Description=DashUSB BLE Peripheral
+Documentation=https://github.com/Sentry-Six/Dash-USB
 After=bluetooth.target bluetooth.service dbus.service
 Requires=bluetooth.target dbus.service
 BindsTo=bluetooth.service
@@ -26,7 +26,7 @@ ExecStartPre=-/bin/bash -c 'f=/tmp/ble_keep_awake_active; [ -e "$f" ] && [ $(( $
 ExecStartPre=/usr/sbin/rfkill unblock bluetooth
 # Bring up all detected hci adapters (onboard + any USB dongles), not
 # just hci0 — when the user has configured BLE_ADAPTER=hci1 in
-# sentryusb.conf the Python script will pick that one, but the
+# dashusb.conf the Python script will pick that one, but the
 # kernel needs the device powered on first regardless of which one
 # we end up using.
 ExecStartPre=-/bin/bash -c 'for hci in /sys/class/bluetooth/hci*; do [ -d "$hci" ] && /usr/bin/hciconfig $(basename "$hci") up; done'
@@ -37,12 +37,12 @@ ExecStartPre=-/bin/bash -c 'for hci in /sys/class/bluetooth/hci*; do [ -d "$hci"
 # on RK3399). In the daemon the unit reaches active immediately; both
 # guards stay intact — it waits for org.bluez before touching btmgmt, and
 # re-enables controller advertising before registering the GATT app.
-ExecStart=/usr/bin/python3 /root/bin/sentryusb-ble.py
+ExecStart=/usr/bin/python3 /root/bin/dashusb-ble.py
 Restart=always
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=sentryusb-ble
+SyslogIdentifier=dashusb-ble
 Environment=PYTHONUNBUFFERED=1
 
 [Install]

@@ -1,11 +1,11 @@
 #!/bin/bash
 #
-# sentryusb-pick-binary — select the best-tuned sentryusb binary for the
-# running CPU. Runs as ExecStartPre before sentryusb.service starts, so
+# dashusb-pick-binary — select the best-tuned dashusb binary for the
+# running CPU. Runs as ExecStartPre before dashusb.service starts, so
 # the daemon always launches via the best binary the hardware can run.
 #
 # The decision is recorded both in journalctl AND in
-# /opt/sentryusb/active-variant (one line, the matched suffix) so the
+# /opt/dashusb/active-variant (one line, the matched suffix) so the
 # in-app self-updater can re-download the same variant on update.
 #
 # Detection rules:
@@ -24,10 +24,10 @@
 
 set -u
 
-INSTALL_DIR=/opt/sentryusb
-CURRENT_LINK="${INSTALL_DIR}/sentryusb-current"
+INSTALL_DIR=/opt/dashusb
+CURRENT_LINK="${INSTALL_DIR}/dashusb-current"
 ACTIVE_FILE="${INSTALL_DIR}/active-variant"
-TAG="sentryusb-pick-binary"
+TAG="dashusb-pick-binary"
 
 log() { logger -t "$TAG" -- "$1" 2>/dev/null || echo "$TAG: $1" >&2; }
 
@@ -93,7 +93,7 @@ detect_variant() {
 
 DETECTED="$(detect_variant)"
 PICKED="$DETECTED"
-PICKED_PATH="${INSTALL_DIR}/sentryusb-${PICKED}"
+PICKED_PATH="${INSTALL_DIR}/dashusb-${PICKED}"
 
 # Fallback chain — if the preferred variant isn't on disk, walk back through
 # safer choices. Last resort is the unsuffixed legacy filename in case the
@@ -101,9 +101,9 @@ PICKED_PATH="${INSTALL_DIR}/sentryusb-${PICKED}"
 if [ ! -x "$PICKED_PATH" ]; then
     log "preferred variant ${PICKED} not installed at ${PICKED_PATH}, walking fallbacks"
     for fallback in linux-arm64-a72 linux-arm64-a53 linux-armv7; do
-        if [ -x "${INSTALL_DIR}/sentryusb-${fallback}" ]; then
+        if [ -x "${INSTALL_DIR}/dashusb-${fallback}" ]; then
             PICKED="$fallback"
-            PICKED_PATH="${INSTALL_DIR}/sentryusb-${fallback}"
+            PICKED_PATH="${INSTALL_DIR}/dashusb-${fallback}"
             log "fell back to ${fallback}"
             break
         fi
@@ -111,13 +111,13 @@ if [ ! -x "$PICKED_PATH" ]; then
 fi
 
 if [ ! -x "$PICKED_PATH" ]; then
-    # Last-ditch: legacy single-binary install at /opt/sentryusb/sentryusb.
-    if [ -x "${INSTALL_DIR}/sentryusb" ] && [ ! -L "${INSTALL_DIR}/sentryusb" ]; then
+    # Last-ditch: legacy single-binary install at /opt/dashusb/dashusb.
+    if [ -x "${INSTALL_DIR}/dashusb" ] && [ ! -L "${INSTALL_DIR}/dashusb" ]; then
         PICKED="legacy"
-        PICKED_PATH="${INSTALL_DIR}/sentryusb"
+        PICKED_PATH="${INSTALL_DIR}/dashusb"
         log "no per-CPU binaries found, falling back to legacy ${PICKED_PATH}"
     else
-        log "FATAL: no sentryusb binary found under ${INSTALL_DIR}"
+        log "FATAL: no dashusb binary found under ${INSTALL_DIR}"
         exit 1
     fi
 fi
@@ -141,43 +141,5 @@ if [ -n "$DETECTED" ]; then
 fi
 
 log "selected variant=${PICKED} (detected=${DETECTED:-unknown}) path=${PICKED_PATH}"
-
-# ── Aux binaries: telemetry sampler + BLE action CLI ──
-#
-# These live at fixed paths under /root/bin (sentryusb-telemetry.service's
-# ConditionPathExists and run/awake_start both reference them there), but
-# like the main binary they are per-CPU-tuned builds. Manage them the same
-# way: per-variant copies under /opt/sentryusb, with /root/bin as a symlink
-# this picker re-points at every boot.
-#
-# This is the fix for the wrong-variant SIGILL crash-loop (issue #88):
-# previously whatever variant landed in /root/bin stayed there forever, so
-# moving an SD card between Pi models (or a bad suffix at install time)
-# left a binary the CPU can't run — e.g. an a76 build's baked-in LSE
-# atomics / crypto instructions SIGILL on a Pi 4's Cortex-A72 — with no
-# self-heal, while the main binary silently corrected itself each boot.
-#
-# Legacy installs: if no per-variant copies exist under /opt/sentryusb
-# (image predates this scheme and the OTA updater hasn't run since), leave
-# /root/bin alone — a regular file there is the only copy we have.
-mkdir -p /root/bin 2>/dev/null || true
-for name in sentryusb-ble-action; do
-    AUX_PATH="${INSTALL_DIR}/${name}-${PICKED}"
-    if [ ! -x "$AUX_PATH" ]; then
-        # Same fallback chain as the main binary. a72 is safe on every
-        # aarch64 board we support (ARMv8.0 baseline, no LSE/crypto baked).
-        for fallback in linux-arm64-a72 linux-arm64-a53 linux-armv7; do
-            if [ -x "${INSTALL_DIR}/${name}-${fallback}" ]; then
-                AUX_PATH="${INSTALL_DIR}/${name}-${fallback}"
-                log "${name}: preferred variant ${PICKED} not installed, falling back to ${fallback}"
-                break
-            fi
-        done
-    fi
-    if [ -x "$AUX_PATH" ]; then
-        ln -sfn "$AUX_PATH" "/root/bin/${name}"
-        log "${name} -> ${AUX_PATH}"
-    fi
-done
 
 exit 0

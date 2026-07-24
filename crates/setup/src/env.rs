@@ -92,7 +92,7 @@ fn dt_compatible_contains(needle: &str) -> bool {
 #[derive(Debug, Clone)]
 pub struct SetupEnv {
     pub pi_model: PiModel,
-    /// Boot partition (/sentryusb -> /boot/firmware or /boot).
+    /// Boot partition (/dashusb -> /boot/firmware or /boot).
     pub boot_path: String,
     /// Path to cmdline.txt if it exists.
     pub cmdline_path: Option<String>,
@@ -112,20 +112,20 @@ impl SetupEnv {
     pub async fn detect() -> Result<Self> {
         let pi_model = PiModel::detect();
 
-        // Ensure /sentryusb symlink exists
+        // Ensure /dashusb symlink exists
         ensure_sentryusb_symlink()?;
 
-        let boot_path = fs::read_link("/sentryusb")
+        let boot_path = fs::read_link("/dashusb")
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| "/boot".to_string());
 
-        // Look through /sentryusb first (preserves the user's chosen
+        // Look through /dashusb first (preserves the user's chosen
         // boot dir), then fall through to the canonical locations so a
         // broken symlink left over from a prior install doesn't make
         // every cmdline/config edit silently no-op. Bookworm puts the
         // boot files under /boot/firmware; older images use /boot.
         let cmdline_path = [
-            "/sentryusb/cmdline.txt",
+            "/dashusb/cmdline.txt",
             "/boot/firmware/cmdline.txt",
             "/boot/cmdline.txt",
         ]
@@ -134,7 +134,7 @@ impl SetupEnv {
         .map(|s| s.to_string());
 
         let piconfig_path = [
-            "/sentryusb/config.txt",
+            "/dashusb/config.txt",
             "/boot/firmware/config.txt",
             "/boot/config.txt",
         ]
@@ -147,7 +147,7 @@ impl SetupEnv {
         let root_partition = detect_root_partition().await.ok();
 
         // Load config. Only use *active* (uncommented) exports — commented
-        // sample lines in sentryusb.conf are documentation, not user choices.
+        // sample lines in dashusb.conf are documentation, not user choices.
         // Merging them in would make every optional phase (AP setup, extra
         // drives, etc.) run against sample defaults the user never picked.
         let config_path = sentryusb_config::find_config_path();
@@ -254,9 +254,9 @@ fn migrate_legacy_config_keys(config: &mut std::collections::HashMap<String, Str
     }
 }
 
-/// Creates /sentryusb -> /boot/firmware (or /boot) if it doesn't exist.
+/// Creates /dashusb -> /boot/firmware (or /boot) if it doesn't exist.
 fn ensure_sentryusb_symlink() -> Result<()> {
-    let link = Path::new("/sentryusb");
+    let link = Path::new("/dashusb");
     if link.is_symlink() || link.exists() {
         return Ok(());
     }
@@ -268,7 +268,7 @@ fn ensure_sentryusb_symlink() -> Result<()> {
         } else {
             "/boot"
         };
-        std::os::unix::fs::symlink(target, "/sentryusb")?;
+        std::os::unix::fs::symlink(target, "/dashusb")?;
     }
 
     Ok(())
@@ -280,11 +280,11 @@ async fn detect_boot_disk() -> Result<String> {
     // call on it fails silently, cascading into bogus "not last partition"
     // errors during the shrink phase.
     let output = sentryusb_shell::run(
-        "lsblk", &["-dpno", "pkname", &detect_mount_source("/sentryusb").await?],
+        "lsblk", &["-dpno", "pkname", &detect_mount_source("/dashusb").await?],
     ).await?;
     let dev = output.trim().to_string();
     if dev.is_empty() {
-        anyhow::bail!("could not determine boot disk for /sentryusb");
+        anyhow::bail!("could not determine boot disk for /dashusb");
     }
     Ok(dev)
 }

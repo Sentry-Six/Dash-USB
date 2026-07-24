@@ -163,9 +163,9 @@ pub async fn configure_archive(env: &SetupEnv, emitter: &SetupEmitter) -> Result
 
     // Idempotency: rsync installed, archive service already installed, already enabled.
     let rsync_ok = sentryusb_shell::run("which", &["rsync"]).await.is_ok();
-    let service_path = std::path::Path::new("/lib/systemd/system/sentryusb-archive.service");
+    let service_path = std::path::Path::new("/lib/systemd/system/dashusb-archive.service");
     let service_enabled = sentryusb_shell::run(
-        "systemctl", &["is-enabled", "sentryusb-archive.service"],
+        "systemctl", &["is-enabled", "dashusb-archive.service"],
     ).await.is_ok();
 
     if rsync_ok && service_path.exists() && service_enabled && archive_system == ArchiveSystem::None {
@@ -204,7 +204,7 @@ pub async fn configure_archive(env: &SetupEnv, emitter: &SetupEmitter) -> Result
 
     crate::system::install_archive_service()?;
     let _ = sentryusb_shell::run("systemctl", &["daemon-reload"]).await;
-    let _ = sentryusb_shell::run("systemctl", &["enable", "sentryusb-archive.service"]).await;
+    let _ = sentryusb_shell::run("systemctl", &["enable", "dashusb-archive.service"]).await;
 
     emitter.progress("Archive configuration complete.");
     Ok(true)

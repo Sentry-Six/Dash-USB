@@ -36,7 +36,7 @@ CHANGED=0
 # real failure (never for "already correct").
 set_key() {
   local section="$1" key="$2" value="$3" tmp
-  tmp=$(mktemp "$CONF.sentryusb-tmp.XXXXXX") || return 1
+  tmp=$(mktemp "$CONF.dashusb-tmp.XXXXXX") || return 1
   # Carry the conf's owner/mode onto the temp file before filling it, so
   # the final rename doesn't change the file's metadata.
   cp -p -- "$CONF" "$tmp" || { rm -f -- "$tmp"; return 1; }
@@ -80,7 +80,7 @@ set_key() {
     return 0
   fi
   # Keep one pristine copy from before our first edit ever.
-  [ -f "$CONF.sentryusb-prev" ] || cp -p -- "$CONF" "$CONF.sentryusb-prev" \
+  [ -f "$CONF.dashusb-prev" ] || cp -p -- "$CONF" "$CONF.dashusb-prev" \
     || { rm -f -- "$tmp"; return 1; }
   # Rename is atomic — a crash mid-edit leaves the previous conf intact.
   mv -f -- "$tmp" "$CONF" || { rm -f -- "$tmp"; return 1; }

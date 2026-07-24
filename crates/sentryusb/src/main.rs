@@ -19,7 +19,7 @@ mod embed;
 mod migrate;
 
 #[derive(Parser)]
-#[command(name = "sentryusb", about = "SentryUSB server")]
+#[command(name = "dashusb", about = "Dash USB server")]
 struct Args {
     /// HTTP server port (only used when no subcommand is given)
     #[arg(short, long, default_value_t = 8788)]
@@ -103,16 +103,16 @@ enum SpaceAction {
 #[tokio::main]
 async fn main() {
     // Boot-phase timer. Lets us attribute the gap between systemd
-    // "Started sentryusb.service" and the UDC bind in the journal.
+    // "Started dashusb.service" and the UDC bind in the journal.
     // Each `phase!` call emits `boot_phase=NAME elapsed_ms=N` so it's
-    // greppable: `journalctl -b -u sentryusb.service | grep boot_phase`.
+    // greppable: `journalctl -b -u dashusb.service | grep boot_phase`.
     let t0 = std::time::Instant::now();
 
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "sentryusb=info,sentryusb_api=info,tower_http=info".into()),
+                .unwrap_or_else(|_| "dashusb=info,sentryusb_api=info,tower_http=info".into()),
         )
         .init();
 
@@ -132,7 +132,7 @@ async fn main() {
         std::process::exit(run_subcommand(cmd).await);
     }
 
-    info!("SentryUSB server starting on port {}", args.port);
+    info!("DashUSB server starting on port {}", args.port);
 
     // Run startup migration in background
     tokio::spawn(async {
@@ -289,7 +289,7 @@ async fn main() {
     phase!("router_built");
 
     let addr = std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, args.port));
-    info!("SentryUSB server listening on {}", addr);
+    info!("DashUSB server listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
@@ -299,7 +299,7 @@ async fn main() {
     info!(
         boot_phase = "ready",
         elapsed_total_ms = t0.elapsed().as_millis() as u64,
-        "SentryUSB ready to serve requests",
+        "DashUSB ready to serve requests",
     );
 
     axum::serve(

@@ -23,7 +23,7 @@ function connectionmonitor {
 
 connectionmonitor $$ &
 
-rsynctmp=".sentryusbtmp"
+rsynctmp=".dashusbtmp"
 rm -rf "$ARCHIVE_MOUNT/${rsynctmp:?}" || true
 mkdir -p "$ARCHIVE_MOUNT/$rsynctmp"
 

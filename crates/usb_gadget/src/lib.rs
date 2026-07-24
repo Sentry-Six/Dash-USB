@@ -1,7 +1,7 @@
 //! USB gadget control via Linux configfs.
 //!
 //! Replaces `enable_gadget.sh` and `disable_gadget.sh` with native Rust
-//! operations on `/sys/kernel/config/usb_gadget/sentryusb`.
+//! operations on `/sys/kernel/config/usb_gadget/dashusb`.
 
 pub mod cycle_lock;
 pub mod snapshot;
@@ -374,7 +374,7 @@ pub fn disable() -> Result<()> {
     let _ = fs::remove_dir(&cfg_strings);
     // Legacy form: the pre-fix Rust binary used LANG="0x0409", which on
     // install paths that route archiveloop through Rust (install-pi.sh
-    // shim, sentryusb gadget enable CLI shim) created the dir literally
+    // shim, dashusb gadget enable CLI shim) created the dir literally
     // as `0x0409`. Hot-upgrading to the current binary would otherwise
     // leave the orphan, pinning libcomposite forever. NotFound on
     // shell-script installs is silently ignored.
@@ -448,7 +448,7 @@ pub fn disable() -> Result<()> {
 /// Requiring both signals means a partially-torn-down gadget correctly
 /// reports as inactive so the next enable call reconstructs it.
 pub fn is_active() -> bool {
-    let root = Path::new("/sys/kernel/config/usb_gadget/sentryusb");
+    let root = Path::new("/sys/kernel/config/usb_gadget/dashusb");
     let udc_bound = fs::read_to_string(root.join("UDC"))
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false);

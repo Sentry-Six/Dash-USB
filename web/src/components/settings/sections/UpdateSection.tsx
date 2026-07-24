@@ -249,7 +249,7 @@ export function UpdateSection({ onInstallStart }: Props) {
               const data = await r.json()
               // Reject stale responses from the OLD daemon — it stays
               // responsive until `reboot` fires and may answer before
-              // /opt/sentryusb/version has been rewritten with the new
+              // /opt/dashusb/version has been rewritten with the new
               // tag. Wait for either the expected new version or any
               // version distinct from the pre-update one.
               const polled = (data.version || "").trim()

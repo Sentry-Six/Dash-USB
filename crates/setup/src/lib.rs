@@ -1,6 +1,6 @@
-//! SentryUSB setup orchestrator.
+//! DashUSB setup orchestrator.
 //!
-//! Replaces the entire rc.local + setup-sentryusb shell script chain with
+//! Replaces the entire rc.local + setup-dashusb shell script chain with
 //! native Rust.  Each phase is a module that performs one logical step of the
 //! setup process, reporting progress via a callback so the web UI can stream
 //! live updates over WebSocket.

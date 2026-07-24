@@ -4,7 +4,7 @@
 //! root partition shrink). The boot-loop works like this:
 //!
 //! 1. User clicks "Run Setup" in the web wizard → `POST /api/setup/run`
-//! 2. `run_full_setup` creates `SENTRYUSB_SETUP_STARTED`, runs phases.
+//! 2. `run_full_setup` creates `DASHUSB_SETUP_STARTED`, runs phases.
 //! 3. If a phase requires a reboot, setup exits early (marker still present).
 //! 4. Pi reboots → systemd starts the web server → `auto_resume_setup()`
 //!    sees STARTED without FINISHED → re-spawns `run_full_setup`.
@@ -23,15 +23,15 @@ use crate::router::AppState;
 static SETUP_RUNNING: AtomicBool = AtomicBool::new(false);
 
 const SETUP_FINISHED_PATHS: &[&str] = &[
-    "/sentryusb/SENTRYUSB_SETUP_FINISHED",
-    "/boot/firmware/SENTRYUSB_SETUP_FINISHED",
-    "/boot/SENTRYUSB_SETUP_FINISHED",
+    "/dashusb/DASHUSB_SETUP_FINISHED",
+    "/boot/firmware/DASHUSB_SETUP_FINISHED",
+    "/boot/DASHUSB_SETUP_FINISHED",
 ];
 
 const SETUP_STARTED_PATHS: &[&str] = &[
-    "/sentryusb/SENTRYUSB_SETUP_STARTED",
-    "/boot/firmware/SENTRYUSB_SETUP_STARTED",
-    "/boot/SENTRYUSB_SETUP_STARTED",
+    "/dashusb/DASHUSB_SETUP_STARTED",
+    "/boot/firmware/DASHUSB_SETUP_STARTED",
+    "/boot/DASHUSB_SETUP_STARTED",
 ];
 
 fn is_setup_finished() -> bool {
@@ -47,7 +47,7 @@ fn is_setup_started() -> bool {
 /// WebSocket event + a log line — so a page reload after the failure
 /// shows the perpetual "Setting Up" spinner forever (no terminal state),
 /// and `auto_resume_setup` silently re-runs the doomed setup every boot.
-const SETUP_ERROR_MARKER: &str = "/sentryusb/SENTRYUSB_SETUP_ERROR";
+const SETUP_ERROR_MARKER: &str = "/dashusb/DASHUSB_SETUP_ERROR";
 
 #[derive(Debug, Clone, PartialEq)]
 struct SetupFailure {
@@ -315,7 +315,7 @@ fn spawn_setup(hub: sentryusb_ws::Hub) {
                 if let Ok(mut f) = std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
-                    .open("/sentryusb/sentryusb-setup.log")
+                    .open("/dashusb/dashusb-setup.log")
                 {
                     use std::io::Write;
                     let _ = writeln!(f, "{}", stamped);
@@ -334,7 +334,7 @@ fn spawn_setup(hub: sentryusb_ws::Hub) {
     });
 }
 
-const SETUP_PHASES_FILE: &str = "/sentryusb/setup-phases.jsonl";
+const SETUP_PHASES_FILE: &str = "/dashusb/setup-phases.jsonl";
 
 /// GET /api/setup/phases — returns the list of phases that have already been
 /// announced during the current (possibly multi-reboot) setup run. The web UI
@@ -364,7 +364,7 @@ pub async fn run_setup(State(s): State<AppState>) -> (StatusCode, Json<serde_jso
 
 /// POST /api/setup/test-archive
 ///
-/// Body: JSON map with keys matching sentryusb.conf entries:
+/// Body: JSON map with keys matching dashusb.conf entries:
 /// `ARCHIVE_SYSTEM` (cifs|rsync|rclone|nfs), plus protocol-specific fields.
 /// An actual mount/connect probe,
 /// not just a ping.
@@ -381,7 +381,7 @@ pub async fn test_archive(
     }
 
     let timeout = std::time::Duration::from_secs(15);
-    let tmp_dir = "/tmp/sentryusb-archive-test";
+    let tmp_dir = "/tmp/dashusb-archive-test";
 
     // `mount -t nfs` / `-t cifs` need userspace helpers (`mount.nfs` from
     // nfs-common, `mount.cifs` from cifs-utils). Without them the kernel

@@ -9,7 +9,7 @@
 //!   phases that are actually being executed this run.
 //!
 //! A phase callback additionally persists the phase to
-//! `/sentryusb/setup-phases.jsonl` so the UI can reconstruct the list across
+//! `/dashusb/setup-phases.jsonl` so the UI can reconstruct the list across
 //! a reboot-triggered WebSocket disconnect.
 //!
 //! The split keeps the runner's top-level "what big thing am I doing now"

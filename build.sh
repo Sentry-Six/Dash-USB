@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build script for SentryUSB Rust binary
+# Build script for DashUSB Rust binary
 # Usage: ./build.sh [target]
 #   target: arm64 (default), armv7, native
 
@@ -71,17 +71,17 @@ case "$TARGET" in
     arm64)
         echo "Building for ARM64 (Pi 3/4/5, Pi Zero 2W 64-bit)..."
         cross build --release --target aarch64-unknown-linux-gnu
-        BINARY="target/aarch64-unknown-linux-gnu/release/sentryusb"
+        BINARY="target/aarch64-unknown-linux-gnu/release/dashusb"
         ;;
     armv7)
         echo "Building for ARMv7 (Pi 3 32-bit legacy)..."
         cross build --release --target armv7-unknown-linux-gnueabihf
-        BINARY="target/armv7-unknown-linux-gnueabihf/release/sentryusb"
+        BINARY="target/armv7-unknown-linux-gnueabihf/release/dashusb"
         ;;
     native)
         echo "Building native binary..."
         cargo build --release
-        BINARY="target/release/sentryusb"
+        BINARY="target/release/dashusb"
         ;;
     *)
         echo "Unknown target: $TARGET"

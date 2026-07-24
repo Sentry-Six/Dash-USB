@@ -58,7 +58,7 @@ export default function Settings() {
   const [status, setStatus] = useState<PiStatus | null>(null)
   const [piConfig, setPiConfig] = useState<{
     uses_ble?: string
-    SENTRYUSB_HOSTNAME?: string
+    DASHUSB_HOSTNAME?: string
   } | null>(null)
   const [confirmReboot, setConfirmReboot] = useState(false)
   const [drivesConnected, setDrivesConnected] = useState<boolean | null>(null)
@@ -108,7 +108,7 @@ export default function Settings() {
     }
   }, [])
 
-  // Pi config (uses_ble, SENTRYUSB_HOSTNAME). SBC model now comes from the
+  // Pi config (uses_ble, DASHUSB_HOSTNAME). SBC model now comes from the
   // status payload (which already detects Pi 5 reliably) — the previous
   // rtc-status flag only flipped to is_pi5=true when a battery was present,
   // so a Pi 5 without an RTC battery was mis-labelled as "Pi 4 / earlier".
@@ -122,7 +122,7 @@ export default function Settings() {
   const sbc = status?.sbc_model || null
   // /api/config returns each key as { value, active } OR as a raw string,
   // depending on shape — handle both.
-  const hostnameEntry = piConfig?.SENTRYUSB_HOSTNAME as
+  const hostnameEntry = piConfig?.DASHUSB_HOSTNAME as
     | { value?: string; active?: boolean }
     | string
     | undefined

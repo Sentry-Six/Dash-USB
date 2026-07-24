@@ -5,7 +5,7 @@
 # on armv7 — runs on every Pi 2+). CI builds the release matrix override
 # these defaults via the RUSTFLAGS env var to produce per-CPU-tuned
 # variants (a53/a72/a76 for aarch64). The runtime picker script
-# (sentryusb-pick-binary) chooses the right variant at boot.
+# (dashusb-pick-binary) chooses the right variant at boot.
 #
 # `-aes,-sha2` is NOT optional: LLVM's cortex-a72 (and a53!) CPU defs
 # assume the optional ARMv8 Cryptographic Extension, but Broadcom never

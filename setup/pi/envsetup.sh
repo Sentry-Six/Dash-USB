@@ -6,15 +6,15 @@ then
   exit 1
 fi
 
-if [ ! -L /sentryusb ]
+if [ ! -L /dashusb ]
 then
   mount / -o remount,rw
-  rm -rf /sentryusb
+  rm -rf /dashusb
   if [ -d /boot/firmware ] && findmnt --fstab /boot/firmware &> /dev/null
   then
-    ln -s /boot/firmware /sentryusb
+    ln -s /boot/firmware /dashusb
   else
-    ln -s /boot /sentryusb
+    ln -s /boot /dashusb
   fi
 fi
 
@@ -43,7 +43,7 @@ EOF
 function read_setup_variables {
   if [ -z "${setup_file+x}" ]
   then
-    local -r setup_file=/root/sentryusb.conf
+    local -r setup_file=/root/dashusb.conf
   fi
   if [ -e $setup_file ]
   then
@@ -66,15 +66,10 @@ function read_setup_variables {
   newnamefor[musicsharename]=MUSIC_SHARE_NAME
   newnamefor[shareuser]=SHARE_USER
   newnamefor[sharepassword]=SHARE_PASSWORD
-  newnamefor[tesla_email]=TESLA_EMAIL
-  newnamefor[tesla_password]=TESLA_PASSWORD
-  newnamefor[tesla_vin]=TESLA_VIN
   newnamefor[timezone]=TIME_ZONE
   newnamefor[usb_drive]=DATA_DRIVE
   newnamefor[USB_DRIVE]=DATA_DRIVE
   newnamefor[archivedelay]=ARCHIVE_DELAY
-  newnamefor[trigger_file_saved]=TRIGGER_FILE_SAVED
-  newnamefor[trigger_file_sentry]=TRIGGER_FILE_SENTRY
   newnamefor[trigger_file_any]=TRIGGER_FILE_ANY
   newnamefor[pushover_enabled]=PUSHOVER_ENABLED
   newnamefor[pushover_user_key]=PUSHOVER_USER_KEY
@@ -106,7 +101,7 @@ function read_setup_variables {
 
   # set defaults for things not set in the config
   REPO=${REPO:-Sentry-Six}
-  REPO_NAME=${REPO_NAME:-Sentry-USB-Rusty}
+  REPO_NAME=${REPO_NAME:-Dash-USB}
   SNAPSHOTS_ENABLED=${SNAPSHOTS_ENABLED:-true}
   if [ "$SNAPSHOTS_ENABLED" != "true" ]
   then
@@ -122,8 +117,8 @@ function read_setup_variables {
   fi
   CONFIGURE_ARCHIVING=${CONFIGURE_ARCHIVING:-true}
   UPGRADE_PACKAGES=${UPGRADE_PACKAGES:-false}
-  export SENTRYUSB_HOSTNAME=${SENTRYUSB_HOSTNAME:-sentryusb}
-  export NOTIFICATION_TITLE=${NOTIFICATION_TITLE:-${SENTRYUSB_HOSTNAME}}
+  export DASHUSB_HOSTNAME=${DASHUSB_HOSTNAME:-dashusb}
+  export NOTIFICATION_TITLE=${NOTIFICATION_TITLE:-${DASHUSB_HOSTNAME}}
   SAMBA_ENABLED=${SAMBA_ENABLED:-false}
   SAMBA_GUEST=${SAMBA_GUEST:-false}
   INCREASE_ROOT_SIZE=${INCREASE_ROOT_SIZE:-0}
@@ -140,9 +135,9 @@ function read_setup_variables {
 read_setup_variables
 
 # Load mobile push notification credentials from the JSON file managed by the
-# Go server.  These are NOT stored in sentryusb.conf — the JSON file is the
+# Go server.  These are NOT stored in dashusb.conf — the JSON file is the
 # single source of truth so we avoid conf-write race conditions.
-NOTIFICATION_CREDENTIALS_JSON="/root/.sentryusb/notification-credentials.json"
+NOTIFICATION_CREDENTIALS_JSON="/root/.dashusb/notification-credentials.json"
 if [ "${MOBILE_PUSH_ENABLED:-false}" = "true" ] && [ -f "$NOTIFICATION_CREDENTIALS_JSON" ]; then
   MOBILE_PUSH_DEVICE_ID=$(sed -n 's/.*"device_id" *: *"\([^"]*\)".*/\1/p' "$NOTIFICATION_CREDENTIALS_JSON")
   MOBILE_PUSH_SECRET=$(sed -n 's/.*"device_secret" *: *"\([^"]*\)".*/\1/p' "$NOTIFICATION_CREDENTIALS_JSON")
@@ -156,7 +151,7 @@ then
     function log { echo "$@"; }
     export -f log
   fi
-  complete -W "diagnose upgrade install" setup-sentryusb
+  complete -W "diagnose upgrade install" setup-dashusb
 fi
 
 function isRaspberryPi {
@@ -212,16 +207,16 @@ then
   mkdir -p "$STATUSLED"
 fi
 
-if [ -f /sentryusb/cmdline.txt ]
+if [ -f /dashusb/cmdline.txt ]
 then
-  export CMDLINE_PATH=/sentryusb/cmdline.txt
+  export CMDLINE_PATH=/dashusb/cmdline.txt
 else
   export CMDLINE_PATH=/dev/null
 fi
 
-if [ -f /sentryusb/config.txt ]
+if [ -f /dashusb/config.txt ]
 then
-  export PICONFIG_PATH=/sentryusb/config.txt
+  export PICONFIG_PATH=/dashusb/config.txt
 else
   export PICONFIG_PATH=/dev/null
 fi

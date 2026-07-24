@@ -10,14 +10,14 @@ then
   exit 1
 fi
 
-if [ ! -L /sentryusb ]
+if [ ! -L /dashusb ]
 then
-  rm -rf /sentryusb
+  rm -rf /dashusb
   if [ -d /boot/firmware ] && findmnt --fstab /boot/firmware &> /dev/null
   then
-    ln -s /boot/firmware /sentryusb
+    ln -s /boot/firmware /dashusb
   else
-    ln -s /boot /sentryusb
+    ln -s /boot /dashusb
   fi
 fi
 
@@ -131,7 +131,7 @@ then
     cat <<- EOF > /etc/rc.local
 		#!/bin/bash
 		{
-		  while ! curl -s https://raw.githubusercontent.com/Sentry-Six/Sentry-USB-Rusty/main/setup/generic/install.sh
+		  while ! curl -s https://raw.githubusercontent.com/Sentry-Six/Dash-USB/main/setup/generic/install.sh
 		  do
 		    sleep 1
 		  done
@@ -143,17 +143,17 @@ then
     # On Bookworm the boot partition is /boot/firmware/, not /boot/.
     # The bootloader loads files relative to the boot partition, so the
     # initramfs must live there, but update-initramfs writes to /boot/.
-    BOOT_PART="$(readlink -f /sentryusb)"
+    BOOT_PART="$(readlink -f /dashusb)"
     if [ ! -e "${BOOT_PART}/${INITRD_NAME}" ] && [ ! -e "/boot/${INITRD_NAME}" ]
     then
       # This device did not boot using an initramfs. If we're running
       # Raspberry Pi OS, we can switch it over to using initramfs first,
       # then revert back after.
-      if [ -f /etc/os-release ] && grep -q Raspbian /etc/os-release && [ -e /sentryusb/config.txt ]
+      if [ -f /etc/os-release ] && grep -q Raspbian /etc/os-release && [ -e /dashusb/config.txt ]
       then
         echo "Temporarily switching Raspberry Pi OS to use initramfs"
         update-initramfs -c -k "$(uname -r)"
-        echo "initramfs ${INITRD_NAME} followkernel # SENTRYUSB-REMOVE" >> /sentryusb/config.txt
+        echo "initramfs ${INITRD_NAME} followkernel # DASHUSB-REMOVE" >> /dashusb/config.txt
       else
         error_exit "can't automatically shrink root partition for this OS, please shrink it manually before proceeding"
       fi
@@ -165,7 +165,7 @@ then
     fi
 
     {
-      while ! curl -s https://raw.githubusercontent.com/Sentry-Six/Sentry-USB-Rusty/main/tools/debian-resizefs.sh
+      while ! curl -s https://raw.githubusercontent.com/Sentry-Six/Dash-USB/main/tools/debian-resizefs.sh
       do
         sleep 1
       done
@@ -181,10 +181,10 @@ then
 
   echo "${rootpartstartsector},${fsnumsectors}" | sfdisk --force "${rootdev}" -N "${partnum}"
 
-  if [ -e /sentryusb/config.txt ] && grep -q SENTRYUSB-REMOVE /sentryusb/config.txt
+  if [ -e /dashusb/config.txt ] && grep -q DASHUSB-REMOVE /dashusb/config.txt
   then
     # switch Raspberry Pi OS back to not using initramfs
-    sed -i '/SENTRYUSB-REMOVE/d' /sentryusb/config.txt
+    sed -i '/DASHUSB-REMOVE/d' /dashusb/config.txt
     rm -rf "/boot/initrd.img-$(uname -r)"
   else
     # restore initramfs without the resize code that debian-resizefs.sh added
@@ -196,9 +196,9 @@ then
 fi
 
 # Copy the sample config file from github
-if [ ! -e /sentryusb/sentryusb.conf ] && [ ! -e /root/sentryusb.conf ]
+if [ ! -e /dashusb/dashusb.conf ] && [ ! -e /root/dashusb.conf ]
 then
-  while ! curl -o /sentryusb/sentryusb.conf https://raw.githubusercontent.com/Sentry-Six/Sentry-USB-Rusty/main/pi-gen-sources/00-sentryusb-tweaks/files/sentryusb.conf.sample
+  while ! curl -o /dashusb/dashusb.conf https://raw.githubusercontent.com/Sentry-Six/Dash-USB/main/pi-gen-sources/00-dashusb-tweaks/files/dashusb.conf.sample
   do
     sleep 1
   done
@@ -207,9 +207,9 @@ fi
 # Download wifi config template (only needed for pre-Bookworm systems using wpa_supplicant)
 if ! systemctl -q is-enabled NetworkManager.service 2>/dev/null
 then
-  if [ ! -e /sentryusb/wpa_supplicant.conf.sample ]
+  if [ ! -e /dashusb/wpa_supplicant.conf.sample ]
   then
-    while ! curl -o /sentryusb/wpa_supplicant.conf.sample https://raw.githubusercontent.com/Sentry-Six/Sentry-USB-Rusty/main/pi-gen-sources/00-sentryusb-tweaks/files/wpa_supplicant.conf.sample
+    while ! curl -o /dashusb/wpa_supplicant.conf.sample https://raw.githubusercontent.com/Sentry-Six/Dash-USB/main/pi-gen-sources/00-dashusb-tweaks/files/wpa_supplicant.conf.sample
     do
       sleep 1
     done
@@ -217,13 +217,13 @@ then
 fi
 
 # The user should have configured networking manually, so disable wifi setup
-touch /sentryusb/WIFI_ENABLED
+touch /dashusb/WIFI_ENABLED
 
 # Copy our rc.local from github, which will allow setup to
 # continue using the regular "one step setup" process used
 # for setting up a Raspberry Pi with the prebuilt image
 rm -f /etc/rc.local
-while ! curl -o /etc/rc.local https://raw.githubusercontent.com/Sentry-Six/Sentry-USB-Rusty/main/pi-gen-sources/00-sentryusb-tweaks/files/rc.local
+while ! curl -o /etc/rc.local https://raw.githubusercontent.com/Sentry-Six/Dash-USB/main/pi-gen-sources/00-dashusb-tweaks/files/rc.local
 do
   sleep 1
 done

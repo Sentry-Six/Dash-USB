@@ -1,5 +1,5 @@
 #!/bin/bash
-# sentryusb-apply-runtime-patches.sh
+# dashusb-apply-runtime-patches.sh
 #
 # Idempotent re-application of all install-time patches that must survive
 # a binary OTA update. Called by:
@@ -59,7 +59,7 @@ is_rock_4cplus() {
 #   4/5 user does hit "GATT 147 bond=BOND_NONE" they can opt in with:
 #       sudo touch /mutable/force-ble-adv-helper
 #   That sentinel forces install regardless of chip detection. The next OTA
-#   (or `sudo /usr/local/bin/sentryusb-apply-runtime-patches`) lands it.
+#   (or `sudo /usr/local/bin/dashusb-apply-runtime-patches`) lands it.
 is_known_broken_ble_chip() {
     # Operator override — for chips we haven't detection-listed yet but
     # field-confirmed need the helper.
@@ -79,16 +79,16 @@ is_known_broken_ble_chip() {
 # Broadcom Pi-family chips (BCM4345C0 on Rock 4C+, BCM43430B0 on Pi Zero 2 W,
 # the BCM43455 sibling on Pi 4/Compute Module, etc.) all reject BlueZ's
 # extended advertising with "Invalid Parameters 0x0d". The shipped
-# sentryusb-ble.py calls sys.exit(1) on that error, which tears down GATT
+# dashusb-ble.py calls sys.exit(1) on that error, which tears down GATT
 # and lets systemd re-spawn the daemon in a fast crash loop. The Pi's actual
-# advertising is handled out-of-band by sentryusb-ble-adv.service via raw
+# advertising is handled out-of-band by dashusb-ble-adv.service via raw
 # HCI (ADV_IND programmed directly), so the BlueZ failure is legitimately
 # non-fatal — we just need the GATT server to stay up. Patch swallows the
 # BlueZ adv error and logs it instead.
 #
 # Was 4C+-gated through v3.11.7; widened to all Pi families in v3.11.8.
 apply_ble_nonfatal_adv() {
-    local f=/root/bin/sentryusb-ble.py
+    local f=/root/bin/dashusb-ble.py
     [ -f "$f" ] || { warn "BLE: $f missing — skipping non-fatal-adv patch"; return 0; }
 
     if grep -q 'legacy btmgmt advertising' "$f"; then
@@ -111,7 +111,7 @@ if a >= 0 and b >= 0:
           "    # BCM4345C0 (Rock 4C+): BlueZ uses EXTENDED advertising which this chip\n"
           "    # rejects ('Invalid Parameters 0x0d'). Do NOT exit (that tears down GATT\n"
           "    # and loops forever); keep GATT up. Legacy btmgmt advertising is enabled\n"
-          "    # out-of-band by sentryusb-ble-adv.service.\n"
+          "    # out-of-band by dashusb-ble-adv.service.\n"
           "    log.warning(f'BlueZ advertisement registration failed ({error}); '\n"
           "                'using legacy btmgmt advertising instead; GATT stays up.')\n")
     open(p, 'w').write(s[:a] + cb + s[b+1:]); print('patched')
@@ -142,8 +142,8 @@ PYEOF
     # Restart the daemon so the patched version takes effect immediately
     # rather than waiting for the next reboot. reset-failed clears any
     # crash-loop backoff from the broken pre-patch state.
-    systemctl reset-failed sentryusb-ble.service 2>/dev/null || true
-    systemctl restart sentryusb-ble.service 2>/dev/null || true
+    systemctl reset-failed dashusb-ble.service 2>/dev/null || true
+    systemctl restart dashusb-ble.service 2>/dev/null || true
     return 0
 }
 
@@ -196,16 +196,16 @@ apply_eatt_disable() {
 # current upstream version.
 #
 # Files installed:
-#   /usr/local/bin/sentryusb-ble-adv.sh
-#   /etc/systemd/system/sentryusb-ble-adv.service
-#   /etc/udev/rules.d/99-sentryusb-ble-hci.rules
-#   /etc/systemd/system/sentryusb-ble.service.d/wants-bluetooth.conf
+#   /usr/local/bin/dashusb-ble-adv.sh
+#   /etc/systemd/system/dashusb-ble-adv.service
+#   /etc/udev/rules.d/99-dashusb-ble-hci.rules
+#   /etc/systemd/system/dashusb-ble.service.d/wants-bluetooth.conf
 apply_ble_adv_helper() {
     # Gate to known-affected chips so Pi 4/5 (where bluetoothd's modern
     # ext-adv works) don't get the raw-HCI helper overriding their good
     # advertising. See is_known_broken_ble_chip above for the full list.
     is_known_broken_ble_chip || { log "BLE adv: chip not in known-broken list — skipping helper install"; return 0; }
-    local repo="${REPO:-Sentry-Six/Sentry-USB-Rusty}"
+    local repo="${REPO:-Sentry-Six/Dash-USB}"
     local base="https://raw.githubusercontent.com/${repo}/main/setup/pi"
     local changed=0
 
@@ -229,18 +229,18 @@ apply_ble_adv_helper() {
         log "BLE adv: installed/refreshed $dst"
     }
 
-    install_one sentryusb-ble-adv.sh /usr/local/bin/sentryusb-ble-adv.sh 755 || return 0
-    install_one sentryusb-ble-adv.service /etc/systemd/system/sentryusb-ble-adv.service 644
-    install_one 99-sentryusb-ble-hci.rules /etc/udev/rules.d/99-sentryusb-ble-hci.rules 644
-    mkdir -p /etc/systemd/system/sentryusb-ble.service.d
-    install_one sentryusb-ble-wants-bluetooth.conf \
-                /etc/systemd/system/sentryusb-ble.service.d/wants-bluetooth.conf 644
+    install_one dashusb-ble-adv.sh /usr/local/bin/dashusb-ble-adv.sh 755 || return 0
+    install_one dashusb-ble-adv.service /etc/systemd/system/dashusb-ble-adv.service 644
+    install_one 99-dashusb-ble-hci.rules /etc/udev/rules.d/99-dashusb-ble-hci.rules 644
+    mkdir -p /etc/systemd/system/dashusb-ble.service.d
+    install_one dashusb-ble-wants-bluetooth.conf \
+                /etc/systemd/system/dashusb-ble.service.d/wants-bluetooth.conf 644
 
     if [ "$changed" = "1" ]; then
         systemctl daemon-reload 2>/dev/null || true
         udevadm control --reload-rules 2>/dev/null || true
-        systemctl enable sentryusb-ble-adv.service >/dev/null 2>&1 || true
-        systemctl restart sentryusb-ble-adv.service 2>/dev/null || true
+        systemctl enable dashusb-ble-adv.service >/dev/null 2>&1 || true
+        systemctl restart dashusb-ble-adv.service 2>/dev/null || true
         log "BLE adv: service enabled + restarted"
     else
         log "BLE adv: all files current, nothing to do"
@@ -257,7 +257,7 @@ apply_ble_adv_helper() {
 # Ship a udev rule so every sd disk gets bfq at hotplug/boot, and apply
 # it to the live backingfiles disk immediately when that is safe.
 apply_backingfiles_bfq() {
-    local rule=/etc/udev/rules.d/60-sentryusb-bfq.rules
+    local rule=/etc/udev/rules.d/60-dashusb-bfq.rules
     local want='ACTION=="add|change", KERNEL=="sd[a-z]", SUBSYSTEM=="block", ATTR{queue/scheduler}="bfq"'
 
     modprobe bfq 2>/dev/null || true
@@ -280,7 +280,7 @@ apply_backingfiles_bfq() {
     # SCSI-timeout drive-drop this patch exists to prevent. This script runs
     # mid-OTA while the car may be recording; when the gadget is bound, the
     # udev rule simply takes effect at the next boot instead.
-    if [ -n "$(cat /sys/kernel/config/usb_gadget/sentryusb/UDC 2>/dev/null)" ]; then
+    if [ -n "$(cat /sys/kernel/config/usb_gadget/dashusb/UDC 2>/dev/null)" ]; then
         log "bfq: gadget is presented to the car — deferring live scheduler switch to next boot (udev rule covers it)"
         return 0
     fi
@@ -315,7 +315,7 @@ apply_backingfiles_bfq() {
 # protection.
 apply_hardware_watchdog() {
     local dropin_dir=/etc/systemd/system.conf.d
-    local dropin=$dropin_dir/10-sentryusb-watchdog.conf
+    local dropin=$dropin_dir/10-dashusb-watchdog.conf
     local want='[Manager]
 RuntimeWatchdogSec=15'
 

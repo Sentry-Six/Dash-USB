@@ -13,14 +13,14 @@ use crate::router::AppState;
 fn log_path(name: &str) -> Option<&'static str> {
     match name {
         "archiveloop" => Some("/mutable/archiveloop.log"),
-        "setup" => Some("/sentryusb/sentryusb-setup.log"),
+        "setup" => Some("/dashusb/dashusb-setup.log"),
         "diagnostics" => Some("/tmp/diagnostics.txt"),
         "syslog" => Some("/var/log/syslog"),
         "kern" => Some("/var/log/kern.log"),
         "auth" => Some("/var/log/auth.log"),
         "daemon" => Some("/var/log/daemon.log"),
-        "sentryusb" => Some("/var/log/sentryusb.log"),
-        "sentryusb-ble" => Some("/var/log/sentryusb-ble.log"),
+        "dashusb" => Some("/var/log/dashusb.log"),
+        "dashusb-ble" => Some("/var/log/dashusb-ble.log"),
         _ => None,
     }
 }

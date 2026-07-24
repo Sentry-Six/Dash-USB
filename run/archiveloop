@@ -35,10 +35,10 @@ function log () {
 
 function log_errors_on_exit {
   log "archiveloop exited with code $1. Recent errors follow"
-  # The unit is sentryusb-archive (see crates/setup install_archive_service);
+  # The unit is dashusb-archive (see crates/setup install_archive_service);
   # this used to read the old teslausb unit, so on a crash the supplementary
   # journal dump was always empty.
-  journalctl -n 15 -u sentryusb-archive >> "$LOG_FILE" 2>/dev/null || true
+  journalctl -n 15 -u dashusb-archive >> "$LOG_FILE" 2>/dev/null || true
   log "end of errors."
   exit "$1"
 }
@@ -200,7 +200,7 @@ function wifi_cycle () {
   fi
 
   log "Tearing down ap0 to free radio for wlan0 reconnect..."
-  nmcli con down SENTRYUSB_AP 2>/dev/null || true
+  nmcli con down DASHUSB_AP 2>/dev/null || true
   iw dev ap0 del 2>/dev/null || true
   sleep 2
 
@@ -364,8 +364,8 @@ function wait_for_archive_to_be_unreachable () {
 }
 
 function usb_gadget_is_active () {
-  local lunfile=/sys/kernel/config/usb_gadget/sentryusb/configs/c.1/mass_storage.0/lun.0/file
-  [ -n "$(cat /sys/kernel/config/usb_gadget/sentryusb/UDC 2>/dev/null)" ] &&
+  local lunfile=/sys/kernel/config/usb_gadget/dashusb/configs/c.1/mass_storage.0/lun.0/file
+  [ -n "$(cat /sys/kernel/config/usb_gadget/dashusb/UDC 2>/dev/null)" ] &&
     [ -e "$lunfile" ] &&
     [ -n "$(cat "$lunfile")" ]
 }
@@ -592,7 +592,7 @@ function clean_cam_mount {
 # temperature *before* the chip cools: overheating (WiFi drop / throttling) is a
 # common cause of archive failures, and the periodic monitor only samples once a
 # minute, so by the time it logs the chip has already cooled.
-# Respects TEMPERATURE_UNIT (from sentryusb.conf): "F" → Fahrenheit, else Celsius.
+# Respects TEMPERATURE_UNIT (from dashusb.conf): "F" → Fahrenheit, else Celsius.
 function soc_temperature () {
   local zone=/sys/class/thermal/thermal_zone0/temp
   [ -e "$zone" ] || return 0

@@ -1,4 +1,6 @@
 [package]
+# Package/crate name stays `sentryusb` for upstream merge-friendliness;
+# the shipped binary is renamed below.
 name = "sentryusb"
 version = "0.1.0"
 edition = "2024"
@@ -24,3 +26,7 @@ sentryusb-api = { path = "../api", package = "sentryusb-api" }
 sentryusb-vehicle-profile = { path = "../vehicle_profile", package = "sentryusb-vehicle-profile" }
 sentryusb-setup = { path = "../setup", package = "sentryusb-setup" }
 sentryusb-gadget = { path = "../usb_gadget", package = "sentryusb-gadget" }
+
+[[bin]]
+name = "dashusb"
+path = "src/main.rs"

@@ -49,7 +49,7 @@ export function NasSSHKey({
     if (!pubKey) return
     // The Pi serves over plain HTTP on the LAN. navigator.clipboard is gated
     // on a "secure context" in modern browsers, so calling it from
-    // http://sentryusb.local throws or rejects. Try modern API first, fall
+    // http://dashusb.local throws or rejects. Try modern API first, fall
     // back to legacy execCommand which works on http://.
     let ok = false
     if (navigator.clipboard && window.isSecureContext) {

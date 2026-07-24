@@ -37,14 +37,14 @@ jobs:
           # the signatures branch. Add it as a repo secret named CLA_SIGN_TOKEN.
           PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_SIGN_TOKEN }}
         with:
-          path-to-document: 'https://github.com/Sentry-Six/Sentry-USB-Rusty/blob/main/CLA.md'
+          path-to-document: 'https://github.com/Sentry-Six/Dash-USB/blob/main/CLA.md'
           path-to-signatures: 'signatures/version1/cla.json'
           # Signatures are stored on a dedicated branch to keep main clean.
           branch: 'cla-signatures'
           custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
           custom-notsigned-prcomment: >
             Thanks for your pull request! Before we can merge it, please read our
-            [Contributor License Agreement](https://github.com/Sentry-Six/Sentry-USB-Rusty/blob/main/CLA.md)
+            [Contributor License Agreement](https://github.com/Sentry-Six/Dash-USB/blob/main/CLA.md)
             and sign it by posting the comment below. You only need to do this once.
           # Maintainers and bots who already hold rights or never need to sign.
           allowlist: 'Scottmg1,ChadR23,chufleco,dependabot[bot]'

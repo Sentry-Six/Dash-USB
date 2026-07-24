@@ -108,7 +108,7 @@ pub async fn list_files(
     // mounts, so the first listing of a busy day can block for seconds
     // while the kernel mounts the image. Run it on the blocking pool so it
     // can't stall the async reactor (which would drop the WebSocket
-    // heartbeat and surface "Reconnecting to SentryUSB…" in the UI).
+    // heartbeat and surface "Reconnecting to DashUSB…" in the UI).
     tokio::task::spawn_blocking(move || list_files_blocking(params))
         .await
         .unwrap_or_else(|_| {
@@ -350,7 +350,7 @@ pub async fn upload_file(
                     .map(|d| d.as_nanos())
                     .unwrap_or(0);
                 let tmp = std::env::temp_dir().join(format!(
-                    "sentryusb-upload-{}-{}-{}",
+                    "dashusb-upload-{}-{}-{}",
                     std::process::id(),
                     seq,
                     nanos

@@ -24,11 +24,11 @@ fi
 
 cp "$SRC/pi-gen-config" config
 rm -rf stage2/EXPORT_NOOBS stage2/EXPORT_IMAGE export-image/01-user-rename/00-packages
-mkdir -p stage_sentryusb
-touch stage_sentryusb/EXPORT_IMAGE
-cp stage2/prerun.sh stage_sentryusb/prerun.sh
-cp -r "$SRC/00-sentryusb-tweaks" stage_sentryusb
+mkdir -p stage_dashusb
+touch stage_dashusb/EXPORT_IMAGE
+cp stage2/prerun.sh stage_dashusb/prerun.sh
+cp -r "$SRC/00-dashusb-tweaks" stage_dashusb
 
-echo 'Build config set. Now use "./build.sh" or "./build-docker.sh" to build the SentryUSB image.'
+echo 'Build config set. Now use "./build.sh" or "./build-docker.sh" to build the DashUSB image.'
 
 

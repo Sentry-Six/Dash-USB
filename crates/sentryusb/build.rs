@@ -25,7 +25,7 @@ fn main() {
         let placeholder = "<!DOCTYPE html>\
 <html lang=\"en\"><head><meta charset=\"utf-8\">\
 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-<title>SentryUSB — frontend not built</title></head>\
+<title>DashUSB — frontend not built</title></head>\
 <body style=\"font-family:system-ui,sans-serif;background:#0b0e13;color:#e6e9ef;\
 margin:0;display:flex;min-height:100vh;align-items:center;justify-content:center\">\
 <div style=\"max-width:36rem;padding:2rem;line-height:1.55\">\

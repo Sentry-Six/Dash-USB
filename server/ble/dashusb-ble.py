@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-SentryUSB BLE Peripheral Daemon
+DashUSB BLE Peripheral Daemon
 
-Exposes a GATT server over Bluetooth LE so the SentryUSB iOS app can:
+Exposes a GATT server over Bluetooth LE so the DashUSB iOS app can:
   1. Discover the Pi and perform WiFi setup without prior network
   2. Proxy API requests for on-the-go management (dashboard, logs, settings)
 
 Uses BlueZ D-Bus API — requires bluez >= 5.50 and python3-dbus.
 
-Run as: python3 sentryusb-ble.py
-Or via systemd: sentryusb-ble.service
+Run as: python3 dashusb-ble.py
+Or via systemd: dashusb-ble.service
 """
 
 import dbus
@@ -34,7 +34,7 @@ except ImportError:
     import glib as GLib
 
 logging.basicConfig(level=logging.INFO, format='[BLE] %(levelname)s %(message)s')
-log = logging.getLogger('sentryusb-ble')
+log = logging.getLogger('dashusb-ble')
 
 # Fresh flag = a central connect is in flight; defer advertising while it is.
 CONNECTING_FLAG_PATH = '/tmp/ble_connecting'
@@ -53,18 +53,18 @@ def connect_in_flight():
 # D-Bus policy self-healing
 # ============================================================
 
-_DBUS_POLICY_PATH = '/etc/dbus-1/system.d/com.sentryusb.ble.conf'
+_DBUS_POLICY_PATH = '/etc/dbus-1/system.d/com.dashusb.ble.conf'
 _DBUS_POLICY_XML = """\
 <!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
 <busconfig>
-  <!-- Allow the SentryUSB BLE daemon (running as root) to own its bus name
+  <!-- Allow the DashUSB BLE daemon (running as root) to own its bus name
        and expose GATT objects so BlueZ can call GetManagedObjects on them.
        Required on Pi 5 / Bookworm where D-Bus policies are stricter. -->
 
   <policy user="root">
-    <allow own="com.sentryusb.ble"/>
-    <allow send_destination="com.sentryusb.ble"/>
+    <allow own="com.dashusb.ble"/>
+    <allow send_destination="com.dashusb.ble"/>
     <allow send_interface="org.freedesktop.DBus.ObjectManager"/>
     <allow send_interface="org.freedesktop.DBus.Properties"/>
     <allow send_interface="org.bluez.GattService1"/>
@@ -74,7 +74,7 @@ _DBUS_POLICY_XML = """\
   </policy>
 
   <policy context="default">
-    <allow send_destination="com.sentryusb.ble"/>
+    <allow send_destination="com.dashusb.ble"/>
   </policy>
 </busconfig>
 """
@@ -84,7 +84,7 @@ def maybe_install_dbus_policy():
     """Auto-install the D-Bus policy file if it is missing, then re-exec.
 
     Without this file, strict D-Bus systems (Pi 5 / Bookworm) block the daemon
-    from owning 'com.sentryusb.ble', so BlueZ falls back to PipeWire's GATT
+    from owning 'com.dashusb.ble', so BlueZ falls back to PipeWire's GATT
     services (audio volume/stream UUIDs) — causing iOS to cache the wrong GATT
     and fail BLE pairing indefinitely until the iOS Bluetooth cache is cleared.
 
@@ -99,7 +99,7 @@ def maybe_install_dbus_policy():
             f.write(_DBUS_POLICY_XML)
         subprocess.run(['systemctl', 'reload', 'dbus'], timeout=10, check=False)
         import time; time.sleep(1)  # give dbus-daemon a moment to re-read config
-        log.info('D-Bus policy installed — re-execing to claim com.sentryusb.ble')
+        log.info('D-Bus policy installed — re-execing to claim com.dashusb.ble')
         os.execv(sys.executable, [sys.executable] + sys.argv)
     except Exception as e:
         log.error(f'Could not auto-install D-Bus policy: {e} — GATT may not be served correctly')
@@ -115,7 +115,7 @@ GATT_DESC_IFACE = 'org.bluez.GattDescriptor1'
 DBUS_OM_IFACE = 'org.freedesktop.DBus.ObjectManager'
 DBUS_PROP_IFACE = 'org.freedesktop.DBus.Properties'
 
-# SentryUSB BLE UUIDs (matching iOS app Constants.swift)
+# DashUSB BLE UUIDs (matching iOS app Constants.swift)
 WIFI_SERVICE_UUID        = '6e400001-b5a3-f393-e0a9-e50e24dcca9e'
 WIFI_SCAN_UUID           = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'
 WIFI_CONFIG_UUID         = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'
@@ -131,7 +131,7 @@ API_RESPONSE_UUID        = '6e400012-b5a3-f393-e0a9-e50e24dcca9e'
 # Auto-detected at startup — production uses port 80, dev uses 8788
 API_BASE = None
 
-PIN_FILE = '/root/.sentryusb/ble-pin'
+PIN_FILE = '/root/.dashusb/ble-pin'
 BOOT_PIN_FILE = '/boot/firmware/BLE_PIN'
 
 # Track authenticated BLE peers (by D-Bus device path). Cleared per peer
@@ -288,11 +288,11 @@ def get_hostname():
     try:
         return subprocess.check_output(['hostname'], text=True).strip()
     except Exception:
-        return 'sentryusb'
+        return 'dashusb'
 
 def get_device_suffix():
     """Return a stable 4-character uppercase hex suffix unique to this Pi,
-    derived from /etc/machine-id. Used for display names like SentryUSB-A3F1."""
+    derived from /etc/machine-id. Used for display names like DashUSB-A3F1."""
     try:
         with open('/etc/machine-id', 'r') as f:
             machine_id = f.read().strip()
@@ -321,26 +321,26 @@ def get_version():
 
 def is_setup_finished():
     paths = [
-        '/sentryusb/SENTRYUSB_SETUP_FINISHED',
-        '/boot/firmware/SENTRYUSB_SETUP_FINISHED',
-        '/boot/SENTRYUSB_SETUP_FINISHED',
+        '/dashusb/DASHUSB_SETUP_FINISHED',
+        '/boot/firmware/DASHUSB_SETUP_FINISHED',
+        '/boot/DASHUSB_SETUP_FINISHED',
     ]
     return any(os.path.exists(p) for p in paths)
 
-AVAHI_SERVICE_PATH = '/etc/avahi/services/sentryusb.service'
+AVAHI_SERVICE_PATH = '/etc/avahi/services/dashusb.service'
 
 def update_avahi_service_name(name):
     """Rewrite the Avahi mDNS service file to include the device suffix as a
     TXT record. The service name stays as %h (hostname) so .local resolution
     keeps working. The iOS app reads the 'suffix' TXT record to build a
-    display name like 'SentryUSB-EC92'."""
+    display name like 'DashUSB-EC92'."""
     suffix = get_device_suffix()
     service_xml = f'''<?xml version="1.0" standalone='no'?>
 <!DOCTYPE service-group SYSTEM "avahi-service.dtd">
 <service-group>
   <name replace-wildcards="yes">%h</name>
   <service>
-    <type>_sentryusb._tcp</type>
+    <type>_dashusb._tcp</type>
     <port>80</port>
     <txt-record>version=1.0.0</txt-record>
     <txt-record>path=/api</txt-record>
@@ -552,7 +552,7 @@ class Application(dbus.service.Object):
 
 
 class Service(dbus.service.Object):
-    PATH_BASE = '/org/bluez/sentryusb/service'
+    PATH_BASE = '/org/bluez/dashusb/service'
 
     def __init__(self, bus, index, uuid, primary):
         self.path = self.PATH_BASE + str(index)
@@ -1094,7 +1094,7 @@ class APIResponseCharacteristic(Characteristic):
 # ============================================================
 
 class Advertisement(dbus.service.Object):
-    PATH_BASE = '/org/bluez/sentryusb/advertisement'
+    PATH_BASE = '/org/bluez/dashusb/advertisement'
 
     def __init__(self, bus, index, advertising_type, ad_manager,
                  service_manager=None, app=None, local_name=None):
@@ -1197,14 +1197,14 @@ class Advertisement(dbus.service.Object):
 # ============================================================
 
 def read_ble_adapter_from_config():
-    """Read BLE_ADAPTER from /root/sentryusb.conf.
+    """Read BLE_ADAPTER from /root/dashusb.conf.
 
     Returns the value (e.g. 'hci1') or None if unset / file unreadable.
     The Rust telemetry sampler reads the same key from the same file,
     so swapping the adapter in settings affects both processes.
     """
     try:
-        with open('/root/sentryusb.conf') as f:
+        with open('/root/dashusb.conf') as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith('#'):
@@ -1394,7 +1394,7 @@ def register_ad_error_cb(error):
     # BCM4345C0 (Rock 4C+): BlueZ uses EXTENDED advertising which this chip
     # rejects ('Invalid Parameters 0x0d'). Do NOT exit (that tears down GATT
     # and loops forever); keep GATT up. Legacy btmgmt advertising is enabled
-    # out-of-band by sentryusb-ble-adv.service.
+    # out-of-band by dashusb-ble-adv.service.
     log.warning(f'BlueZ advertisement registration failed ({error}); '
                 'using legacy btmgmt advertising instead; GATT stays up.')
 
@@ -1510,7 +1510,7 @@ def setup_bluez_restart_detection(bus):
 # Registering a NoInputNoOutput agent makes BlueZ auto-accept just-works
 # pairing, so Android clients pair silently on first connection.
 
-AGENT_PATH = "/com/sentryusb/PairingAgent"
+AGENT_PATH = "/com/dashusb/PairingAgent"
 
 
 class AutoPairAgent(dbus.service.Object):
@@ -1560,11 +1560,11 @@ def main():
     # This allows BlueZ to call GetManagedObjects and GATT methods on us
     # even on systems with strict D-Bus policies (e.g. Pi 5 / Bookworm).
     try:
-        bus_name = dbus.service.BusName('com.sentryusb.ble', bus,
+        bus_name = dbus.service.BusName('com.dashusb.ble', bus,
                                         do_not_queue=True)
-        log.info('Claimed D-Bus bus name: com.sentryusb.ble')
+        log.info('Claimed D-Bus bus name: com.dashusb.ble')
     except dbus.exceptions.NameExistsException:
-        log.warning('D-Bus bus name com.sentryusb.ble already claimed, using unique name')
+        log.warning('D-Bus bus name com.dashusb.ble already claimed, using unique name')
     except Exception as e:
         log.warning(f'Could not claim D-Bus bus name: {e} — using unique name')
 
@@ -1575,7 +1575,7 @@ def main():
     # docstring for race-condition rationale. Single-shot find_adapter() loses
     # the race on slow boots, busy SD cards, or service restarts after archiveloop.
     #
-    # `BLE_ADAPTER` in /root/sentryusb.conf selects a preferred adapter
+    # `BLE_ADAPTER` in /root/dashusb.conf selects a preferred adapter
     # (e.g. `hci1` when the user has plugged in an external USB BLE
     # dongle). Same key the Rust telemetry sampler reads. If unset
     # or unavailable, we use the first LE-capable adapter (hci0 onboard).
@@ -1614,7 +1614,7 @@ def main():
     adapter_props = dbus.Interface(
         bus.get_object(BLUEZ_SERVICE, adapter_path), DBUS_PROP_IFACE)
     adapter_props.Set('org.bluez.Adapter1', 'Powered', dbus.Boolean(True))
-    ble_name = f'SentryUSB-{get_device_suffix()}'
+    ble_name = f'DashUSB-{get_device_suffix()}'
     adapter_props.Set('org.bluez.Adapter1', 'Alias', dbus.String(ble_name))
     log.info(f'BLE adapter alias set to: {ble_name}')
 
@@ -1659,7 +1659,7 @@ def main():
         return False
     register_initial_adv()
 
-    log.info(f'SentryUSB BLE peripheral started: {ble_name}')
+    log.info(f'DashUSB BLE peripheral started: {ble_name}')
     log.info(f'WiFi Setup Service: {WIFI_SERVICE_UUID}')
     log.info(f'API Proxy Service:  {API_SERVICE_UUID}')
 

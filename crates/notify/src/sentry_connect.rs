@@ -36,7 +36,7 @@ pub struct SendContext<'a> {
 ///
 /// 1. `SENTRY_NOTIFICATION_URL` env var — covers dev overrides and any
 ///    systemd `EnvironmentFile=` setup.
-/// 2. `SENTRY_NOTIFICATION_URL` in `/root/sentryusb.conf` — systemd starts
+/// 2. `SENTRY_NOTIFICATION_URL` in `/root/dashusb.conf` — systemd starts
 ///    the binary without sourcing the config (no shell wrapper), so the
 ///    env var is NOT set on a default install. Without this fallback the
 ///    user's `SENTRY_NOTIFICATION_URL` is silently ignored on the send
@@ -173,7 +173,7 @@ mod tests {
         // flakiness when other tests also touch the env; just verify the
         // fallback branch when neither the env var nor the on-disk config
         // overrides it. This is the only state CI cares about anyway —
-        // a host with /root/sentryusb.conf carrying SENTRY_NOTIFICATION_URL
+        // a host with /root/dashusb.conf carrying SENTRY_NOTIFICATION_URL
         // is a deployed Pi, not a build runner.
         let env_unset = std::env::var("SENTRY_NOTIFICATION_URL").is_err();
         let conf_unset = sentryusb_config::parse_file(sentryusb_config::find_config_path())

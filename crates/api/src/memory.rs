@@ -29,12 +29,12 @@ pub async fn memory_stats(State(_s): State<AppState>) -> (StatusCode, Json<serde
 /// GET /memory — HTML memory debug page
 pub async fn memory_page(State(_s): State<AppState>) -> impl IntoResponse {
     Html(r#"<!DOCTYPE html>
-<html><head><title>SentryUSB Memory</title>
+<html><head><title>DashUSB Memory</title>
 <style>body{font-family:monospace;background:#1a1a2e;color:#eee;padding:20px;}
 button{background:#0f3460;color:#eee;border:none;padding:8px 16px;cursor:pointer;margin:10px 0;}
 pre{background:#16213e;padding:10px;border-radius:4px;overflow-x:auto;}</style>
 </head><body>
-<h1>SentryUSB Memory Debug</h1>
+<h1>DashUSB Memory Debug</h1>
 <button onclick="refresh()">Refresh</button>
 <pre id="data">Loading...</pre>
 <script>

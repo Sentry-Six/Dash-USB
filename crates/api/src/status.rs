@@ -202,10 +202,10 @@ struct PiStatus {
     ether_rx_bps: u64,
     ether_tx_bps: u64,
     /// Stable per-device suffix derived from the system hostname (the
-    /// part after the final `-`, e.g. "sentryusb-A3F1" → "A3F1"). iOS
+    /// part after the final `-`, e.g. "dashusb-A3F1" → "A3F1"). iOS
     /// uses this for the dashboard hero-bar identifier so devices paired
-    /// over WiFi (no BLE metadata path) still show "Sentry USB-A3F1"
-    /// instead of bare "Sentry USB". Empty if `/etc/hostname` is
+    /// over WiFi (no BLE metadata path) still show "Dash USB-A3F1"
+    /// instead of bare "Dash USB". Empty if `/etc/hostname` is
     /// unreadable or has no dash.
     device_suffix: String,
 }
@@ -690,7 +690,7 @@ fn cam_last_write_secs() -> i64 {
 }
 
 /// Last segment after the final `-` of the system hostname — e.g.
-/// "sentryusb-A3F1" → "A3F1". Used by iOS to render the device-specific
+/// "dashusb-A3F1" → "A3F1". Used by iOS to render the device-specific
 /// identifier on the dashboard even when paired over WiFi (the BLE path
 /// has its own device-info channel, but WiFi-only pairing has no way to
 /// learn the suffix without it being in /status). Empty when the

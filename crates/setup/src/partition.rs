@@ -80,9 +80,9 @@ pub async fn setup_data_drive(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
     // right answer over silently destroying their data. They can
     // delete the marker manually and re-run setup if they really
     // mean to wipe.
-    let setup_finished = std::path::Path::new("/sentryusb/SENTRYUSB_SETUP_FINISHED").exists()
-        || std::path::Path::new("/boot/firmware/SENTRYUSB_SETUP_FINISHED").exists()
-        || std::path::Path::new("/boot/SENTRYUSB_SETUP_FINISHED").exists();
+    let setup_finished = std::path::Path::new("/dashusb/DASHUSB_SETUP_FINISHED").exists()
+        || std::path::Path::new("/boot/firmware/DASHUSB_SETUP_FINISHED").exists()
+        || std::path::Path::new("/boot/DASHUSB_SETUP_FINISHED").exists();
 
     let bf_ok = check_label_matches(&p2, "backingfiles").await;
     let mut_ok = check_label_matches(&p1, "mutable").await;
@@ -146,7 +146,7 @@ pub async fn setup_data_drive(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
              expected ({} backingfiles label match, {} mutable label match, \
              {} backingfiles is xfs, {} mutable is ext4). The drive contents \
              have NOT been modified. If the drive really needs to be \
-             reformatted, delete /sentryusb/SENTRYUSB_SETUP_FINISHED and \
+             reformatted, delete /dashusb/DASHUSB_SETUP_FINISHED and \
              re-run setup. Otherwise, reboot to let udev resettle and try again.",
             data_drive,
             if bf_ok { "✓" } else { "✗" },
@@ -223,15 +223,15 @@ pub async fn setup_sd_card(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
     // never be carving fresh partitions on the SD card. Bail with a
     // clear error rather than running sfdisk against a working
     // install. Same reasoning as the data-drive path above.
-    let setup_finished = std::path::Path::new("/sentryusb/SENTRYUSB_SETUP_FINISHED").exists()
-        || std::path::Path::new("/boot/firmware/SENTRYUSB_SETUP_FINISHED").exists()
-        || std::path::Path::new("/boot/SENTRYUSB_SETUP_FINISHED").exists();
+    let setup_finished = std::path::Path::new("/dashusb/DASHUSB_SETUP_FINISHED").exists()
+        || std::path::Path::new("/boot/firmware/DASHUSB_SETUP_FINISHED").exists()
+        || std::path::Path::new("/boot/DASHUSB_SETUP_FINISHED").exists();
     if setup_finished {
         bail!(
             "Refusing to repartition the SD card: setup previously completed \
              but partitions_exist() returned false (label symlinks may have \
              temporarily disappeared due to a udev race). Reboot and try \
-             again, or delete /sentryusb/SENTRYUSB_SETUP_FINISHED to force \
+             again, or delete /dashusb/DASHUSB_SETUP_FINISHED to force \
              a fresh install."
         );
     }
@@ -364,7 +364,7 @@ async fn get_disk_identifier(disk: &str) -> Result<String> {
     Ok(output.trim().to_string())
 }
 
-/// One of the SentryUSB labels resolved to a partition on a disk
+/// One of the DashUSB labels resolved to a partition on a disk
 /// other than the configured DATA_DRIVE. Returned by
 /// `label_on_other_drive` so the wizard can identify the old disk in
 /// the error message.

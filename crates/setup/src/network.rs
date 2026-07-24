@@ -108,7 +108,7 @@ async fn teardown_ap_scaffolding() {
     if Path::new("/mutable/sentryusb_away_mode.json").exists() {
         return;
     }
-    let _ = sentryusb_shell::run("nmcli", &["con", "down", "SENTRYUSB_AP"]).await;
+    let _ = sentryusb_shell::run("nmcli", &["con", "down", "DASHUSB_AP"]).await;
     let _ = sentryusb_shell::run("iw", &["dev", "ap0", "del"]).await;
 }
 
@@ -118,11 +118,11 @@ async fn teardown_ap_scaffolding() {
 /// Access Point" in the wizard actually removes the feature instead of
 /// silently leaving the old profile (and a possibly-broadcasting AP) behind.
 pub async fn deconfigure_ap(emitter: &SetupEmitter) -> Result<()> {
-    let keyfile = "/etc/NetworkManager/system-connections/SENTRYUSB_AP.nmconnection";
-    let dispatcher = "/etc/NetworkManager/dispatcher.d/10-sentryusb-ap";
+    let keyfile = "/etc/NetworkManager/system-connections/DASHUSB_AP.nmconnection";
+    let dispatcher = "/etc/NetworkManager/dispatcher.d/10-dashusb-ap";
 
     let profile_exists =
-        sentryusb_shell::run("nmcli", &["-t", "con", "show", "SENTRYUSB_AP"]).await.is_ok();
+        sentryusb_shell::run("nmcli", &["-t", "con", "show", "DASHUSB_AP"]).await.is_ok();
     let ap0_exists = sentryusb_shell::run("iw", &["dev", "ap0", "info"]).await.is_ok();
     if !profile_exists && !ap0_exists && !Path::new(keyfile).exists() && !Path::new(dispatcher).exists() {
         return Ok(());
@@ -137,8 +137,8 @@ pub async fn deconfigure_ap(emitter: &SetupEmitter) -> Result<()> {
     let _ = std::fs::remove_file("/mutable/sentryusb_away_mode.json");
     let _ = std::fs::remove_file("/mutable/sentryusb_away_mode.json.tmp");
 
-    let _ = sentryusb_shell::run("nmcli", &["con", "down", "SENTRYUSB_AP"]).await;
-    let _ = sentryusb_shell::run("nmcli", &["con", "delete", "SENTRYUSB_AP"]).await;
+    let _ = sentryusb_shell::run("nmcli", &["con", "down", "DASHUSB_AP"]).await;
+    let _ = sentryusb_shell::run("nmcli", &["con", "delete", "DASHUSB_AP"]).await;
     // `con delete` can fail under the same read-only-root keyfile quirk the
     // add path works around — remove the file directly and reload.
     let _ = std::fs::remove_file(keyfile);
@@ -146,7 +146,7 @@ pub async fn deconfigure_ap(emitter: &SetupEmitter) -> Result<()> {
 
     let _ = sentryusb_shell::run("iw", &["dev", "ap0", "del"]).await;
     let _ = std::fs::remove_file(dispatcher);
-    let _ = std::fs::remove_file("/etc/network/if-up.d/sentryusb-ap");
+    let _ = std::fs::remove_file("/etc/network/if-up.d/dashusb-ap");
 
     emitter.progress("WiFi access point removed.");
     Ok(())
@@ -175,7 +175,7 @@ async fn nm_add_ap(
     let _ = sentryusb_shell::run("iw", &["ap0", "set", "power_save", "off"]).await;
 
     // Remove old / legacy connection names.
-    let _ = sentryusb_shell::run("nmcli", &["con", "delete", "SENTRYUSB_AP"]).await;
+    let _ = sentryusb_shell::run("nmcli", &["con", "delete", "DASHUSB_AP"]).await;
     let _ = sentryusb_shell::run("nmcli", &["con", "delete", "TESLAUSB_AP"]).await;
 
     // autoconnect is set at add time: a profile created with the default
@@ -183,30 +183,30 @@ async fn nm_add_ap(
     // later `con modify`, leaving the AP broadcasting right out of setup.
     sentryusb_shell::run(
         "nmcli", &["con", "add", "type", "wifi", "ifname", "ap0", "mode", "ap",
-                   "con-name", "SENTRYUSB_AP", "autoconnect", "no", "ssid", ssid],
+                   "con-name", "DASHUSB_AP", "autoconnect", "no", "ssid", ssid],
     ).await.context("nmcli con add failed")?;
 
     sentryusb_shell::run(
-        "nmcli", &["con", "modify", "SENTRYUSB_AP",
+        "nmcli", &["con", "modify", "DASHUSB_AP",
                    "802-11-wireless-security.key-mgmt", "wpa-psk"],
     ).await?;
     sentryusb_shell::run(
-        "nmcli", &["con", "modify", "SENTRYUSB_AP",
+        "nmcli", &["con", "modify", "DASHUSB_AP",
                    "802-11-wireless-security.psk", pass],
     ).await?;
     sentryusb_shell::run(
-        "nmcli", &["con", "modify", "SENTRYUSB_AP",
+        "nmcli", &["con", "modify", "DASHUSB_AP",
                    "ipv4.addr", &format!("{}/24", ip)],
     ).await?;
     sentryusb_shell::run(
-        "nmcli", &["con", "modify", "SENTRYUSB_AP", "ipv4.method", "shared"],
+        "nmcli", &["con", "modify", "DASHUSB_AP", "ipv4.method", "shared"],
     ).await?;
     sentryusb_shell::run(
-        "nmcli", &["con", "modify", "SENTRYUSB_AP", "ipv6.method", "disabled"],
+        "nmcli", &["con", "modify", "DASHUSB_AP", "ipv6.method", "disabled"],
     ).await?;
 
     // Clean up stale if-up.d script from previous installs.
-    let _ = std::fs::remove_file("/etc/network/if-up.d/sentryusb-ap");
+    let _ = std::fs::remove_file("/etc/network/if-up.d/dashusb-ap");
 
     install_ap_dispatcher(&wlan).await?;
     Ok(())
@@ -236,14 +236,14 @@ async fn nm_write_ap_file(
     let _ = sentryusb_shell::run("iw", &[&wlan, "set", "power_save", "off"]).await;
     let _ = sentryusb_shell::run("iw", &["ap0", "set", "power_save", "off"]).await;
 
-    let _ = sentryusb_shell::run("nmcli", &["con", "delete", "SENTRYUSB_AP"]).await;
+    let _ = sentryusb_shell::run("nmcli", &["con", "delete", "DASHUSB_AP"]).await;
     let _ = sentryusb_shell::run("nmcli", &["con", "delete", "TESLAUSB_AP"]).await;
 
     std::fs::create_dir_all("/etc/NetworkManager/system-connections")?;
-    let file = "/etc/NetworkManager/system-connections/SENTRYUSB_AP.nmconnection";
+    let file = "/etc/NetworkManager/system-connections/DASHUSB_AP.nmconnection";
     let contents = format!(
         "[connection]\n\
-         id=SENTRYUSB_AP\n\
+         id=DASHUSB_AP\n\
          type=wifi\n\
          interface-name=ap0\n\
          autoconnect=false\n\
@@ -271,7 +271,7 @@ async fn nm_write_ap_file(
 
     let _ = sentryusb_shell::run("nmcli", &["con", "reload"]).await;
 
-    let _ = std::fs::remove_file("/etc/network/if-up.d/sentryusb-ap");
+    let _ = std::fs::remove_file("/etc/network/if-up.d/dashusb-ap");
     install_ap_dispatcher(&wlan).await?;
     Ok(())
 }
@@ -393,7 +393,7 @@ async fn configure_hostapd_path(
         let _ = std::os::unix::fs::symlink("/mutable/varlib/misc", "/var/lib/misc");
     }
 
-    // Update hosts so the sentryusb mDNS name resolves to the AP IP rather
+    // Update hosts so the dashusb mDNS name resolves to the AP IP rather
     // than 127.0.0.1 for clients connected to the AP.
     if let Ok(hosts) = std::fs::read_to_string("/etc/hosts") {
         let new: String = hosts
@@ -529,7 +529,7 @@ async fn install_ap_dispatcher(wlan: &str) -> Result<()> {
         "#!/bin/bash\n\
          # Recreate ap0 virtual interface when the wifi client comes up,\n\
          # but ONLY if Away Mode is active (flag file exists).\n\
-         # Created by SentryUSB configure-ap.\n\
+         # Created by DashUSB configure-ap.\n\
          \n\
          IFACE=\"$1\"\n\
          ACTION=\"$2\"\n\
@@ -542,14 +542,14 @@ async fn install_ap_dispatcher(wlan: &str) -> Result<()> {
          \x20\x20\x20\x20fi\n\
          \x20\x20\x20\x20iw {wlan} set power_save off 2>/dev/null || true\n\
          \x20\x20\x20\x20iw ap0 set power_save off 2>/dev/null || true\n\
-         \x20\x20\x20\x20nmcli con up SENTRYUSB_AP 2>/dev/null || true\n\
+         \x20\x20\x20\x20nmcli con up DASHUSB_AP 2>/dev/null || true\n\
          \x20\x20fi\n\
          fi\n"
     );
 
     let dispatcher_dir = "/etc/NetworkManager/dispatcher.d";
     std::fs::create_dir_all(dispatcher_dir)?;
-    let path = format!("{}/10-sentryusb-ap", dispatcher_dir);
+    let path = format!("{}/10-dashusb-ap", dispatcher_dir);
     std::fs::write(&path, script)?;
     let _ = sentryusb_shell::run("chmod", &["755", &path]).await;
     Ok(())

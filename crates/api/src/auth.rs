@@ -192,7 +192,7 @@ pub fn init_auth() -> AuthState {
     let sessions_file = Path::new(config_path)
         .parent()
         .unwrap_or(Path::new("/root"))
-        .join(".sentryusb-sessions.json");
+        .join(".dashusb-sessions.json");
 
     let (active, _, _) = match sentryusb_config::parse_file(config_path) {
         Ok((a, c)) => (a, c, ()),
@@ -223,18 +223,18 @@ pub fn init_auth() -> AuthState {
     state
 }
 
-/// True when any of the SENTRYUSB_SETUP_FINISHED marker files exists.
+/// True when any of the DASHUSB_SETUP_FINISHED marker files exists.
 /// Used by the auth middleware to decide whether `/api/setup/*` still
 /// needs to be reachable without credentials.
 ///
 /// Checks both boot partition paths — the setup wizard writes one or the
-/// other depending on whether `/sentryusb` resolves to `/boot/firmware`
+/// other depending on whether `/dashusb` resolves to `/boot/firmware`
 /// (Bookworm+) or `/boot` (older images).
 fn setup_is_finished() -> bool {
     const MARKERS: &[&str] = &[
-        "/sentryusb/SENTRYUSB_SETUP_FINISHED",
-        "/boot/firmware/SENTRYUSB_SETUP_FINISHED",
-        "/boot/SENTRYUSB_SETUP_FINISHED",
+        "/dashusb/DASHUSB_SETUP_FINISHED",
+        "/boot/firmware/DASHUSB_SETUP_FINISHED",
+        "/boot/DASHUSB_SETUP_FINISHED",
     ];
     MARKERS.iter().any(|p| std::path::Path::new(p).exists())
 }
@@ -287,7 +287,7 @@ pub async fn auth_middleware(
     // Conditionally-exempt: `/api/setup/*` is only open while the
     // setup wizard hasn't finished. On a fresh flash the user has no
     // credentials yet, so the wizard needs to be reachable; once
-    // SENTRYUSB_SETUP_FINISHED exists, the same endpoints become
+    // DASHUSB_SETUP_FINISHED exists, the same endpoints become
     // privileged (otherwise anyone on the LAN could repoint archive
     // URLs, change hostnames, re-run setup, etc. on a provisioned Pi).
     //

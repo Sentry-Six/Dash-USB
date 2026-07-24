@@ -42,7 +42,7 @@ pub async fn configure_web_mount(emitter: &SetupEmitter) -> Result<bool> {
     }
 
     emitter.begin_phase("web_mount", "Recordings mount");
-    emitter.progress("configuring web (SentryUSB mode)");
+    emitter.progress("configuring web (DashUSB mode)");
 
     // Install runtime packages for the network status APIs. The bind mount
     // itself requires no userspace tooling beyond `mount(8)` (built-in).
@@ -52,7 +52,7 @@ pub async fn configure_web_mount(emitter: &SetupEmitter) -> Result<bool> {
         Duration::from_secs(300),
     ).await.context("failed to install networking runtime packages")?;
 
-    // Nginx fight — SentryUSB owns port 80.
+    // Nginx fight — DashUSB owns port 80.
     if sentryusb_shell::run("systemctl", &["is-active", "--quiet", "nginx"]).await.is_ok() {
         let _ = sentryusb_shell::run("systemctl", &["stop", "nginx"]).await;
     }

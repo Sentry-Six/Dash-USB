@@ -14,12 +14,12 @@ use crate::status::get_sbc_model;
 /// Cache file written by `check_for_update`, read by `get_update_status` so
 /// the Settings page can render last-check results on load without forcing
 /// a network round-trip.
-const UPDATE_CHECK_CACHE: &str = "/tmp/sentryusb-update-check.json";
+const UPDATE_CHECK_CACHE: &str = "/tmp/dashusb-update-check.json";
 
 static UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
 
 /// Salt for the telemetry fingerprint hash. Must match Go `telemetrySalt`.
-const TELEMETRY_SALT: &str = "SENTRYUSB_2026_PROD";
+const TELEMETRY_SALT: &str = "DASHUSB_2026_PROD";
 
 /// SHA-256 hash of a stable hardware identifier + salt. Uses the SBC serial
 /// number (survives reflash) with fallback to machine-id. Cached.
@@ -154,10 +154,10 @@ pub async fn run_update(
 
 /// Default GitHub source for OTA updates when the config doesn't override it.
 const DEFAULT_UPDATE_OWNER: &str = "Sentry-Six";
-const DEFAULT_UPDATE_REPO_NAME: &str = "Sentry-USB-Rusty";
+const DEFAULT_UPDATE_REPO_NAME: &str = "Dash-USB";
 
 /// Resolve the `owner/repo` slug for OTA updates. Honors `REPO` from the
-/// active sentryusb.conf (with the legacy hardcoded default as fallback)
+/// active dashusb.conf (with the legacy hardcoded default as fallback)
 /// so a user running a fork can point self-update at their own releases
 /// via the wizard's Advanced → Update Source field. `REPO_NAME` stays
 /// hardcoded — forks must keep the original repo name.
@@ -175,8 +175,8 @@ fn update_repo() -> String {
 /// Detect the release suffix matching the currently-running CPU variant.
 ///
 /// Three-tier resolution:
-///   1. `/opt/sentryusb/active-variant` — written by the boot picker
-///      (sentryusb-pick-binary). If present, this is authoritative — it's
+///   1. `/opt/dashusb/active-variant` — written by the boot picker
+///      (dashusb-pick-binary). If present, this is authoritative — it's
 ///      exactly the variant that's running right now, so re-downloading
 ///      the same suffix guarantees the update lands on a binary the picker
 ///      will pick again.
@@ -206,7 +206,7 @@ async fn detect_release_suffix() -> anyhow::Result<String> {
         "linux-armv7",
         "linux-amd64",
     ];
-    if let Ok(s) = std::fs::read_to_string("/opt/sentryusb/active-variant") {
+    if let Ok(s) = std::fs::read_to_string("/opt/dashusb/active-variant") {
         let trimmed = s.trim();
         if KNOWN_SUFFIXES.contains(&trimmed) {
             return Ok(trimmed.to_string());
@@ -231,7 +231,7 @@ async fn detect_release_suffix() -> anyhow::Result<String> {
             "armhf" => return Ok("linux-armv7".to_string()),
             "armel" => anyhow::bail!(
                 "armv6 (armel / Pi Zero W / Pi 1) is no longer supported — \
-                 SentryUSB requires Pi Zero 2 W or newer"
+                 DashUSB requires Pi Zero 2 W or newer"
             ),
             "amd64" => return Ok("linux-amd64".to_string()),
             other => anyhow::bail!("unsupported userspace architecture: {}", other),
@@ -243,14 +243,14 @@ async fn detect_release_suffix() -> anyhow::Result<String> {
             "armv7l" => return Ok("linux-armv7".to_string()),
             "armv6l" => anyhow::bail!(
                 "armv6 (Pi Zero W / Pi 1) is no longer supported — \
-                 SentryUSB requires Pi Zero 2 W or newer"
+                 DashUSB requires Pi Zero 2 W or newer"
             ),
             "x86_64" => return Ok("linux-amd64".to_string()),
             other => anyhow::bail!("unsupported architecture: {}", other),
         }
     };
 
-    // Tier 2: aarch64 per-CPU detection — mirrors sentryusb-pick-binary's
+    // Tier 2: aarch64 per-CPU detection — mirrors dashusb-pick-binary's
     // rules so an updater-side detection on a pre-picker install lands on
     // the same variant the picker would have chosen.
     debug_assert_eq!(family, "aarch64");
@@ -291,12 +291,12 @@ async fn self_update(target_version: Option<String>) -> anyhow::Result<String> {
     // (Revert to Stable / Install Pre-release), otherwise the latest release.
     let url = if let Some(v) = &target_version {
         format!(
-            "https://github.com/{}/releases/download/{}/sentryusb-{}",
+            "https://github.com/{}/releases/download/{}/dashusb-{}",
             repo, v, suffix
         )
     } else {
         format!(
-            "https://github.com/{}/releases/latest/download/sentryusb-{}",
+            "https://github.com/{}/releases/latest/download/dashusb-{}",
             repo, suffix
         )
     };
@@ -339,12 +339,12 @@ async fn self_update(target_version: Option<String>) -> anyhow::Result<String> {
     // (tmpfs): mv across filesystems falls back to unlink-dest + copy,
     // and a power cut mid-copy — routine on a Pi that loses power the
     // moment the car cuts accessory — left a partial (or no) binary at
-    // /opt/sentryusb and a service that can't start on the next boot.
+    // /opt/dashusb and a service that can't start on the next boot.
     // A power cut mid-download now only orphans the hidden .new file;
     // the running binary is untouched until the rename. Bonus: the
     // ~15 MB binary no longer transits tmpfs RAM on a 1 GB device.
-    sentryusb_shell::run("mkdir", &["-p", "/opt/sentryusb"]).await?;
-    let tmp = "/opt/sentryusb/.sentryusb-update.new";
+    sentryusb_shell::run("mkdir", &["-p", "/opt/dashusb"]).await?;
+    let tmp = "/opt/dashusb/.dashusb-update.new";
     sentryusb_shell::run_with_timeout(
         std::time::Duration::from_secs(120),
         "curl", &["-fsSL", &url, "-o", tmp],
@@ -354,19 +354,19 @@ async fn self_update(target_version: Option<String>) -> anyhow::Result<String> {
 
     // Write to the per-variant path so the picker symlink keeps resolving
     // to a valid binary. Layout:
-    //   /opt/sentryusb/sentryusb-{suffix}            ← we write here
-    //   /opt/sentryusb/sentryusb-current → ↑         ← picker symlink
-    //   /opt/sentryusb/sentryusb         → -current  ← back-compat symlink
+    //   /opt/dashusb/dashusb-{suffix}            ← we write here
+    //   /opt/dashusb/dashusb-current → ↑         ← picker symlink
+    //   /opt/dashusb/dashusb         → -current  ← back-compat symlink
     //
-    // Detection: if /opt/sentryusb/sentryusb-current exists (new layout),
+    // Detection: if /opt/dashusb/dashusb-current exists (new layout),
     // write to the variant path. Otherwise we're on a pre-multi-binary
-    // install — write to the legacy /opt/sentryusb/sentryusb path so the
+    // install — write to the legacy /opt/dashusb/dashusb path so the
     // existing systemd unit still finds the binary. (The next install-pi.sh
     // run will migrate the layout.)
-    let dest = if std::path::Path::new("/opt/sentryusb/sentryusb-current").exists() {
-        format!("/opt/sentryusb/sentryusb-{}", suffix)
+    let dest = if std::path::Path::new("/opt/dashusb/dashusb-current").exists() {
+        format!("/opt/dashusb/dashusb-{}", suffix)
     } else {
-        "/opt/sentryusb/sentryusb".to_string()
+        "/opt/dashusb/dashusb".to_string()
     };
     sentryusb_shell::run("mv", &[tmp, &dest]).await?;
 
@@ -390,7 +390,7 @@ async fn self_update(target_version: Option<String>) -> anyhow::Result<String> {
             );
             match crate::http_client()
                 .get(&api_url)
-                .header("User-Agent", "sentryusb-updater")
+                .header("User-Agent", "dashusb-updater")
                 .timeout(std::time::Duration::from_secs(10))
                 .send()
                 .await
@@ -411,7 +411,7 @@ async fn self_update(target_version: Option<String>) -> anyhow::Result<String> {
     };
 
     if !tag.is_empty() {
-        let _ = std::fs::write("/opt/sentryusb/version", &tag);
+        let _ = std::fs::write("/opt/dashusb/version", &tag);
     }
 
     // Roll any install warnings into the user-visible success message
@@ -420,9 +420,9 @@ async fn self_update(target_version: Option<String>) -> anyhow::Result<String> {
     // release missing an asset).
     // ── Re-apply install-time patches that must survive an OTA swap ──
     //
-    // The standalone /usr/local/bin/sentryusb-apply-runtime-patches script
+    // The standalone /usr/local/bin/dashusb-apply-runtime-patches script
     // re-applies things the binary swap can't own — e.g. the BCM4345C0
-    // non-fatal-adv patch to /root/bin/sentryusb-ble.py on Rock 4C+ which
+    // non-fatal-adv patch to /root/bin/dashusb-ble.py on Rock 4C+ which
     // otherwise crash-loops the BLE daemon after every update. The script
     // is idempotent + detection-gated, so it's a no-op on non-applicable
     // boards and a no-op on already-patched files.
@@ -437,12 +437,12 @@ async fn self_update(target_version: Option<String>) -> anyhow::Result<String> {
     // already on disk (warn-only). The script lives at a stable URL
     // (main branch, setup/pi/) so it's fetchable as long as the repo is
     // reachable.
-    let patches_path = "/usr/local/bin/sentryusb-apply-runtime-patches";
+    let patches_path = "/usr/local/bin/dashusb-apply-runtime-patches";
     let patches_url = format!(
         "https://raw.githubusercontent.com/{}/main/setup/pi/apply-runtime-patches.sh",
         repo
     );
-    let patches_tmp = "/tmp/sentryusb-apply-runtime-patches.new";
+    let patches_tmp = "/tmp/dashusb-apply-runtime-patches.new";
     tracing::info!(
         "update.rs: refreshing runtime-patches script from {}",
         patches_url
@@ -551,8 +551,8 @@ pub async fn get_version(State(_s): State<AppState>) -> (StatusCode, Json<serde_
     let sbc_model = get_sbc_model();
 
     // Read installed version tag if available (installer writes it here).
-    let installed = std::fs::read_to_string("/opt/sentryusb/version")
-        .or_else(|_| std::fs::read_to_string("/root/.sentryusb_version"))
+    let installed = std::fs::read_to_string("/opt/dashusb/version")
+        .or_else(|_| std::fs::read_to_string("/root/.dashusb_version"))
         .unwrap_or_else(|_| version.to_string());
 
     (StatusCode::OK, Json(serde_json::json!({
@@ -611,8 +611,8 @@ pub(crate) fn is_version_newer(candidate: &str, current: &str) -> bool {
 }
 
 fn read_current_version() -> String {
-    std::fs::read_to_string("/opt/sentryusb/version")
-        .or_else(|_| std::fs::read_to_string("/root/.sentryusb_version"))
+    std::fs::read_to_string("/opt/dashusb/version")
+        .or_else(|_| std::fs::read_to_string("/root/.dashusb_version"))
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string())
 }
@@ -761,7 +761,7 @@ async fn fetch_releases() -> Result<Vec<ReleaseInfo>, String> {
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
-        .user_agent(concat!("sentryusb-updater/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("dashusb-updater/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| format!("http client init failed: {}", e))?;
 
@@ -832,7 +832,7 @@ fn find_latest_releases(releases: &[ReleaseInfo]) -> (Option<&ReleaseInfo>, Opti
 
 /// Marker file. Once it exists, the install beacon has fired for this
 /// install and won't fire again. Lives under `/mutable/` so it survives
-/// SentryUSB updates but resets on a full SD-card reflash (which is
+/// DashUSB updates but resets on a full SD-card reflash (which is
 /// indistinguishable from a fresh install anyway).
 const INSTALL_BEACON_MARKER: &str = "/mutable/.beaconed";
 
@@ -872,7 +872,7 @@ pub async fn send_telemetry(current: &str, update_available: bool, new_version: 
         }
     }
 
-    let url = "https://api.sentry-six.com/sentryusb/telemetry";
+    let url = "https://api.sentry-six.com/dashusb/telemetry";
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
@@ -891,14 +891,14 @@ pub async fn send_telemetry(current: &str, update_available: bool, new_version: 
 }
 
 /// Fire the anonymous install beacon exactly once per install. The beacon
-/// POSTs an **empty body** to `/sentryusb/install-beacon` — no fingerprint,
+/// POSTs an **empty body** to `/dashusb/install-beacon` — no fingerprint,
 /// no identifier, nothing. The backend just increments a daily counter.
 /// This is what gives us gross-install volume independent of the opt-in
 /// cohort, and it carries no personal data so there's nothing to opt out of.
 ///
 /// Guarded by `/mutable/.beaconed` — once that file exists, the beacon
 /// never fires again for this install (until /mutable is wiped, which on
-/// SentryUSB only happens on a full reflash).
+/// DashUSB only happens on a full reflash).
 pub fn spawn_install_beacon() {
     tokio::spawn(async move {
         if std::path::Path::new(INSTALL_BEACON_MARKER).exists() {
@@ -908,7 +908,7 @@ pub fn spawn_install_beacon() {
         // doesn't drop the beacon. Three attempts max, then give up —
         // if we can't reach the server after that, we'll just stay
         // un-beaconed and try again next boot.
-        let url = "https://api.sentry-six.com/sentryusb/install-beacon";
+        let url = "https://api.sentry-six.com/dashusb/install-beacon";
         let client = match reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
             .build()

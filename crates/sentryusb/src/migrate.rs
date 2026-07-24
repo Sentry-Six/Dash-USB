@@ -7,16 +7,16 @@
 //! daemon, and service files were left at the old version. Once this code
 //! has run once, future boots will self-heal automatically.
 //!
-//! Gated by a marker file (`/opt/sentryusb/.migrated-<version>`) so it runs
+//! Gated by a marker file (`/opt/dashusb/.migrated-<version>`) so it runs
 //! at most once per installed version. Never touches user setup configuration.
 
 use std::time::Duration;
 
 use tracing::{info, warn};
 
-const VERSION_FILE: &str = "/opt/sentryusb/version";
-const MIGRATE_DIR: &str = "/opt/sentryusb";
-const MIGRATE_REPO: &str = "Sentry-Six/Sentry-USB-Rusty";
+const VERSION_FILE: &str = "/opt/dashusb/version";
+const MIGRATE_DIR: &str = "/opt/dashusb";
+const MIGRATE_REPO: &str = "Sentry-Six/Dash-USB";
 const MIGRATE_BRANCH: &str = "main";
 
 pub async fn run_startup_migration() {
@@ -72,7 +72,7 @@ pub async fn run_startup_migration() {
         {
             Ok(_) => {
                 // Re-apply runtime patches AFTER the migration. The migration
-                // script unconditionally rewrites /root/bin/sentryusb-ble.py
+                // script unconditionally rewrites /root/bin/dashusb-ble.py
                 // from the upstream tarball — which silently undoes board-
                 // specific fixes the OTA updater already applied (BCM4345C0
                 // non-fatal-adv on Rock 4C+ is the headline case: OTA patches
@@ -82,10 +82,10 @@ pub async fn run_startup_migration() {
                 // every migration. Best-effort: a missing script just yields
                 // an info log — the OTA flow's bootstrap path will populate
                 // it on the next update.
-                if std::path::Path::new("/usr/local/bin/sentryusb-apply-runtime-patches").exists() {
+                if std::path::Path::new("/usr/local/bin/dashusb-apply-runtime-patches").exists() {
                     match sentryusb_shell::run_with_timeout(
                         Duration::from_secs(30),
-                        "/usr/local/bin/sentryusb-apply-runtime-patches",
+                        "/usr/local/bin/dashusb-apply-runtime-patches",
                         &[],
                     )
                     .await
@@ -151,36 +151,6 @@ fn build_migration_script(tarball_url: &str) -> String {
 # so cp targets below would otherwise fail.
 mkdir -p /root/bin
 
-# ── Migrate broken cttseraser FUSE fstab entry to bind mount ──
-# Installs that completed setup before the FUSE → bind-mount switch still
-# carry the legacy `mount.ctts#/mutable/TeslaCam …` fstab line, which
-# depends on a /sbin/mount.ctts helper and the cttseraser binary —
-# both removed in the bind-mount switch. With the helper gone the mount
-# unit fails on every boot and /var/www/html/TeslaCam stays empty,
-# returning 404 for every clip in the dashboard player. The setup
-# wizard rewrites the fstab on first run, but already-set-up installs
-# never re-run it, so they need this one-shot migration instead.
-# Idempotent: skipped entirely when no `mount.ctts#` entry exists.
-if grep -qE '^[^#]*mount\.ctts#' /etc/fstab 2>/dev/null; then
-  # Strip the legacy entry AND any prior bind-mount line targeting the
-  # same path, then append the canonical bind entry. awk + mv is atomic
-  # so a power loss mid-write leaves /etc/fstab in its previous state.
-  awk '
-    /^[^#]*mount\.ctts#/ {{ next }}
-    /^[^#]*\/var\/www\/html\/TeslaCam[[:space:]]+none[[:space:]]+bind/ {{ next }}
-    {{ print }}
-  ' /etc/fstab > /etc/fstab.new
-  echo '/mutable/TeslaCam /var/www/html/TeslaCam none bind,nofail,x-systemd.requires=/mutable 0 0' >> /etc/fstab.new
-  mv /etc/fstab.new /etc/fstab
-  systemctl daemon-reload 2>/dev/null || true
-  # Clear the failed state from the legacy FUSE mount unit so the new
-  # bind-mount unit (same name, generated from the new fstab entry by
-  # systemd-fstab-generator) can activate without the residual error.
-  systemctl reset-failed var-www-html-TeslaCam.mount 2>/dev/null || true
-  systemctl start var-www-html-TeslaCam.mount 2>/dev/null || true
-  echo "migrate: replaced legacy mount.ctts# fstab entry with bind mount"
-fi
-
 TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
 
@@ -202,7 +172,7 @@ fi
 
 # ── Update archive module scripts ──
 ARCHIVE_SYSTEM=""
-for conf in /root/sentryusb.conf /sentryusb/sentryusb.conf; do
+for conf in /root/dashusb.conf /dashusb/dashusb.conf; do
   if [ -f "$conf" ]; then
     ARCHIVE_SYSTEM=$(grep -m1 'ARCHIVE_SYSTEM=' "$conf" 2>/dev/null | tail -1 | sed "s/.*ARCHIVE_SYSTEM=//;s/['\"]//g;s/#.*//" | tr -d ' ') || true
     [ -n "$ARCHIVE_SYSTEM" ] && break
@@ -220,10 +190,10 @@ if [ -n "$ARCHIVE_SYSTEM" ]; then
   fi
 fi
 
-# ── Update setup-sentryusb (kept as compatibility wrapper) ──
-if [ -f "$TMPDIR/setup/pi/setup-sentryusb" ]; then
-  cp "$TMPDIR/setup/pi/setup-sentryusb" "/root/bin/setup-sentryusb"
-  chmod +x "/root/bin/setup-sentryusb"
+# ── Update setup-dashusb (kept as compatibility wrapper) ──
+if [ -f "$TMPDIR/setup/pi/setup-dashusb" ]; then
+  cp "$TMPDIR/setup/pi/setup-dashusb" "/root/bin/setup-dashusb"
+  chmod +x "/root/bin/setup-dashusb"
 fi
 
 # ── Update envsetup.sh (kept as compatibility wrapper) ──
@@ -233,12 +203,12 @@ if [ -f "$TMPDIR/setup/pi/envsetup.sh" ]; then
 fi
 
 # ── Update BLE peripheral daemon (binary and/or Python fallback) ──
-if [ -f "$TMPDIR/server/ble/sentryusb-ble.py" ]; then
-  cp "$TMPDIR/server/ble/sentryusb-ble.py" "/root/bin/sentryusb-ble.py"
-  chmod +x "/root/bin/sentryusb-ble.py"
+if [ -f "$TMPDIR/server/ble/dashusb-ble.py" ]; then
+  cp "$TMPDIR/server/ble/dashusb-ble.py" "/root/bin/dashusb-ble.py"
+  chmod +x "/root/bin/dashusb-ble.py"
 fi
-if [ -f "$TMPDIR/server/ble/sentryusb-ble.service" ]; then
-  cp "$TMPDIR/server/ble/sentryusb-ble.service" "/etc/systemd/system/sentryusb-ble.service"
+if [ -f "$TMPDIR/server/ble/dashusb-ble.service" ]; then
+  cp "$TMPDIR/server/ble/dashusb-ble.service" "/etc/systemd/system/dashusb-ble.service"
   systemctl daemon-reload
 fi
 
@@ -252,7 +222,7 @@ done
 # ── Configure bluetoothd --experimental by BlueZ version ──
 # Legacy BlueZ (< 5.55) needs it for LEAdvertisingManager1; newer BlueZ does not, and
 # the flag there registers LE Audio services that trigger Android pairing prompts.
-BTOVERRIDE=/etc/systemd/system/bluetooth.service.d/sentryusb-experimental.conf
+BTOVERRIDE=/etc/systemd/system/bluetooth.service.d/dashusb-experimental.conf
 BTDAEMON=$(systemctl cat bluetooth.service 2>/dev/null | grep '^ExecStart=' | head -1 | sed 's/ExecStart=//' | awk '{{print $1}}')
 BTDAEMON=${{BTDAEMON:-$(command -v bluetoothd 2>/dev/null)}}
 if [ -n "$BTDAEMON" ] && [ -x "$BTDAEMON" ]; then
@@ -280,15 +250,15 @@ BTEOF
 fi
 
 # ── Install/update Avahi mDNS service ──
-if [ -f "$TMPDIR/setup/pi/avahi-sentryusb.service" ]; then
+if [ -f "$TMPDIR/setup/pi/avahi-dashusb.service" ]; then
   if ! dpkg -s avahi-daemon >/dev/null 2>&1; then
     apt-get update -qq && apt-get install -y -qq avahi-daemon avahi-utils >/dev/null 2>&1 || true
   fi
   if dpkg -s avahi-daemon >/dev/null 2>&1; then
     mkdir -p /etc/avahi/services
-    cp "$TMPDIR/setup/pi/avahi-sentryusb.service" /etc/avahi/services/sentryusb.service
+    cp "$TMPDIR/setup/pi/avahi-dashusb.service" /etc/avahi/services/dashusb.service
     # IPv4-only mDNS advertising (stale-AAAA slowness + Chrome PNA "CORS"
-    # blocks on http://sentryusb.local — see the helper's header comment).
+    # blocks on http://dashusb.local — see the helper's header comment).
     # Nonfatal, but loud: the setup repair path is the self-heal backstop.
     if [ -f "$TMPDIR/setup/pi/avahi-ipv4-only.sh" ]; then
       bash "$TMPDIR/setup/pi/avahi-ipv4-only.sh" \
@@ -301,48 +271,19 @@ if [ -f "$TMPDIR/setup/pi/avahi-sentryusb.service" ]; then
   fi
 fi
 
-# ── Migrate AP to Away Mode (AP off by default) ──
-# Skip the teardown while an Away Mode session is active (flag file
-# present): this migration runs unordered vs restore_from_file()'s boot
-# AP start, so downing the profile here could strand a parked-away Pi
-# until it returns home. Autoconnect-off is still safe to apply — Away
-# Mode always raises the AP explicitly.
-if nmcli -t con show SENTRYUSB_AP &>/dev/null; then
-  nmcli con modify SENTRYUSB_AP connection.autoconnect no 2>/dev/null || true
-  if [ ! -f /mutable/sentryusb_away_mode.json ]; then
-    nmcli con down SENTRYUSB_AP 2>/dev/null || true
-    iw dev ap0 del 2>/dev/null || true
-  fi
-fi
-WLAN=$(nmcli -t -f TYPE,DEVICE c show --active 2>/dev/null | grep 802-11-wireless | grep -v ':ap0$' | cut -d: -f2 | head -1)
-WLAN=${{WLAN:-wlan0}}
-if [ -d /etc/NetworkManager/dispatcher.d ]; then
-  cat > /etc/NetworkManager/dispatcher.d/10-sentryusb-ap << APEOF
-#!/bin/bash
-IFACE="\$1"
-ACTION="\$2"
-if [ "\$IFACE" = "$WLAN" ] && [ "\$ACTION" = "up" ]; then
-  if [ -f /mutable/sentryusb_away_mode.json ]; then
-    if ! iw dev ap0 info &> /dev/null; then
-      iw dev $WLAN interface add ap0 type __ap || true
-    fi
-    iw $WLAN set power_save off 2>/dev/null || true
-    iw ap0 set power_save off 2>/dev/null || true
-    nmcli con up SENTRYUSB_AP 2>/dev/null || true
-  fi
-fi
-APEOF
-  chmod 755 /etc/NetworkManager/dispatcher.d/10-sentryusb-ap
+# ── Keep the WiFi AP from autoconnecting (it is setup-managed) ──
+if nmcli -t con show DASHUSB_AP &>/dev/null; then
+  nmcli con modify DASHUSB_AP connection.autoconnect no 2>/dev/null || true
 fi
 
 # ── Refresh the per-CPU binary picker ──
 # The picker now also re-validates the telemetry + ble-action symlinks
 # under /root/bin at every boot (the issue #88 SIGILL self-heal). Ship
 # the new version to existing installs from the tarball. Harmless on
-# very old installs whose sentryusb.service predates the ExecStartPre
+# very old installs whose dashusb.service predates the ExecStartPre
 # hook — the script just sits unused until the unit is updated.
-if [ -f "$TMPDIR/pi-gen-sources/00-sentryusb-tweaks/files/sentryusb-pick-binary" ]; then
-  install -m 755 "$TMPDIR/pi-gen-sources/00-sentryusb-tweaks/files/sentryusb-pick-binary" /usr/local/bin/sentryusb-pick-binary
+if [ -f "$TMPDIR/pi-gen-sources/00-dashusb-tweaks/files/dashusb-pick-binary" ]; then
+  install -m 755 "$TMPDIR/pi-gen-sources/00-dashusb-tweaks/files/dashusb-pick-binary" /usr/local/bin/dashusb-pick-binary
 fi
 
 # ── Refresh the runtime-patches helper from the tarball ──
@@ -351,146 +292,12 @@ fi
 # script exits) would re-run the OLD on-disk version. Bootstrap pre-v3.11
 # installs that never had the helper at all (the file just appears).
 if [ -f "$TMPDIR/setup/pi/apply-runtime-patches.sh" ]; then
-  install -m 755 "$TMPDIR/setup/pi/apply-runtime-patches.sh" /usr/local/bin/sentryusb-apply-runtime-patches
+  install -m 755 "$TMPDIR/setup/pi/apply-runtime-patches.sh" /usr/local/bin/dashusb-apply-runtime-patches
 fi
 
-# ── Install Tesla BLE telemetry sampler service + aux binaries ──
-# Two concerns here:
-#   1. The systemd unit ships in the source tarball — copy it into place
-#      and enable it. Idempotent on every upgrade.
-#   2. The telemetry + ble-action binaries need to be on disk in the
-#      picker-managed layout: per-CPU variant copies under
-#      /opt/sentryusb with /root/bin/<name> as symlinks the picker
-#      re-validates at every boot (issue #88). A legacy regular file at
-#      /root/bin is converted by re-downloading the right variant — its
-#      own variant is unknowable (it may be the wrong-CPU build that
-#      caused the SIGILL crash-loop in the first place), so we never
-#      trust it. The old file is only replaced after a successful
-#      download; offline installs keep working and convert on a later
-#      run. Already-converted installs (symlink present) are skipped.
-if [ -f "$TMPDIR/server/ble/sentryusb-telemetry.service" ]; then
-  cp "$TMPDIR/server/ble/sentryusb-telemetry.service" "/etc/systemd/system/sentryusb-telemetry.service"
-  systemctl daemon-reload
-  systemctl enable sentryusb-telemetry 2>/dev/null || true
-
-  # Match the suffix scheme update.rs uses. Three-tier: active-variant
-  # file (written by sentryusb-pick-binary) → live CPU detection → arch
-  # family fallback. The aarch64 suffix is per-CPU (-a53/-a72/-a76) so
-  # the aux binaries' tuning matches the main daemon's tuning.
-  # Only trust active-variant when it's a real release suffix — old
-  # pickers recorded their on-disk fallback (or "legacy") here, and a
-  # download URL built from that installs the wrong CPU variant.
-  _suffix=""
-  if [ -s /opt/sentryusb/active-variant ]; then
-    _suffix=$(cat /opt/sentryusb/active-variant 2>/dev/null | tr -d '[:space:]')
-    case "$_suffix" in
-      linux-arm64-a53|linux-arm64-a72|linux-arm64-a76|linux-armv7|linux-amd64) ;;
-      *) _suffix="" ;;
-    esac
-  fi
-  if [ -z "$_suffix" ]; then
-    _arch=$(dpkg --print-architecture 2>/dev/null || true)
-    case "$_arch" in
-      armhf)  _suffix=linux-armv7 ;;
-      amd64)  _suffix=linux-amd64 ;;
-      arm64)
-        # Sub-detect for aarch64: HWCAP atomics+aes → a76, CPU part 0xD08
-        # → a72, else a53. Same rules as sentryusb-pick-binary (the a76
-        # build keeps the crypto extension, so it needs the aes hwcap).
-        if grep -qE '^Features.*\batomics\b' /proc/cpuinfo 2>/dev/null \
-          && grep -qE '^Features.*\baes\b' /proc/cpuinfo 2>/dev/null; then
-          _suffix=linux-arm64-a76
-        elif grep -qE '^CPU part[[:space:]]*:[[:space:]]*0x[dD]08' /proc/cpuinfo 2>/dev/null; then
-          _suffix=linux-arm64-a72
-        else
-          _suffix=linux-arm64-a53
-        fi
-        ;;
-      *)
-        _arch=$(uname -m 2>/dev/null || echo "")
-        case "$_arch" in
-          armv7l)  _suffix=linux-armv7 ;;
-          x86_64)  _suffix=linux-amd64 ;;
-          aarch64)
-            if grep -qE '^Features.*\batomics\b' /proc/cpuinfo 2>/dev/null \
-              && grep -qE '^Features.*\baes\b' /proc/cpuinfo 2>/dev/null; then
-              _suffix=linux-arm64-a76
-            elif grep -qE '^CPU part[[:space:]]*:[[:space:]]*0x[dD]08' /proc/cpuinfo 2>/dev/null; then
-              _suffix=linux-arm64-a72
-            else
-              _suffix=linux-arm64-a53
-            fi
-            ;;
-          *)       _suffix="" ;;
-        esac
-        ;;
-    esac
-  fi
-  if [ -n "$_suffix" ]; then
-    for _name in sentryusb-tesla-telemetry sentryusb-ble-action; do
-      # Symlink already in place → the picker owns it now; skip.
-      if [ -L "/root/bin/$_name" ]; then
-        continue
-      fi
-      _url="https://github.com/{repo}/releases/latest/download/$_name-$_suffix"
-      if curl -sfI --max-time 10 "$_url" >/dev/null 2>&1; then
-        mkdir -p /root/bin /opt/sentryusb
-        if curl -fsSL --max-time 120 "$_url" -o "/tmp/$_name.migrate" 2>/dev/null; then
-          chmod +x "/tmp/$_name.migrate"
-          mv "/tmp/$_name.migrate" "/opt/sentryusb/$_name-$_suffix"
-          ln -sfn "/opt/sentryusb/$_name-$_suffix" "/root/bin/$_name"
-          echo "migrate: installed $_name-$_suffix and linked /root/bin/$_name"
-        fi
-      fi
-    done
-  fi
-
-  # Only attempt restart if the binary is actually present — the
-  # ConditionPathExists in the unit would otherwise log a confusing
-  # "skipped" line on every upgrade where BLE isn't set up yet.
-  if [ -x /root/bin/sentryusb-tesla-telemetry ]; then
-    systemctl restart sentryusb-telemetry 2>/dev/null || true
-  fi
-fi
-
-# Clean up the pre-v6 lock path if it's still around from an older
-# awake_start. The new path is /tmp/ble_radio_owner; leaving the old
-# file lying around looks like a held lock to the new code.
-rm -f /tmp/ble_keep_awake_active 2>/dev/null || true
-
-# ── Restart BLE daemon ──
-systemctl enable sentryusb-ble 2>/dev/null || true
-systemctl restart sentryusb-ble 2>/dev/null || true
-
-# ── Post-migration patches (persist across upstream script updates) ──
-# These re-apply user-facing fixes onto the run/ scripts just replaced with
-# upstream copies. Idempotent — the `grep -q` guards prevent re-patching.
-
-# Patch 1: send-push-message — respect SENTRY_NOTIFICATION_URL
-if grep -q 'https://notifications.sentry-six.com/send"' /root/bin/send-push-message 2>/dev/null; then
-  sed -i 's|"https://notifications.sentry-six.com/send"|"${{SENTRY_NOTIFICATION_URL:-https://notifications.sentry-six.com}}/send"|' /root/bin/send-push-message
-fi
-
-# Patch 2: archiveloop — read active chime from library dir instead of flat file
-if grep -q '[ -f "/mutable/LockChime.wav" ]' /root/bin/archiveloop 2>/dev/null; then
-  python3 - <<'PYEOF'
-content = open('/root/bin/archiveloop').read()
-old = '    if [ -f "/mutable/LockChime.wav" ]\n    then\n      cp -f "/mutable/LockChime.wav" "$CAM_MOUNT/LockChime.wav"'
-new = '    _active_chime=$(cat /mutable/LockChime/.active_name 2>/dev/null || true)\n    if [ -n "$_active_chime" ] && [ -f "/mutable/LockChime/$_active_chime" ]\n    then\n      cp -f "/mutable/LockChime/$_active_chime" "$CAM_MOUNT/LockChime.wav"'
-if old in content:
-    open('/root/bin/archiveloop','w').write(content.replace(old, new, 1))
-PYEOF
-fi
-
-# ── Remove obsolete tesla-control / tesla-keygen ──
-# Pairing, keygen and every Tesla BLE command are native now
-# (sentryusb-ble-action + the tesla_ble crate); nothing references the
-# external Go binaries anymore. They're ~28 MB of dead weight on the
-# space-tight root partition. The telemetry unit copied + reloaded above
-# no longer gates on tesla-control, so removing them can't break startup.
-# Idempotent.
-rm -f /root/bin/tesla-control /root/bin/tesla-keygen \
-      /usr/local/bin/tesla-control /usr/local/bin/tesla-keygen 2>/dev/null || true
+# ── Restart the phone-app BLE daemon ──
+systemctl enable dashusb-ble 2>/dev/null || true
+systemctl restart dashusb-ble 2>/dev/null || true
 "#,
         tarball_url = tarball_url,
         repo = MIGRATE_REPO,
@@ -508,14 +315,14 @@ mod tests {
     #[test]
     fn migration_script_parses() {
         let script = build_migration_script(
-            "https://github.com/Sentry-Six/Sentry-USB-Rusty/archive/v0.0.0.tar.gz",
+            "https://github.com/Sentry-Six/Dash-USB/archive/v0.0.0.tar.gz",
         );
         // Placeholders must all have been substituted.
         assert!(!script.contains("{repo}"), "unsubstituted {{repo}}");
         assert!(!script.contains("{branch}"), "unsubstituted {{branch}}");
         assert!(!script.contains("{tarball_url}"), "unsubstituted {{tarball_url}}");
 
-        let dir = std::env::temp_dir().join("sentryusb-migrate-test");
+        let dir = std::env::temp_dir().join("dashusb-migrate-test");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("migration.sh");
         std::fs::write(&path, &script).unwrap();

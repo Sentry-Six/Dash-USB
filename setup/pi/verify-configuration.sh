@@ -35,11 +35,11 @@ function check_supported_hardware () {
   if grep -q 'Raspberry Pi Zero W' /sys/firmware/devicetree/base/model
   then
     setup_progress "STOP: unsupported hardware: Raspberry Pi Zero W"
-    setup_progress "(SentryUSB requires Pi Zero 2 W or newer — Pi 3, Pi 4, Pi 5)"
+    setup_progress "(DashUSB requires Pi Zero 2 W or newer — Pi 3, Pi 4, Pi 5)"
     exit 1
   fi
   setup_progress "STOP: unsupported hardware: '$(cat /sys/firmware/devicetree/base/model)'"
-  setup_progress "(only Pi Zero 2 W, Pi 3, Pi 4, and Pi 5 have the necessary hardware to run SentryUSB)"
+  setup_progress "(only Pi Zero 2 W, Pi 3, Pi 4, and Pi 5 have the necessary hardware to run DashUSB)"
   exit 1
 }
 
@@ -167,18 +167,18 @@ function check_available_space_usb () {
   setup_progress "There is sufficient space available."
 }
 
-function check_setup_sentryusb () {
-  if [ ! -e /root/bin/setup-sentryusb ]
+function check_setup_dashusb () {
+  if [ ! -e /root/bin/setup-dashusb ]
   then
-    setup_progress "STOP: setup-sentryusb is not in /root/bin"
+    setup_progress "STOP: setup-dashusb is not in /root/bin"
     exit 1
   fi
 
   local parent
   parent="$(ps -o comm= $PPID)"
-  if [ "$parent" != "setup-sentryusb" ]
+  if [ "$parent" != "setup-dashusb" ]
   then
-    setup_progress "STOP: $0 must be called from setup-sentryusb: $parent"
+    setup_progress "STOP: $0 must be called from setup-dashusb: $parent"
     exit 1
   fi
 }
@@ -189,7 +189,7 @@ check_udc
 
 check_xfs
 
-check_setup_sentryusb
+check_setup_dashusb
 
 check_variable "CAM_SIZE"
 

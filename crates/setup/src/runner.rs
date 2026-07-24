@@ -1,4 +1,4 @@
-//! Setup runner — the main orchestrator that replaces `setup-sentryusb`.
+//! Setup runner — the main orchestrator that replaces `setup-dashusb`.
 //!
 //! Every phase function owns its own idempotency check and only announces
 //! itself via `emitter.begin_phase(..)` when it actually has work to do,
@@ -15,15 +15,15 @@ use tracing::{error, info};
 use crate::env::SetupEnv;
 use crate::SetupEmitter;
 
-const SETUP_LOG: &str = "/sentryusb/sentryusb-setup.log";
-const SETUP_PHASES_FILE: &str = "/sentryusb/setup-phases.jsonl";
-const SETUP_FINISHED_MARKER: &str = "/sentryusb/SENTRYUSB_SETUP_FINISHED";
-const SETUP_STARTED_MARKER: &str = "/sentryusb/SENTRYUSB_SETUP_STARTED";
+const SETUP_LOG: &str = "/dashusb/dashusb-setup.log";
+const SETUP_PHASES_FILE: &str = "/dashusb/setup-phases.jsonl";
+const SETUP_FINISHED_MARKER: &str = "/dashusb/DASHUSB_SETUP_FINISHED";
+const SETUP_STARTED_MARKER: &str = "/dashusb/DASHUSB_SETUP_STARTED";
 /// Records the DATA_DRIVE that successfully completed setup, so a
 /// subsequent re-run can detect a swap to a different external disk
 /// and only format the new one (Change 7). Empty file for SD-card
 /// installs where no DATA_DRIVE was used.
-const LAST_DATA_DRIVE_MARKER: &str = "/sentryusb/last-data-drive";
+const LAST_DATA_DRIVE_MARKER: &str = "/dashusb/last-data-drive";
 
 /// Build a `SetupEmitter` whose progress callback writes to the setup log
 /// file and whose phase callback appends to `setup-phases.jsonl`. The two
@@ -77,7 +77,7 @@ pub async fn run_full_setup(emitter: SetupEmitter) -> Result<()> {
     }
 
     // The STARTED/FINISHED markers (and several early phases) live on the
-    // boot partition (/sentryusb). On a re-run of an already-read-only
+    // boot partition (/dashusb). On a re-run of an already-read-only
     // system the boot partition is mounted read-only, so these writes
     // silently fail. The critical casualty is the FINISHED marker at the
     // end: without it, `auto_resume_setup` re-runs setup on every boot —
@@ -97,7 +97,7 @@ pub async fn run_full_setup(emitter: SetupEmitter) -> Result<()> {
     let already_finished = Path::new(SETUP_FINISHED_MARKER).exists();
 
     let _ = std::fs::remove_file(SETUP_FINISHED_MARKER);
-    let _ = std::fs::create_dir_all("/sentryusb");
+    let _ = std::fs::create_dir_all("/dashusb");
     let _ = std::fs::write(SETUP_STARTED_MARKER, "");
 
     // Clear the phases ledger on a fresh start so the UI list starts empty.
@@ -108,7 +108,7 @@ pub async fn run_full_setup(emitter: SetupEmitter) -> Result<()> {
     }
 
     if !resuming {
-        emitter.progress("=== SentryUSB Setup Starting ===");
+        emitter.progress("=== DashUSB Setup Starting ===");
     } else {
         emitter.progress("--- Resuming setup after reboot ---");
     }
@@ -305,7 +305,7 @@ pub async fn run_full_setup(emitter: SetupEmitter) -> Result<()> {
         );
     }
 
-    emitter.progress("=== SentryUSB Setup Complete ===");
+    emitter.progress("=== DashUSB Setup Complete ===");
     emitter.progress("Rebooting in 5 seconds to apply changes...");
 
     // Auto-reboot so read-only root, cmdline.txt changes, and partition table
@@ -502,13 +502,13 @@ async fn shrink_root_partition_table(
         ).await;
     }
 
-    if Path::new("/sentryusb/config.txt").exists() {
-        let config = std::fs::read_to_string("/sentryusb/config.txt").unwrap_or_default();
+    if Path::new("/dashusb/config.txt").exists() {
+        let config = std::fs::read_to_string("/dashusb/config.txt").unwrap_or_default();
         if config.contains("SENTRYUSB-REMOVE") {
             let cleaned: String = config.lines()
                 .filter(|l| !l.contains("SENTRYUSB-REMOVE"))
                 .collect::<Vec<_>>().join("\n");
-            let _ = std::fs::write("/sentryusb/config.txt", cleaned + "\n");
+            let _ = std::fs::write("/dashusb/config.txt", cleaned + "\n");
             let initrd = format!("initrd.img-{}", std::env::consts::ARCH);
             let _ = std::fs::remove_file(format!("/boot/{}", initrd));
         } else {
@@ -670,7 +670,7 @@ async fn check_root_shrink(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
     ).await?;
     let used_kb: u64 = used_output.trim().parse().unwrap_or(0);
 
-    // Honor INCREASE_ROOT_SIZE from sentryusb.conf / wizard advanced step.
+    // Honor INCREASE_ROOT_SIZE from dashusb.conf / wizard advanced step.
     // The wizard exposed this field but the shrink path was ignoring it,
     // so users who asked for headroom (e.g. for extra apt packages) ended
     // up with a root partition trimmed to the bare minimum. Round the
@@ -699,7 +699,7 @@ async fn check_root_shrink(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
 
     let kernel_ver = sentryusb_shell::run("uname", &["-r"]).await?.trim().to_string();
     let initrd_name = format!("initrd.img-{}", kernel_ver);
-    let boot_part = std::fs::read_link("/sentryusb")
+    let boot_part = std::fs::read_link("/dashusb")
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "/boot".to_string());
 
@@ -707,13 +707,13 @@ async fn check_root_shrink(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
     let initrd_in_boot = format!("/boot/{}", initrd_name);
 
     if !Path::new(&initrd_on_boot).exists() && !Path::new(&initrd_in_boot).exists() {
-        if Path::new("/sentryusb/config.txt").exists() {
+        if Path::new("/dashusb/config.txt").exists() {
             emitter.progress("Temporarily enabling initramfs for root resize...");
             let _ = sentryusb_shell::run_with_timeout(
                 Duration::from_secs(120),
                 "update-initramfs", &["-c", "-k", &kernel_ver],
             ).await;
-            let mut f = std::fs::OpenOptions::new().append(true).open("/sentryusb/config.txt")?;
+            let mut f = std::fs::OpenOptions::new().append(true).open("/dashusb/config.txt")?;
             use std::io::Write;
             writeln!(f, "initramfs {} followkernel # SENTRYUSB-REMOVE", initrd_name)?;
         } else {
@@ -804,7 +804,7 @@ fi
     ).await?;
 
     let initrd_name = format!("initrd.img-{}", kernel_ver);
-    let boot_part = std::fs::read_link("/sentryusb")
+    let boot_part = std::fs::read_link("/dashusb")
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "/boot".to_string());
     if boot_part != "/boot" {
@@ -973,7 +973,7 @@ async fn mount_partitions(emitter: &SetupEmitter) -> Result<()> {
     Ok(())
 }
 
-/// Update fstab with sentryusb mount entries for disk image files.
+/// Update fstab with dashusb mount entries for disk image files.
 async fn update_image_fstab_entries() -> Result<()> {
     let images = [
         ("/backingfiles/cam_disk.bin", "/mnt/cam"),
@@ -995,7 +995,7 @@ async fn update_image_fstab_entries() -> Result<()> {
     for (img, mnt) in &images {
         if Path::new(img).exists() {
             let _ = std::fs::create_dir_all(mnt);
-            fstab.push_str(&format!("\n{} {} sentryusb noauto 0 0", img, mnt));
+            fstab.push_str(&format!("\n{} {} dashusb noauto 0 0", img, mnt));
         }
     }
 

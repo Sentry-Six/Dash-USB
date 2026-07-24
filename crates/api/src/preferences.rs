@@ -21,13 +21,13 @@ use serde::Deserialize;
 use crate::router::AppState;
 
 /// Preferences store path (`/mutable` on the Pi; honors the
-/// `SENTRYUSB_MUTABLE_DIR` dev override for off-Pi runs).
+/// `DASHUSB_MUTABLE_DIR` dev override for off-Pi runs).
 pub(crate) fn prefs_file() -> String {
-    format!("{}/.sentryusb_preferences.json", sentryusb_config::mutable_dir())
+    format!("{}/.dashusb_preferences.json", sentryusb_config::mutable_dir())
 }
 /// Legacy Go preferences path — read-only fallback so upgrades don't lose data.
 fn legacy_prefs_file() -> String {
-    format!("{}/sentryusb-prefs.json", sentryusb_config::mutable_dir())
+    format!("{}/dashusb-prefs.json", sentryusb_config::mutable_dir())
 }
 
 /// Serializes concurrent preference reads + writes. Held around the

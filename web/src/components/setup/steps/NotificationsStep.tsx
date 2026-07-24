@@ -224,7 +224,7 @@ export function NotificationsStep({ data, onChange }: StepProps) {
           type="text"
           value={data.NOTIFICATION_TITLE ?? ""}
           onChange={(e) => onChange("NOTIFICATION_TITLE", e.target.value)}
-          placeholder="SentryUSB"
+          placeholder="DashUSB"
           className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-100 placeholder-slate-600 outline-none transition focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/25"
         />
       </div>

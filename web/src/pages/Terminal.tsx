@@ -297,7 +297,7 @@ export default function TerminalPage() {
                 <div className="flex items-center gap-2">
                     <div className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]" />
                     <span className="text-sm font-medium text-slate-300">
-                        {username}@sentryusb
+                        {username}@dashusb
                     </span>
                 </div>
                 <button

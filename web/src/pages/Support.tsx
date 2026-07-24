@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils"
 import { BACKEND_BASE_URL } from "@/lib/api"
 
 const POLL_INTERVAL = 3500
-const STORAGE_KEY = "sentryusb_support_ticket"
+const STORAGE_KEY = "dashusb_support_ticket"
 
 interface Ticket {
   ticketId: string

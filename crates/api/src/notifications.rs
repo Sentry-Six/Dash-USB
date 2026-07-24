@@ -2,7 +2,7 @@
 //!
 //! Owns the Pi's long-lived `(device_id, device_secret)` credentials used
 //! to authenticate against the Sentry Connect backend. Credentials live
-//! at `/root/.sentryusb/notification-credentials.json` and are read back
+//! at `/root/.dashusb/notification-credentials.json` and are read back
 //! by `envsetup.sh` so the bash `send-push-message` wrapper can forward
 //! them to the Rust API's `/api/notifications/send` via `MOBILE_PUSH_*`
 //! env vars.
@@ -32,7 +32,7 @@ use tracing::{info, warn};
 
 use crate::router::AppState;
 
-const CREDENTIALS_PATH: &str = "/root/.sentryusb/notification-credentials.json";
+const CREDENTIALS_PATH: &str = "/root/.dashusb/notification-credentials.json";
 
 /// Alphanumeric charset excluding ambiguous glyphs (0/O, 1/I/l).
 /// Must match Go `pairingCodeCharset` exactly so codes generated on a
@@ -43,7 +43,7 @@ const PAIRING_EXPIRY: Duration = Duration::from_secs(5 * 60);
 const MAX_ACTIVE_CODES: usize = 3;
 
 /// Default notification backend. Override with `SENTRY_NOTIFICATION_URL`
-/// (env var or `sentryusb.conf` entry).
+/// (env var or `dashusb.conf` entry).
 const DEFAULT_NOTIFICATION_BASE_URL: &str = "https://notifications.sentry-six.com";
 
 fn notification_base_url() -> String {
@@ -55,7 +55,7 @@ fn notification_base_url() -> String {
             return trimmed.to_string();
         }
     }
-    // 2. Parse `sentryusb.conf` directly. systemd starts the binary
+    // 2. Parse `dashusb.conf` directly. systemd starts the binary
     //    without sourcing the config (no shell wrapper), so the env
     //    var won't be set on a normal install — without this fallback,
     //    the user's SENTRY_NOTIFICATION_URL is silently ignored and
@@ -459,7 +459,7 @@ pub async fn send_test_notification(State(_s): State<AppState>) -> (StatusCode, 
     };
 
     let hostname = std::fs::read_to_string("/etc/hostname")
-        .unwrap_or_else(|_| "SentryUSB".to_string());
+        .unwrap_or_else(|_| "DashUSB".to_string());
     let hostname = hostname.trim();
 
     let client = reqwest::Client::builder()
@@ -471,7 +471,7 @@ pub async fn send_test_notification(State(_s): State<AppState>) -> (StatusCode, 
         &client,
         &creds.device_id,
         &creds.device_secret,
-        "SentryUSB Test",
+        "DashUSB Test",
         &format!("Test notification from {} — push notifications are working!", hostname),
     ).await;
 
@@ -514,7 +514,7 @@ pub async fn send_test_notification(State(_s): State<AppState>) -> (StatusCode, 
         id: String::new(),
         timestamp: 0,
         event_type: "test".to_string(),
-        title: "SentryUSB Test".to_string(),
+        title: "DashUSB Test".to_string(),
         message: format!("Test notification from {} — push notifications are working!", hostname),
         providers: vec!["sentry_connect".to_string()],
         results: results_map,

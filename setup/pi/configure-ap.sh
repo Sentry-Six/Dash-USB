@@ -58,25 +58,25 @@ function nm_add_ap () {
   iw ap0 set power_save off || return 1
 
   # set up access point on the virtual interface using networkmanager
-  nmcli con delete SENTRYUSB_AP &> /dev/null || true
+  nmcli con delete DASHUSB_AP &> /dev/null || true
   nmcli con delete TESLAUSB_AP &> /dev/null || true
   # autoconnect is set at add time: a profile created with the default
   # (autoconnect=yes) can be auto-activated by NM before a later "con modify"
   # lands, leaving the AP broadcasting right out of setup. Away Mode controls
   # when it comes up.
-  nmcli con add type wifi ifname ap0 mode ap con-name SENTRYUSB_AP autoconnect no ssid "$AP_SSID" || return 1
+  nmcli con add type wifi ifname ap0 mode ap con-name DASHUSB_AP autoconnect no ssid "$AP_SSID" || return 1
   # don't set band and channel, because that is controlled by the $WLAN interface
-  #nmcli con modify SENTRYUSB_AP 802-11-wireless.band bg
-  #nmcli con modify SENTRYUSB_AP 802-11-wireless.channel 6
-  nmcli con modify SENTRYUSB_AP 802-11-wireless-security.key-mgmt wpa-psk || return 1
-  nmcli con modify SENTRYUSB_AP 802-11-wireless-security.psk "$AP_PASS" || return 1
+  #nmcli con modify DASHUSB_AP 802-11-wireless.band bg
+  #nmcli con modify DASHUSB_AP 802-11-wireless.channel 6
+  nmcli con modify DASHUSB_AP 802-11-wireless-security.key-mgmt wpa-psk || return 1
+  nmcli con modify DASHUSB_AP 802-11-wireless-security.psk "$AP_PASS" || return 1
   IP=${AP_IP:-"192.168.66.1"}
-  nmcli con modify SENTRYUSB_AP ipv4.addr "$IP/24" || return 1
-  nmcli con modify SENTRYUSB_AP ipv4.method shared || return 1
-  nmcli con modify SENTRYUSB_AP ipv6.method disabled || return 1
+  nmcli con modify DASHUSB_AP ipv4.addr "$IP/24" || return 1
+  nmcli con modify DASHUSB_AP ipv4.method shared || return 1
+  nmcli con modify DASHUSB_AP ipv6.method disabled || return 1
   # Remove stale if-up.d script from previous installs — it doesn't fire on
   # NetworkManager/netplan systems (e.g. Pi 5 with Debian Trixie).
-  rm -f /etc/network/if-up.d/sentryusb-ap
+  rm -f /etc/network/if-up.d/dashusb-ap
 
   # Use a NetworkManager dispatcher script instead: NM calls scripts in
   # /etc/NetworkManager/dispatcher.d/ with $1=interface $2=action whenever
@@ -85,11 +85,11 @@ function nm_add_ap () {
   # Away Mode is active (flag file exists).  During normal operation the AP
   # stays off so wlan0 can freely scan all channels.
   mkdir -p /etc/NetworkManager/dispatcher.d
-  cat > /etc/NetworkManager/dispatcher.d/10-sentryusb-ap << EOF
+  cat > /etc/NetworkManager/dispatcher.d/10-dashusb-ap << EOF
 #!/bin/bash
 # Recreate ap0 virtual interface when the wifi client comes up,
 # but ONLY if Away Mode is active (flag file exists).
-# Created by SentryUSB configure-ap.sh
+# Created by DashUSB configure-ap.sh
 
 IFACE="\$1"
 ACTION="\$2"
@@ -102,11 +102,11 @@ then
     fi
     iw $WLAN set power_save off 2>/dev/null || true
     iw ap0 set power_save off 2>/dev/null || true
-    nmcli con up SENTRYUSB_AP 2>/dev/null || true
+    nmcli con up DASHUSB_AP 2>/dev/null || true
   fi
 fi
 EOF
-  chmod 755 /etc/NetworkManager/dispatcher.d/10-sentryusb-ap || return 1
+  chmod 755 /etc/NetworkManager/dispatcher.d/10-dashusb-ap || return 1
 }
 
 
@@ -120,7 +120,7 @@ function nm_write_ap_file () {
   local _ssid="$AP_SSID"
   local _psk="$AP_PASS"
   local _ip="${AP_IP:-192.168.66.1}"
-  local _file="/etc/NetworkManager/system-connections/SENTRYUSB_AP.nmconnection"
+  local _file="/etc/NetworkManager/system-connections/DASHUSB_AP.nmconnection"
 
   nm_get_wifi_client_device || return 1
 
@@ -130,13 +130,13 @@ function nm_write_ap_file () {
   iw "$WLAN" set power_save off || return 1
   iw ap0 set power_save off || return 1
 
-  nmcli con delete SENTRYUSB_AP &> /dev/null || true
+  nmcli con delete DASHUSB_AP &> /dev/null || true
   nmcli con delete TESLAUSB_AP &> /dev/null || true
 
   mkdir -p /etc/NetworkManager/system-connections
   cat > "$_file" << EOF
 [connection]
-id=SENTRYUSB_AP
+id=DASHUSB_AP
 type=wifi
 interface-name=ap0
 autoconnect=false
@@ -163,13 +163,13 @@ EOF
 
   # Install the dispatcher script for ap0 — only recreates ap0 when Away
   # Mode is active (flag file exists).
-  rm -f /etc/network/if-up.d/sentryusb-ap
+  rm -f /etc/network/if-up.d/dashusb-ap
   mkdir -p /etc/NetworkManager/dispatcher.d
-  cat > /etc/NetworkManager/dispatcher.d/10-sentryusb-ap << EOF2
+  cat > /etc/NetworkManager/dispatcher.d/10-dashusb-ap << EOF2
 #!/bin/bash
 # Recreate ap0 virtual interface when the wifi client comes up,
 # but ONLY if Away Mode is active (flag file exists).
-# Created by SentryUSB configure-ap.sh
+# Created by DashUSB configure-ap.sh
 
 IFACE="\$1"
 ACTION="\$2"
@@ -182,11 +182,11 @@ then
     fi
     iw $WLAN set power_save off 2>/dev/null || true
     iw ap0 set power_save off 2>/dev/null || true
-    nmcli con up SENTRYUSB_AP 2>/dev/null || true
+    nmcli con up DASHUSB_AP 2>/dev/null || true
   fi
 fi
 EOF2
-  chmod 755 /etc/NetworkManager/dispatcher.d/10-sentryusb-ap || return 1
+  chmod 755 /etc/NetworkManager/dispatcher.d/10-dashusb-ap || return 1
 }
 
 if systemctl --quiet is-enabled NetworkManager.service
@@ -214,7 +214,7 @@ then
   # the AP the user is connected through.
   if [ ! -f /mutable/sentryusb_away_mode.json ]
   then
-    nmcli con down SENTRYUSB_AP 2>/dev/null || true
+    nmcli con down DASHUSB_AP 2>/dev/null || true
     iw dev ap0 del 2>/dev/null || true
   fi
   log_progress "AP configured"
@@ -320,7 +320,7 @@ then
 
   # update the host name to have the AP IP address, otherwise
   # clients connected to the IP will get 127.0.0.1 when looking
-  # up the sentryusb host name
+  # up the dashusb host name
   sed -i -e "/^127.0.0.1\s*localhost/b; s/^127.0.0.1\(\s*.*\)/$IP\1/" /etc/hosts
 
   # add ID string to wpa_supplicant

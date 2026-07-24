@@ -184,12 +184,12 @@ fn remount_root_rw() {
 /// POST /api/system/ble-reset-pair
 ///
 /// Recovery for a wedged phone↔Pi BLE pairing — the "Pairing rejected by
-/// SentryUSB-XXXX" dead end (#324) where the phone has no Bluetooth-settings
+/// DashUSB-XXXX" dead end (#324) where the phone has no Bluetooth-settings
 /// entry to forget and the only prior fix was SSH. Clears ONLY phone-side
 /// state so a fresh claim can succeed:
 ///   - removes each phone GATT-client bond from BlueZ (`bluetoothctl remove`)
-///   - deletes the app PIN (`/root/.sentryusb/ble-pin` + boot copy) → unclaimed
-///   - restarts ONLY `sentryusb-ble.service` (the phone-facing GATT server)
+///   - deletes the app PIN (`/root/.dashusb/ble-pin` + boot copy) → unclaimed
+///   - restarts ONLY `dashusb-ble.service` (the phone-facing GATT server)
 ///
 /// It NEVER touches the car or the sampler: the Tesla's BlueZ entry
 /// (advertised name `S<hex>C`, stored keyless — the vehicle uses app-layer
@@ -204,7 +204,7 @@ pub async fn ble_reset_pair(State(_s): State<AppState>) -> (StatusCode, Json<ser
     //    accepts a fresh claim from the app. Root is ro at runtime.
     remount_root_rw();
     let mut pin_cleared = false;
-    for p in ["/root/.sentryusb/ble-pin", "/boot/firmware/BLE_PIN"] {
+    for p in ["/root/.dashusb/ble-pin", "/boot/firmware/BLE_PIN"] {
         match std::fs::remove_file(p) {
             Ok(()) => pin_cleared = true,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -217,7 +217,7 @@ pub async fn ble_reset_pair(State(_s): State<AppState>) -> (StatusCode, Json<ser
     let restarted = sentryusb_shell::run_with_timeout(
         Duration::from_secs(20),
         "systemctl",
-        &["restart", "sentryusb-ble.service"],
+        &["restart", "dashusb-ble.service"],
     )
     .await
     .is_ok();
@@ -465,7 +465,7 @@ pub async fn generate_ssh_key(State(_s): State<AppState>) -> (StatusCode, Json<s
     match sentryusb_shell::run_with_timeout(
         Duration::from_secs(15),
         "ssh-keygen",
-        &["-t", "ed25519", "-f", key_path, "-N", "", "-C", "sentryusb"],
+        &["-t", "ed25519", "-f", key_path, "-N", "", "-C", "dashusb"],
     ).await {
         Ok(_) => {
             let pub_key = std::fs::read_to_string(format!("{}.pub", key_path)).unwrap_or_default();

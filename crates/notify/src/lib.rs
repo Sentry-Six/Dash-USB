@@ -1,4 +1,4 @@
-//! Native notification providers for SentryUSB.
+//! Native notification providers for DashUSB.
 //!
 //! Replaces the bash `send-push-message` script with direct HTTP calls,
 //! eliminating subprocess overhead and Python/curl dependencies.
@@ -29,7 +29,7 @@ pub trait NotificationProvider: Send + Sync {
     fn name(&self) -> &str;
 }
 
-/// Configuration for all notification providers, read from sentryusb.conf.
+/// Configuration for all notification providers, read from dashusb.conf.
 pub struct NotifyConfig {
     pub pushover_enabled: bool,
     pub pushover_app_key: String,
@@ -78,7 +78,7 @@ pub struct NotifyConfig {
     pub sns_topic_arn: String,
     pub sns_region: String,
     // Passed to the SNS signer because systemd starts the server without
-    // sourcing sentryusb.conf — env-only AWS credential lookups never
+    // sourcing dashusb.conf — env-only AWS credential lookups never
     // resolve on a normal install (see sns.rs).
     pub sns_access_key: String,
     pub sns_secret_key: String,
@@ -89,7 +89,7 @@ pub struct NotifyConfig {
 }
 
 impl NotifyConfig {
-    /// Load notification config from sentryusb.conf.
+    /// Load notification config from dashusb.conf.
     pub fn from_config() -> Self {
         let config_path = sentryusb_config::find_config_path();
         let (active, _) = sentryusb_config::parse_file(config_path)
@@ -105,7 +105,7 @@ impl NotifyConfig {
         let mobile_push_enabled = is_true("MOBILE_PUSH_ENABLED");
 
         // MOBILE_PUSH_DEVICE_ID and MOBILE_PUSH_SECRET are intentionally NOT
-        // stored in sentryusb.conf — they live in the credentials JSON managed
+        // stored in dashusb.conf — they live in the credentials JSON managed
         // by the server. envsetup.sh reads them from that file;
         // we do the same here when the conf values are absent.
         let (mobile_push_device_id, mobile_push_secret) = {
@@ -178,7 +178,7 @@ impl NotifyConfig {
 /// Read device_id and device_secret from the credentials JSON file.
 /// Mirrors envsetup.sh's fallback for mobile push credentials.
 fn read_mobile_credentials_from_json() -> Option<(String, String)> {
-    const CREDS_PATH: &str = "/root/.sentryusb/notification-credentials.json";
+    const CREDS_PATH: &str = "/root/.dashusb/notification-credentials.json";
     let data = std::fs::read_to_string(CREDS_PATH).ok()?;
     let v: serde_json::Value = serde_json::from_str(&data).ok()?;
     let id = v.get("device_id").and_then(|x| x.as_str()).unwrap_or("").to_string();

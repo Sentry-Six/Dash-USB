@@ -165,7 +165,7 @@ function detectDestructiveChanges(
   // Check if DATA_DRIVE changed — this points setup at a different external
   // disk, formatting the new one. The OLD drive is left untouched (the Rust
   // setup_data_drive refuses to proceed if the old drive is still attached
-  // with the SentryUSB labels, prompting the user to disconnect it first
+  // with the DashUSB labels, prompting the user to disconnect it first
   // so we never overwrite their old data). Treat as the loudest possible
   // warning since the user is asking to format a different physical disk.
   const oldDataDrive = (original.DATA_DRIVE ?? "").trim()
@@ -253,7 +253,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
   const [destructiveWarning, setDestructiveWarning] = useState<DestructiveChange[] | null>(null)
   // Tracks whether the user restored from a backup (affects warning dialog wording)
   const [isRestoreFlow, setIsRestoreFlow] = useState(false)
-  // True when SENTRYUSB_SETUP_FINISHED exists on disk — i.e. the user is
+  // True when DASHUSB_SETUP_FINISHED exists on disk — i.e. the user is
   // re-running the wizard against an already-set-up system. Used to
   // (a) show a green "data preserved" banner when no destructive change
   // is staged, and (b) phrase apply-time copy as a re-configuration
@@ -292,7 +292,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
   }, [])
 
   // Detect whether the user is re-running the wizard against an already-
-  // completed setup. The Rust backend writes SENTRYUSB_SETUP_FINISHED at
+  // completed setup. The Rust backend writes DASHUSB_SETUP_FINISHED at
   // the end of a successful run; /api/setup/status surfaces the marker.
   // Knowing this lets us show a clear "data preserved" banner so a user
   // who's just changing ARCHIVE_SERVER doesn't worry that hitting Apply
@@ -449,7 +449,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
               // Safety net: if the user clicks Apply before SizeInput's
               // onBlur committed a unit suffix, fall back to G — matches
               // the dehumanize() behavior in disk_images.rs and the
-              // sentryusb.conf.sample default neighborhood.
+              // dashusb.conf.sample default neighborhood.
               return [k, v + "G"]
             }
             if ((k === "TEMPERATURE_WARNING" || k === "TEMPERATURE_CAUTION") && v && !v.includes("000")) {

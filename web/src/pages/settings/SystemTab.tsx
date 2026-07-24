@@ -35,7 +35,7 @@ export function SystemTab({ onOpenRawConfig, onOpenWizard, version, hostname }: 
   // Export the device's full configuration as a bash-sourceable .conf file.
   // Active settings become `export KEY='value'` lines; defaults become
   // `# export KEY='value'`. Rusty-only Web-UI preferences (the JSON kv-store
-  // at /mutable/.sentryusb_preferences.json) are appended as `# preference:`
+  // at /mutable/.dashusb_preferences.json) are appended as `# preference:`
   // comment lines for export completeness without polluting the bash
   // namespace if the file is ever sourced. Single quotes inside values are
   // escaped via the standard '\'' trick so the file stays valid bash.
@@ -56,11 +56,11 @@ export function SystemTab({ onOpenRawConfig, onOpenWizard, version, hostname }: 
 
       const now = new Date().toISOString()
       const ver = version || "unknown"
-      const host = hostname || "sentryusb"
+      const host = hostname || "dashusb"
       const escape = (s: string) => (s ?? "").replace(/'/g, "'\\''")
 
       let content = ""
-      content += `# sentryusb.conf — exported from Dash USB UI\n`
+      content += `# dashusb.conf — exported from Dash USB UI\n`
       content += `# Exported:  ${now}\n`
       content += `# Hostname:  ${host}\n`
       content += `# Version:   ${ver}\n`
@@ -85,7 +85,7 @@ export function SystemTab({ onOpenRawConfig, onOpenWizard, version, hostname }: 
       if (prefKeys.length > 0) {
         content += `\n`
         content += `# === Web UI preferences (Dash USB Rusty) ===\n`
-        content += `# Managed via the web UI; stored in /mutable/.sentryusb_preferences.json.\n`
+        content += `# Managed via the web UI; stored in /mutable/.dashusb_preferences.json.\n`
         content += `# Listed here for export completeness — these are NOT sourced by bash.\n`
         for (const k of prefKeys) {
           const v = prefs[k]
@@ -97,7 +97,7 @@ export function SystemTab({ onOpenRawConfig, onOpenWizard, version, hostname }: 
       const url = URL.createObjectURL(blob)
       const a = document.createElement("a")
       a.href = url
-      a.download = "sentryusb.conf"
+      a.download = "dashusb.conf"
       a.click()
       URL.revokeObjectURL(url)
     } catch {
@@ -136,7 +136,7 @@ export function SystemTab({ onOpenRawConfig, onOpenWizard, version, hostname }: 
               className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:bg-white/10"
             >
               <Download className="mr-1.5 inline h-3.5 w-3.5" />
-              Download sentryusb.conf
+              Download dashusb.conf
             </button>
           </div>
         </PrefCard>
@@ -165,7 +165,7 @@ export function SystemTab({ onOpenRawConfig, onOpenWizard, version, hostname }: 
         <p className="section-label">Resources</p>
         <div className="flex flex-col gap-1">
           <a
-            href="https://github.com/Sentry-Six/Sentry-USB-Rusty"
+            href="https://github.com/Sentry-Six/Dash-USB"
             target="_blank"
             rel="noopener noreferrer"
             className="t-sm text-blue-400 hover:text-blue-300"
@@ -323,7 +323,7 @@ function PrivacyCards() {
             Full privacy policy ↗
           </a>
           <a
-            href="https://github.com/Sentry-Six/Sentry-USB-Rusty/wiki/Privacy"
+            href="https://github.com/Sentry-Six/Dash-USB/wiki/Privacy"
             target="_blank"
             rel="noopener noreferrer"
             className="t-sm text-blue-400 hover:text-blue-300"

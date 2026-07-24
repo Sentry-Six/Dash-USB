@@ -90,11 +90,11 @@ export function NetworkStep({ data, onChange, onBatchChange }: StepProps) {
         </div>
         <Field
           label="Device Hostname"
-          field="SENTRYUSB_HOSTNAME"
-          placeholder="sentryusb"
+          field="DASHUSB_HOSTNAME"
+          placeholder="dashusb"
           data={data}
           onChange={onChange}
-          hint="The device will be accessible at hostname.local (e.g. sentryusb.local)"
+          hint="The device will be accessible at hostname.local (e.g. dashusb.local)"
         />
       </div>
 
@@ -119,7 +119,7 @@ export function NetworkStep({ data, onChange, onBatchChange }: StepProps) {
               if (!e.target.checked) {
                 onBatchChange({ AP_SSID: "", AP_PASS: "", AP_IP: "" })
               } else {
-                onChange("AP_SSID", "SENTRYUSB WIFI")
+                onChange("AP_SSID", "DASHUSB WIFI")
               }
             }}
             className="h-4 w-4 rounded border-white/20 bg-white/5 accent-blue-500"
@@ -135,7 +135,7 @@ export function NetworkStep({ data, onChange, onBatchChange }: StepProps) {
               <Field
                 label="AP SSID"
                 field="AP_SSID"
-                placeholder="SENTRYUSB WIFI"
+                placeholder="DASHUSB WIFI"
                 data={data}
                 onChange={onChange}
               />

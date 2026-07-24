@@ -1,4 +1,4 @@
-# Building SentryUSB (Rust)
+# Building DashUSB (Rust)
 
 ## Prerequisites
 
@@ -10,7 +10,7 @@
 ## Web UI
 
 The web UI is React + Vite. Source lives in `web/`; the build output is embedded
-into the `sentryusb` binary at compile time via `rust_embed`.
+into the `dashusb` binary at compile time via `rust_embed`.
 
 ```
 cd web
@@ -24,7 +24,7 @@ cp -r web/dist crates/sentryusb/static
 ## Rust binaries
 
 One binary ships with the project:
-- `sentryusb` — main daemon (HTTP + WebSocket + setup orchestrator)
+- `dashusb` — main daemon (HTTP + WebSocket + setup orchestrator)
 
 ### Cross-compile for the Pi
 
@@ -48,22 +48,22 @@ cargo build --release
 
 ## Full OS image
 
-`build-image.sh` wraps pi-gen with the SentryUSB stage overlay:
+`build-image.sh` wraps pi-gen with the DashUSB stage overlay:
 ```
 ./build-image.sh                  # arm64
 ./build-image.sh --32bit          # armhf
 ./build-image.sh /path/to/binary  # use a pre-built binary
 ```
 
-Output: `deploy/sentryusb-*.img.gz`.
+Output: `deploy/dashusb-*.img.gz`.
 
 ## Deploy to an existing Pi
 
 ```
 # Copy binary to the Pi and run install-pi.sh with its local path
-scp target/aarch64-unknown-linux-gnu/release/sentryusb pi@<ip>:/tmp/
+scp target/aarch64-unknown-linux-gnu/release/dashusb pi@<ip>:/tmp/
 ssh pi@<ip> sudo -i
-bash install-pi.sh /tmp/sentryusb
+bash install-pi.sh /tmp/dashusb
 ```
 
 ## Testing
@@ -77,9 +77,8 @@ bash install-pi.sh /tmp/sentryusb
 GitHub Releases are expected to host these artifacts (naming consumed by
 `install-pi.sh` and `build-image.sh`):
 
-- `sentryusb-linux-arm64-a53` / `-a72` / `-a76` (per-CPU aarch64 variants)
-- `sentryusb-linux-arm64` (backward-compat alias = a72 build)
-- `sentryusb-linux-armv7`
+- `dashusb-linux-arm64-a53` / `-a72` / `-a76` (per-CPU aarch64 variants)
+- `dashusb-linux-armv7`
 
 armv6 (Pi Zero W / Pi 1) is no longer built — the board is too underpowered
 to run the daemon comfortably, and dropping the matrix entry keeps the

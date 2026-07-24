@@ -186,7 +186,7 @@ pub async fn delete_snapshot(
     //
     // Pass the bare `id`, NOT the full path: the Rust-installed
     // `release_snapshot.sh` is a thin shim that forwards "$@" to
-    // `sentryusb snapshot release`, which expects a `snap-NNNNNN` name.
+    // `dashusb snapshot release`, which expects a `snap-NNNNNN` name.
     // The id is already validated above, and `release_snapshot` now also
     // accepts a full path, so this is robust across both the thin-wrapper
     // and full-script installs.

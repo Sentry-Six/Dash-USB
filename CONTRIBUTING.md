@@ -1,6 +1,6 @@
-# Contributing to Sentry USB
+# Contributing to Dash USB
 
-Thanks for your interest in improving Sentry-USB-Rusty. This guide covers how to
+Thanks for your interest in improving Dash-USB. This guide covers how to
 contribute and the licensing terms that apply to contributions.
 
 ## Contributor License Agreement (required)

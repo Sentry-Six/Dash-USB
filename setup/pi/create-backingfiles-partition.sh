@@ -70,7 +70,7 @@ then
   # Reuse existing partitions if they already have the correct labels —
   # a config-only wizard re-run (ARCHIVE_SERVER, etc.) must not wipe data
   # just because blkid was momentarily slow or the FS was remounting.
-  # Stale TeslaCam data is cleaned separately by setup-sentryusb; fstab is
+  # Stale TeslaCam data is cleaned separately by setup-dashusb; fstab is
   # rewritten unconditionally below whether we keep or wipe partitions.
   if [ /dev/disk/by-label/backingfiles -ef "$P2" ] && \
      [ /dev/disk/by-label/mutable -ef "$P1" ]
@@ -101,7 +101,7 @@ then
     killall archiveloop 2>/dev/null || true
     /root/bin/disable_gadget.sh 2>/dev/null || true
     # Detach loop devices backed by files on the data drive partitions.
-    # Old TeslaUSB/SentryUSB backing file images (cam_disk.bin etc.) stay
+    # Old TeslaUSB/DashUSB backing file images (cam_disk.bin etc.) stay
     # loop-mounted and block unmount/wipefs if not detached first.
     for loop in $(losetup -a 2>/dev/null | grep -E '/backingfiles/|/mnt/' | cut -d: -f1); do
       umount "$loop" 2>/dev/null || true
@@ -226,7 +226,7 @@ FIRST_MUTABLE_SECTOR=$((LAST_DISK_SECTOR-614400+1))
 # backingfiles partition sits between the last and mutable partition, calculate its start sector and size
 LAST_PART_SECTOR=$(sfdisk -o End -q -l "${BOOT_DISK}" | tail +2 | sort -n | tail -1)
 FIRST_BACKINGFILES_SECTOR=$((LAST_PART_SECTOR + 1))
-# round up to 1MB boundary because the SentryUSB Buster prebuilt as well as older Armbian
+# round up to 1MB boundary because the DashUSB Buster prebuilt as well as older Armbian
 # images might have an odd root partition size
 FIRST_BACKINGFILES_SECTOR=$(((FIRST_BACKINGFILES_SECTOR + 2047) / 2048 * 2048))
 BACKINGFILES_NUM_SECTORS=$((FIRST_MUTABLE_SECTOR - FIRST_BACKINGFILES_SECTOR))

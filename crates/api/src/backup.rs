@@ -1,7 +1,7 @@
 //! Config backup and restore.
 //!
 //! A backup is a JSON envelope containing
-//! the `sentryusb.conf` contents plus the user preferences, SSH keys, rclone
+//! the `dashusb.conf` contents plus the user preferences, SSH keys, rclone
 //! config, Tesla BLE pairing keys, and notification-device credentials — the
 //! stuff the user doesn't want to re-set up after an SD-card reflash. Change
 //! detection via SHA-256 hash avoids filling the backup dir with identical
@@ -39,7 +39,7 @@ const SSH_RSA_PUBLIC_KEY: &str = "/root/.ssh/id_rsa.pub";
 const RCLONE_CONFIG: &str = "/root/.config/rclone/rclone.conf";
 const BLE_PRIVATE_KEY: &str = "/root/.ble/key_private.pem";
 const BLE_PUBLIC_KEY: &str = "/root/.ble/key_public.pem";
-const NOTIFICATION_CREDS: &str = "/root/.sentryusb/notification-credentials.json";
+const NOTIFICATION_CREDS: &str = "/root/.dashusb/notification-credentials.json";
 
 /// Read whichever SSH keypair exists on disk. ed25519 wins when both are
 /// present (newer install ran ssh-keygen on top of an old RSA key). Returns
@@ -93,7 +93,7 @@ struct BackupEntry {
 }
 
 fn backup_filename(date: &str) -> String {
-    format!("sentryusb-backup-{}.json", date)
+    format!("dashusb-backup-{}.json", date)
 }
 
 fn read_file_if_exists(path: &str) -> String {
@@ -304,7 +304,7 @@ async fn sync_backup_to_rsync(data: &BackupData) -> Result<(), String> {
         return Err("rsync not configured".to_string());
     }
 
-    let tmp_dir = "/tmp/sentryusb-backup-sync";
+    let tmp_dir = "/tmp/dashusb-backup-sync";
     let _ = std::fs::create_dir_all(tmp_dir);
     let filename = backup_filename(&data.date);
     let tmp_path = format!("{}/{}", tmp_dir, filename);
@@ -341,7 +341,7 @@ async fn sync_backup_to_rclone(data: &BackupData) -> Result<(), String> {
         return Err("rclone not configured".to_string());
     }
 
-    let tmp_dir = "/tmp/sentryusb-backup-sync";
+    let tmp_dir = "/tmp/dashusb-backup-sync";
     let _ = std::fs::create_dir_all(tmp_dir);
     let filename = backup_filename(&data.date);
     let tmp_path = format!("{}/{}", tmp_dir, filename);
@@ -365,7 +365,7 @@ fn list_backups_in_dir(dir: &str, location: &str) -> Vec<BackupEntry> {
     let mut out = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if !name.starts_with("sentryusb-backup-") || !name.ends_with(".json") {
+        if !name.starts_with("dashusb-backup-") || !name.ends_with(".json") {
             continue;
         }
         let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
@@ -671,7 +671,7 @@ pub async fn restore_backup(
     }
 
     if !backup.notification_credentials.is_empty() {
-        let _ = std::fs::create_dir_all("/root/.sentryusb");
+        let _ = std::fs::create_dir_all("/root/.dashusb");
         match write_with_mode(NOTIFICATION_CREDS, &backup.notification_credentials, 0o600) {
             Ok(()) => info!("[backup] Restored notification credentials"),
             Err(e) => warn!("[backup] Failed to restore notification credentials: {}", e),

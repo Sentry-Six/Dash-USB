@@ -3,4 +3,4 @@
 # the BLE stack is skipped on a cold boot. Start it the moment hci0 appears
 # (condition now passes; the daemon's Wants= pulls bluetooth.service + the
 # advertising helper).
-ACTION=="add", SUBSYSTEM=="bluetooth", KERNEL=="hci0", TAG+="systemd", ENV{SYSTEMD_WANTS}+="sentryusb-ble.service"
+ACTION=="add", SUBSYSTEM=="bluetooth", KERNEL=="hci0", TAG+="systemd", ENV{SYSTEMD_WANTS}+="dashusb-ble.service"

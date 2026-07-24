@@ -118,12 +118,12 @@ export function PrivacyStep(_props: StepProps) {
           </a>
           . Source code:{" "}
           <a
-            href="https://github.com/Sentry-Six/Sentry-USB-Rusty"
+            href="https://github.com/Sentry-Six/Dash-USB"
             target="_blank"
             rel="noopener noreferrer"
             className="text-slate-400 underline hover:text-slate-300"
           >
-            github.com/Sentry-Six/Sentry-USB-Rusty
+            github.com/Sentry-Six/Dash-USB
           </a>
           .
         </p>
