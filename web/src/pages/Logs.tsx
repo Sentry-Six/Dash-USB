@@ -6,11 +6,6 @@ const logTabs = [
   { id: "archiveloop", label: "Archiveloop", url: "/api/logs/archiveloop" },
   { id: "setup", label: "Setup Log", url: "/api/logs/setup" },
   { id: "diagnostics", label: "Diagnostics", url: "/api/logs/diagnostics" },
-  // Live BLE state dump — service status, adapter pick, what the
-  // car-state observer thinks, sample DB counts, and the recently-
-  // filtered sampler journal lines. Built fresh every fetch by
-  // api/src/ble_debug.rs.
-  { id: "bluetooth", label: "Bluetooth", url: "/api/logs/bluetooth" },
 ]
 
 const SCROLL_THRESHOLD = 60
@@ -333,7 +328,7 @@ export default function Logs() {
         }
       } catch {
         if (mounted) {
-          setContent("Unable to connect to Sentry USB. Is the device online?")
+          setContent("Unable to connect to Dash USB. Is the device online?")
           setLoading(false)
         }
       }
@@ -351,36 +346,6 @@ export default function Logs() {
   }, [activeLog.url, activeTab])
 
   async function handleDownload() {
-    // Bluetooth tab gets a richer, bundled-on-the-server download —
-    // pulls together the full unfiltered journal, sysfs LE params,
-    // hciconfig, rfkill, dmesg BLE lines, pairing state, the entire
-    // per-minute history file, etc. The on-screen view only has the
-    // filtered subset; the bundle is what testers paste back when
-    // we're triaging a drop or slot-contention report. Falls back
-    // to dumping the current content blob if the bundle endpoint
-    // is unreachable.
-    if (activeTab === "bluetooth") {
-      try {
-        const res = await fetch("/api/logs/bluetooth/bundle")
-        if (!res.ok) throw new Error(`bundle endpoint ${res.status}`)
-        // Honour the server's Content-Disposition filename so the
-        // saved file carries a timestamp.
-        const disposition = res.headers.get("Content-Disposition") || ""
-        const match = disposition.match(/filename="([^"]+)"/)
-        const filename = match?.[1] || "sentryusb-ble-bundle.txt"
-        const blob = await res.blob()
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement("a")
-        a.href = url
-        a.download = filename
-        a.click()
-        URL.revokeObjectURL(url)
-        return
-      } catch (e) {
-        console.warn("BLE bundle download failed, falling back to on-screen content:", e)
-        // fall through to the generic path below
-      }
-    }
     const blob = new Blob([content], { type: "text/plain" })
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
@@ -429,15 +394,10 @@ export default function Logs() {
           )}
           <button
             onClick={handleDownload}
-            title={
-              activeTab === "bluetooth"
-                ? "Downloads a comprehensive BLE diagnostic bundle: full journal, sysfs LE params, hciconfig, rfkill, pairing state, dmesg, and the full per-minute history file."
-                : undefined
-            }
             className="glass-card glass-card-hover flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-400 transition-colors hover:text-slate-200"
           >
             <Download className="h-4 w-4" />
-            {activeTab === "bluetooth" ? "Download bundle" : "Download"}
+            Download
           </button>
         </div>
       </div>

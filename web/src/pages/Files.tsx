@@ -11,14 +11,11 @@ import {
   Loader2,
   Music,
   Video,
-  Paintbrush,
-  RectangleHorizontal,
   CheckCircle,
   X,
   Search,
   ArrowUpDown,
   Check,
-  Volume2,
   HardDrive,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -51,26 +48,18 @@ interface FileEntry {
 interface DriveTab {
   id: string
   base: string
-  icon: "cam" | "media" | "wrap" | "plate" | "lock" | "drive"
+  icon: "cam" | "media" | "drive"
 }
 
 const ALL_DRIVES: DriveTab[] = [
   { id: "USB Drive", base: "/mutable", icon: "drive" },
-  { id: "TeslaCam", base: "/mutable/TeslaCam", icon: "cam" },
-  { id: "Lock Sounds", base: "/mutable/LockChime", icon: "lock" },
-  { id: "Wraps", base: "/mutable/Wraps", icon: "wrap" },
-  { id: "License Plates", base: "/mutable/LicensePlate", icon: "plate" },
+  { id: "Recordings", base: "/mutable/Recordings", icon: "cam" },
   { id: "Music", base: "/var/www/html/fs/Music", icon: "media" },
-  { id: "LightShow", base: "/var/www/html/fs/LightShow", icon: "media" },
-  { id: "Boombox", base: "/var/www/html/fs/Boombox", icon: "media" },
 ]
 
 const TAB_ICONS: Record<DriveTab["icon"], React.ComponentType<{ className?: string }>> = {
   cam: Video,
   media: Music,
-  wrap: Paintbrush,
-  plate: RectangleHorizontal,
-  lock: Volume2,
   drive: HardDrive,
 }
 
@@ -117,19 +106,13 @@ export default function Files() {
         const res = await fetch("/api/config")
         const cfg = await res.json()
         const visible: DriveTab[] = []
-        // Always show USB Drive root (shows LockChime.wav, TeslaCam, etc.)
+        // Always show the USB Drive root
         visible.push(ALL_DRIVES.find(d => d.id === "USB Drive")!)
-        // Show TeslaCam tab if cam is configured
+        // Show Recordings tab if the cam drive is configured
         if (cfg.has_cam === "yes") {
-          visible.push(ALL_DRIVES.find(d => d.id === "TeslaCam")!)
+          visible.push(ALL_DRIVES.find(d => d.id === "Recordings")!)
         }
-        // Always show Lock Sounds, Wraps and License Plates (they're user-uploadable)
-        visible.push(ALL_DRIVES.find(d => d.id === "Lock Sounds")!)
-        visible.push(ALL_DRIVES.find(d => d.id === "Wraps")!)
-        visible.push(ALL_DRIVES.find(d => d.id === "License Plates")!)
         if (cfg.has_music === "yes") visible.push(ALL_DRIVES.find(d => d.id === "Music")!)
-        if (cfg.has_lightshow === "yes") visible.push(ALL_DRIVES.find(d => d.id === "LightShow")!)
-        if (cfg.has_boombox === "yes") visible.push(ALL_DRIVES.find(d => d.id === "Boombox")!)
         // If nothing is configured (e.g. dev mode), show all
         const result = visible.length > 0 ? visible : ALL_DRIVES
         setDrives(result)
@@ -163,7 +146,7 @@ export default function Files() {
         const data: FileEntry[] = Array.isArray(raw) ? raw : (raw.entries ?? [])
         // Auto-navigate into the matching subfolder when at a drive's base path
         // (Music/LightShow/Boombox disk images have a root folder matching the
-        // drive name, possibly alongside hidden macOS/Tesla metadata folders)
+        // drive name, possibly alongside hidden metadata folders)
         if (activeDrive && path === activeDrive.base && !searchQuery) {
           const match = data.find(
             (e) => e.is_dir && e.name === activeDrive.id

@@ -6,9 +6,7 @@ import { WelcomeStep } from "./steps/WelcomeStep"
 import { PrivacyStep } from "./steps/PrivacyStep"
 import { NetworkStep } from "./steps/NetworkStep"
 import { StorageStep } from "./steps/StorageStep"
-import { CommunityStep } from "./steps/CommunityStep"
 import { ArchiveStep } from "./steps/ArchiveStep"
-import { KeepAwakeStep } from "./steps/KeepAwakeStep"
 import { NotificationsStep } from "./steps/NotificationsStep"
 import { SecurityStep } from "./steps/SecurityStep"
 import { AdvancedStep } from "./steps/AdvancedStep"
@@ -78,33 +76,6 @@ function archiveError(data: SetupFormData): string | null {
   return null
 }
 
-function keepAwakeError(data: SetupFormData): string | null {
-  // Must mirror the inference in KeepAwakeStep.tsx — a bare VIN means
-  // BLE-for-telemetry only, not BLE-for-keep-awake. Only treat it as
-  // "ble" keep-awake when the explicit flag is set.
-  const method = data._KEEP_AWAKE_METHOD
-    || (data.TESLA_BLE_VIN && data.BLE_KEEP_AWAKE_ENABLED === "yes" ? "ble"
-      : data.TESLAFI_API_TOKEN ? "teslafi"
-        : data.TESSIE_API_TOKEN ? "tessie"
-          : data.KEEP_AWAKE_WEBHOOK_URL ? "webhook"
-            : "none")
-  if (method === "none") return null
-  if (method === "ble" && !data.TESLA_BLE_VIN?.trim()) return "Vehicle VIN is required for Bluetooth LE."
-  if (method === "teslafi" && !data.TESLAFI_API_TOKEN?.trim()) return "TeslaFi API Token is required."
-  if (method === "tessie" && !data.TESSIE_API_TOKEN?.trim()) return "Tessie API Token is required."
-  if (method === "tessie" && !data.TESSIE_VIN?.trim()) return "Vehicle VIN is required for Tessie."
-  if (method === "webhook") {
-    const url = data.KEEP_AWAKE_WEBHOOK_URL?.trim() ?? ""
-    if (!url) return "Webhook URL is required."
-    // Schemeless URLs ("homeassistant.local/api/webhook/foo") get curl-
-    // interpreted as a file path at runtime, then the keep-awake job
-    // silently does nothing. Catch it before the user submits.
-    if (!/^https?:\/\//i.test(url)) return "Webhook URL must start with http:// or https://."
-  }
-  if (!data.SENTRY_CASE) return "Sentry Mode behavior must be selected."
-  return null
-}
-
 function notificationsError(data: SetupFormData): string | null {
   // Notifications no longer use a per-provider checkbox — a provider is
   // considered "enabled" when any of its required fields has content.
@@ -145,17 +116,15 @@ function securityError(data: SetupFormData): string | null {
 }
 
 function getStepError(stepIdx: number, data: SetupFormData): string | null {
-  // Indices shifted by +1 from the original because the Privacy step was
-  // inserted at index 1 (between Welcome and Network).
+  // Order: welcome, privacy, network, storage, archive, notifications,
+  // security, advanced, review.
   switch (stepIdx) {
     // case 1 is the Privacy step — no validation (opt-in is independent of wizard apply)
     case 2: return networkError(data)
     case 3: return storageError(data)
-    // case 4 is the Community step — no validation needed (both can be unchecked)
-    case 5: return archiveError(data)
-    case 6: return keepAwakeError(data)
-    case 7: return notificationsError(data)
-    case 8: return securityError(data)
+    case 4: return archiveError(data)
+    case 5: return notificationsError(data)
+    case 6: return securityError(data)
     default: return null
   }
 }
@@ -171,8 +140,6 @@ function getStepError(stepIdx: number, data: SetupFormData): string | null {
 const DESTRUCTIVE_SIZE_KEYS: Record<string, string> = {
   CAM_SIZE: "Dashcam drive (live clips inside)",
   MUSIC_SIZE: "Music drive",
-  LIGHTSHOW_SIZE: "Lightshow drive",
-  BOOMBOX_SIZE: "Boombox drive",
 }
 
 interface DestructiveChange {
@@ -215,20 +182,6 @@ function detectDestructiveChanges(
     })
   }
 
-  // Check if filesystem type changed — this forces ALL drives to be recreated
-  const exfatChanged = (current.USE_EXFAT ?? "true") !== (original.USE_EXFAT ?? "true")
-  if (exfatChanged) {
-    const from = original.USE_EXFAT === "true" ? "exFAT" : "FAT32"
-    const to = current.USE_EXFAT === "true" ? "exFAT" : "FAT32"
-    changes.push({
-      key: "USE_EXFAT",
-      label: "All drives",
-      reason: `Filesystem type changed from ${from} to ${to} — all drive images will be recreated. Snapshots in /backingfiles/snapshots are not affected.`,
-    })
-    // When exFAT changes, all drives are affected so we don't need to list individual size changes
-    return changes
-  }
-
   // Check individual size changes
   for (const [key, label] of Object.entries(DESTRUCTIVE_SIZE_KEYS)) {
     const newVal = normalizeSizeValue(current[key])
@@ -256,9 +209,7 @@ const steps: StepDef[] = [
   { id: "privacy", title: "Privacy", component: PrivacyStep },
   { id: "network", title: "Network", component: NetworkStep },
   { id: "storage", title: "Storage", component: StorageStep },
-  { id: "community", title: "Community", component: CommunityStep },
   { id: "archive", title: "Archive", component: ArchiveStep },
-  { id: "keepawake", title: "Keep Awake", component: KeepAwakeStep },
   { id: "notifications", title: "Notifications", component: NotificationsStep },
   { id: "security", title: "Security", component: SecurityStep },
   { id: "advanced", title: "Advanced", component: AdvancedStep },
@@ -277,18 +228,12 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
   // Defaults for fields that appear pre-selected in the UI but may not exist
   // in the config file yet. Without this, untouched defaults never get saved.
   const defaults: SetupFormData = {
-    CAM_SIZE: "40",
+    // GM requires a >=64 GB FAT32 drive with 32 GB available.
+    CAM_SIZE: "64",
     ARCHIVE_SYSTEM: "cifs",
     TEMPERATURE_UNIT: "C",
-    ARCHIVE_SAVEDCLIPS: "true",
-    ARCHIVE_SENTRYCLIPS: "true",
-    ARCHIVE_RECENTCLIPS: "true",
-    ARCHIVE_TRACKMODECLIPS: "true",
-    DRIVE_MAP_ENABLED: "true",
-    DRIVE_MAP_WHILE_AWAY: "true",
-    DRIVE_MAP_UNIT: "mi",
+    ARCHIVE_RECORDINGS: "true",
     TEMPERATURE_POSTARCHIVE: "true",
-    USE_EXFAT: "true",
     RTC_BATTERY_ENABLED: "false",
     RTC_TRICKLE_CHARGE: "false",
   }
@@ -365,36 +310,6 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
     return () => { cancelled = true }
   }, [])
 
-  // Hydrate Community Features prefs from the preference store on mount.
-  // initialData (passed by callers) only carries sentryusb.conf keys, so the
-  // pref-store-backed _community_* keys must be loaded separately. Caller-
-  // supplied values in initialData (e.g., from the Settings Wraps toggle)
-  // take precedence and are not overwritten here.
-  useEffect(() => {
-    let cancelled = false
-    Promise.all([
-      fetch("/api/config/preference?key=community_wraps_enabled").then((r) => r.json()).catch(() => null),
-      fetch("/api/config/preference?key=community_chimes_enabled").then((r) => r.json()).catch(() => null),
-    ]).then(([wraps, chimes]) => {
-      if (cancelled) return
-      const updates: Record<string, string> = {}
-      if (wraps && wraps.value !== null && wraps.value !== undefined) {
-        updates._community_wraps_enabled = wraps.value === "disabled" ? "false" : "true"
-      }
-      if (chimes && chimes.value !== null && chimes.value !== undefined) {
-        updates._community_chimes_enabled = chimes.value === "disabled" ? "false" : "true"
-      }
-      if (Object.keys(updates).length === 0) return
-      setFormData((prev) => {
-        const next = { ...prev }
-        for (const [k, v] of Object.entries(updates)) {
-          if (next[k] === undefined) next[k] = v
-        }
-        return next
-      })
-    })
-    return () => { cancelled = true }
-  }, [])
 
   // Poll setup status while running
   useEffect(() => {
@@ -415,7 +330,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
           // Transition to "finalizing" which keeps the spinner and
           // waits for the server to come back before showing dashboard.
           setPhase("finalizing")
-          setSetupMessage("Sentry USB has finished setting up. The device is now rebooting one last time...")
+          setSetupMessage("Dash USB has finished setting up. The device is now rebooting one last time...")
           if (pollRef.current) clearInterval(pollRef.current)
         } else if (data.setup_running && phase === "rebooting") {
           // Server is back and setup is still going — restore the live
@@ -457,7 +372,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
       } catch {
         // Server unreachable — Pi is rebooting
         wentDown = true
-        setSetupMessage("Waiting for Sentry USB to come back online after final reboot...")
+        setSetupMessage("Waiting for Dash USB to come back online after final reboot...")
       }
     }, 3000)
     return () => clearInterval(poll)
@@ -487,7 +402,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
                 setSetupMessage("Running setup... This may take several minutes.")
               } else if (d.status === "complete") {
                 setPhase("finalizing")
-                setSetupMessage("Sentry USB has finished setting up. The device is now rebooting one last time...")
+                setSetupMessage("Dash USB has finished setting up. The device is now rebooting one last time...")
               } else if (d.status === "rebooting") {
                 setPhase("rebooting")
                 setSetupMessage(d.message || "System is rebooting to continue setup...")
@@ -525,7 +440,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
     setSaveError(null)
     setSpaceRejection(null)
     try {
-      const sizeFields = new Set(["CAM_SIZE", "MUSIC_SIZE", "LIGHTSHOW_SIZE", "BOOMBOX_SIZE", "INCREASE_ROOT_SIZE"])
+      const sizeFields = new Set(["CAM_SIZE", "MUSIC_SIZE", "INCREASE_ROOT_SIZE"])
       const configData: Record<string, string> = Object.fromEntries(
         Object.entries(dataToSave)
           .filter(([k, v]) => !k.startsWith("_") && v !== "")
@@ -605,33 +520,6 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
         }).catch(() => {}) // best-effort
       }
 
-      // Save Community Features prefs (Wraps / Lock Chimes opt-in)
-      const communityPrefPuts: Promise<unknown>[] = []
-      if (dataToSave._community_wraps_enabled !== undefined) {
-        communityPrefPuts.push(fetch("/api/config/preference", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            key: "community_wraps_enabled",
-            value: dataToSave._community_wraps_enabled === "true" ? "enabled" : "disabled",
-          }),
-        }).catch(() => {}))
-      }
-      if (dataToSave._community_chimes_enabled !== undefined) {
-        communityPrefPuts.push(fetch("/api/config/preference", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            key: "community_chimes_enabled",
-            value: dataToSave._community_chimes_enabled === "true" ? "enabled" : "disabled",
-          }),
-        }).catch(() => {}))
-      }
-      if (communityPrefPuts.length > 0) {
-        await Promise.all(communityPrefPuts)
-        window.dispatchEvent(new CustomEvent("community-prefs-changed"))
-      }
-
       setPhase("applying")
       setSetupMessage("Configuration saved. Starting setup...")
 
@@ -690,12 +578,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
     if (!destructiveWarning || !originalDataRef.current) return
     const safeData = { ...formData }
     for (const change of destructiveWarning) {
-      if (change.key === "USE_EXFAT") {
-        // Revert filesystem type AND all size fields (since exFAT change affects all)
-        safeData.USE_EXFAT = originalDataRef.current.USE_EXFAT ?? "true"
-      } else {
-        safeData[change.key] = originalDataRef.current[change.key] ?? ""
-      }
+      safeData[change.key] = originalDataRef.current[change.key] ?? ""
     }
     setDestructiveWarning(null)
     doApply(safeData)
@@ -771,7 +654,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
             <>
               <div className="text-center">
                 <h2 className="text-xl font-semibold text-slate-100">
-                  {phase === "finalizing" ? "Almost Done!" : "Setting Up Sentry USB"}
+                  {phase === "finalizing" ? "Almost Done!" : "Setting Up Dash USB"}
                 </h2>
                 <p className="mt-2 text-sm text-slate-400">{setupMessage}</p>
                 {phase !== "finalizing" && (

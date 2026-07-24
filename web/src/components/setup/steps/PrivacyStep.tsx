@@ -100,12 +100,6 @@ export function PrivacyStep(_props: StepProps) {
             note="Don't sign in to Cloud if you don't want this."
           />
           <FlowRow
-            when="When you submit a wrap or lock chime"
-            what="The file you uploaded + your IP for rate-limiting"
-            why="Sharing the submission with the community"
-            note="No device fingerprint is sent — submissions are anonymous to the server."
-          />
-          <FlowRow
             when="If you enable iOS push notifications"
             what="A randomly-generated device pairing ID"
             why="Routing push notifications to your phone"

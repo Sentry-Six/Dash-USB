@@ -47,7 +47,7 @@ export function StorageStep({ data, onChange }: StepProps) {
 
       <p className="text-xs text-slate-500">
         Configure the size of each USB drive partition. Choose GB or MB per drive.
-        A 128GB+ SD card is recommended. The remaining space is used for snapshots.
+        A 256 GB+ high-endurance SD card is recommended (GM records ~5 GB per hour of driving). The remaining space is used for snapshots — your retained footage history.
       </p>
 
       <div className="grid gap-3">
@@ -56,8 +56,8 @@ export function StorageStep({ data, onChange }: StepProps) {
           field="CAM_SIZE"
           data={data}
           onChange={onChange}
-          defaultVal="40"
-          hint="Storage for TeslaCam recordings (~7-10 GB per hour). Do NOT use your entire drive — leave room for snapshots so recent clips save properly."
+          defaultVal="64"
+          hint="GM requires a drive of at least 64 GB, so keep this at 64 or higher. Do NOT use your entire card — leave room for snapshots, which hold your archived footage."
           warning={camWarning}
         />
         <SizeInput
@@ -88,22 +88,6 @@ export function StorageStep({ data, onChange }: StepProps) {
             </p>
           </div>
         )}
-        <SizeInput
-          label="LightShow"
-          field="LIGHTSHOW_SIZE"
-          data={data}
-          onChange={onChange}
-          defaultVal=""
-          hint="Optional. Leave empty for no lightshow drive."
-        />
-        <SizeInput
-          label="Boombox"
-          field="BOOMBOX_SIZE"
-          data={data}
-          onChange={onChange}
-          defaultVal=""
-          hint="Optional. Leave empty for no boombox drive."
-        />
       </div>
 
       {/* Data Drive */}
@@ -138,18 +122,6 @@ export function StorageStep({ data, onChange }: StepProps) {
         </p>
       </div>
 
-      {/* ExFAT toggle */}
-      <label className="flex cursor-pointer items-center gap-2">
-        <input
-          type="checkbox"
-          checked={(data.USE_EXFAT ?? "true") === "true"}
-          onChange={(e) =>
-            onChange("USE_EXFAT", e.target.checked ? "true" : "false")
-          }
-          className="h-4 w-4 rounded border-white/20 bg-white/5 accent-blue-500"
-        />
-        <span className="text-sm text-slate-300">Use ExFAT filesystem</span>
-      </label>
     </div>
   )
 }

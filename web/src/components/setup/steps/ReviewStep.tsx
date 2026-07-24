@@ -8,7 +8,7 @@ const sections = [
   },
   {
     title: "Storage",
-    fields: ["CAM_SIZE", "MUSIC_SIZE", "LIGHTSHOW_SIZE", "BOOMBOX_SIZE", "DATA_DRIVE", "USE_EXFAT"],
+    fields: ["CAM_SIZE", "MUSIC_SIZE", "DATA_DRIVE"],
   },
   {
     title: "Archive",
@@ -16,14 +16,7 @@ const sections = [
       "ARCHIVE_SYSTEM", "ARCHIVE_SERVER", "SHARE_NAME", "SHARE_USER", "SHARE_PASSWORD",
       "RSYNC_SERVER", "RSYNC_USER", "RSYNC_PATH",
       "RCLONE_DRIVE", "RCLONE_PATH",
-      "ARCHIVE_SAVEDCLIPS", "ARCHIVE_SENTRYCLIPS", "ARCHIVE_RECENTCLIPS",
-    ],
-  },
-  {
-    title: "Keep Awake",
-    fields: [
-      "TESLA_BLE_VIN", "TESLAFI_API_TOKEN", "TESSIE_API_TOKEN", "TESSIE_VIN", "KEEP_AWAKE_WEBHOOK_URL", "SENTRY_CASE",
-      "KEEP_ACCESSORY_ENABLED", "KEEP_ACCESSORY_HOME_LAT", "KEEP_ACCESSORY_HOME_LON", "KEEP_ACCESSORY_HOME_RADIUS_M",
+      "ARCHIVE_RECORDINGS",
     ],
   },
   {
@@ -52,7 +45,7 @@ const sections = [
 
 function formatReviewValue(key: string, value: string, data: StepProps["data"]): string {
   const sensitiveKeys = ["WIFIPASS", "SHARE_PASSWORD", "AP_PASS", "WEB_PASSWORD",
-    "TESLAFI_API_TOKEN", "TESSIE_API_TOKEN", "AWS_SECRET_ACCESS_KEY",
+    "AWS_SECRET_ACCESS_KEY",
     "MATRIX_PASSWORD", "PUSHOVER_APP_KEY", "GOTIFY_APP_TOKEN",
     "TELEGRAM_BOT_TOKEN", "IFTTT_KEY"]
   if (sensitiveKeys.includes(key) && value) {

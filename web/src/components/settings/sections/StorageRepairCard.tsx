@@ -473,7 +473,7 @@ export function StorageRepairCard() {
 
       <p className="text-[10px] leading-relaxed text-slate-500">
         While repairing, the archive loop and the car-facing USB drive are
-        stopped (the Tesla pauses recording). The web UI stays up. Nothing
+        stopped (the car pauses recording). The web UI stays up. Nothing
         destructive runs without your confirmation.
       </p>
     </PrefCard>

@@ -150,7 +150,7 @@ function ProviderCard({ provider, data, onChange, errorFields }: { provider: Not
             <span className="text-sm text-slate-300">Enable mobile push notifications</span>
           </label>
           <p className="mt-2 text-xs text-slate-400">
-            After setup, open the Sentry USB mobile app and go to Settings → Pair for Notifications to link your phone. You can also generate a pairing code from this web UI under Settings → Mobile Notifications.
+            After setup, open the Dash USB mobile app and go to Settings → Pair for Notifications to link your phone. You can also generate a pairing code from this web UI under Settings → Mobile Notifications.
           </p>
         </div>
       )}

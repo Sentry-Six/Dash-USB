@@ -60,7 +60,7 @@ export function SystemTab({ onOpenRawConfig, onOpenWizard, version, hostname }: 
       const escape = (s: string) => (s ?? "").replace(/'/g, "'\\''")
 
       let content = ""
-      content += `# sentryusb.conf — exported from Sentry USB UI\n`
+      content += `# sentryusb.conf — exported from Dash USB UI\n`
       content += `# Exported:  ${now}\n`
       content += `# Hostname:  ${host}\n`
       content += `# Version:   ${ver}\n`
@@ -84,7 +84,7 @@ export function SystemTab({ onOpenRawConfig, onOpenWizard, version, hostname }: 
       const prefKeys = Object.keys(prefs).sort()
       if (prefKeys.length > 0) {
         content += `\n`
-        content += `# === Web UI preferences (Sentry USB Rusty) ===\n`
+        content += `# === Web UI preferences (Dash USB Rusty) ===\n`
         content += `# Managed via the web UI; stored in /mutable/.sentryusb_preferences.json.\n`
         content += `# Listed here for export completeness — these are NOT sourced by bash.\n`
         for (const k of prefKeys) {
@@ -305,16 +305,6 @@ function PrivacyCards() {
             when="Once per install"
             what="Empty ping (no body, no identifier)"
             note="Anonymous gross-install counter."
-          />
-          <FlowRow
-            when="Sentry Cloud (if signed in)"
-            what="Account credentials + synced files"
-            note="Stop using Cloud to stop this."
-          />
-          <FlowRow
-            when="Wraps / lock chime submissions"
-            what="The file + your IP for rate-limiting"
-            note="No device fingerprint."
           />
           <FlowRow
             when="iOS push pairing"

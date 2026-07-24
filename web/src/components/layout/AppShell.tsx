@@ -5,8 +5,6 @@ import { Sidebar } from "./Sidebar"
 import { MobileNav } from "./MobileNav"
 import { ConnectionBanner } from "./ConnectionBanner"
 import { cn } from "@/lib/utils"
-import { KeepAwakeProvider } from "@/hooks/useKeepAwake"
-import { AwayModeProvider } from "@/hooks/useAwayMode"
 import { ConnectionProvider } from "@/hooks/useConnectionStatus"
 
 // Routes likely to be visited after the Dashboard. Prefetched on idle
@@ -14,7 +12,7 @@ import { ConnectionProvider } from "@/hooks/useConnectionStatus"
 // leaflet, Community wraps) are intentionally NOT in this list — we
 // don't want to burn data on screens the user may never open.
 const PREFETCH_ROUTES: Array<() => Promise<unknown>> = [
-  () => import("@/pages/Drives"),
+  () => import("@/pages/Viewer"),
   () => import("@/pages/Files"),
   () => import("@/pages/Settings"),
   () => import("@/pages/Logs"),
@@ -60,8 +58,6 @@ export function AppShell() {
 
   return (
     <ConnectionProvider>
-      <AwayModeProvider>
-        <KeepAwakeProvider>
         <div className="flex h-full">
           {/* Desktop sidebar */}
           <div className="hidden md:block">
@@ -100,7 +96,7 @@ export function AppShell() {
               >
                 <Menu className="h-5 w-5" />
               </button>
-              <span className="text-sm font-semibold text-slate-100" style={{ fontFamily: '"Inter", -apple-system, system-ui, sans-serif' }}>Sentry USB</span>
+              <span className="text-sm font-semibold text-slate-100" style={{ fontFamily: '"Inter", -apple-system, system-ui, sans-serif' }}>Dash USB</span>
             </div>
 
             {/* Cap the content column so cards don't stretch into giant
@@ -113,8 +109,6 @@ export function AppShell() {
             </div>
           </main>
         </div>
-        </KeepAwakeProvider>
-      </AwayModeProvider>
     </ConnectionProvider>
   )
 }

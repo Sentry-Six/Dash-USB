@@ -9,38 +9,22 @@ import {
   Camera,
   Activity,
   EthernetPort,
-  HeartPulse,
-  Timer,
   Zap,
   ChevronRight,
   Download,
   AlertTriangle,
   Wind,
   Info,
-  Film,
-  MapPin,
-  Route,
 } from "lucide-react"
 import { api } from "@/lib/api"
-import { useKeepAwake } from "@/hooks/useKeepAwake"
-import { useAwayMode } from "@/hooks/useAwayMode"
 import { useUpdateAvailable } from "@/hooks/useUpdateAvailable"
-import { fetchCurrentCharge } from "@/api/charging"
-import type { CurrentCharge } from "@/types/charging"
-import type { PiStatus, DriveStats, StorageBreakdown } from "@/lib/api"
-import { wsClient } from "@/lib/ws"
+import type { PiStatus, StorageBreakdown, ArchiveStatus } from "@/lib/api"
 import { formatUptime, formatBytes, formatTemp } from "@/lib/utils"
 import { useUnits } from "@/lib/units"
-import { CloudStatusBar } from "@/components/CloudStatusBar"
-import {
-  CarStatusCard,
-  type CarStatusSample,
-} from "@/components/dashboard/CarStatusCard"
 import { StatusTile, Row, TileDivider } from "@/components/ui/StatusTile"
 import { BannerStack, type BannerItem } from "@/components/ui/Banner"
 import { Pill, LiveDot } from "@/components/ui/Pill"
 import type { Halo } from "@/components/ui/StatusTile"
-import type { TireHistoryResponse } from "@/components/dashboard/TirePressureCard"
 
 function getTempHalo(milliC: number): Halo {
   if (milliC <= 0) return "blue"
@@ -50,7 +34,7 @@ function getTempHalo(milliC: number): Halo {
 }
 
 function getTempColor(milliC: number): string {
-  if (milliC < 55000) return "oklch(0.82 0.18 150)"
+  if (milliC < 55000) return "oklch(0.78 0.14 240)"
   if (milliC < 70000) return "#fbbf24"
   return "#f87171"
 }
@@ -127,43 +111,16 @@ export default function Dashboard() {
   const [status, setStatus] = useState<PiStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [uptime, setUptime] = useState(0)
-  const [driveStats, setDriveStats] = useState<DriveStats | null>(null)
   const [storageBreakdown, setStorageBreakdown] =
     useState<StorageBreakdown | null>(null)
   const [archiveProgress, setArchiveProgress] = useState<ProcessProgress | null>(null)
-  const [processing, setProcessing] = useState(false)
-  const [processProgress, setProcessProgress] = useState<ProcessProgress | null>(null)
   // Units come from the shared store — coherent defaults and live-synced with
-  // the Settings → Display & Units controls. systemTempF is the independent
-  // System-tile CPU unit; tempF/km drive the dashboard temps and distances.
-  const { tempF: useFahrenheit, systemTempF: systemUseFahrenheit, km: metric } = useUnits()
+  // the Settings → Display & Units controls.
+  const { systemTempF: systemUseFahrenheit } = useUnits()
   const [rtcWarning, setRtcWarning] = useState<string | null>(null)
-  // null = still probing, then either the response or `{points: []}`.
-  // The card stays unmounted until points.length > 0, so vendor-charts
-  // never loads for users without Tesla BLE telemetry.
-  const [tireHistory, setTireHistory] = useState<TireHistoryResponse | null>(null)
-  // Latest BLE-derived car-state snapshot for the CarStatusCard.
-  // Polled at 30s — the BLE sampler itself runs once a minute while
-  // parked + awake, so anything faster on the UI side is wasted.
-  const [carStatusSample, setCarStatusSample] = useState<CarStatusSample | null>(null)
-  // Live charge status for the CarStatusCard battery chip.
-  const [currentCharge, setCurrentCharge] = useState<CurrentCharge | null>(null)
-  // ISO end-time of the latest drive on record — used to derive the
-  // "Parked Xh Ym" duration. One-shot fetch on mount + a refresh
-  // when a drive-process WebSocket completion comes in.
-  const [latestDriveEnd, setLatestDriveEnd] = useState<string | null>(null)
-  // Active lock-chime sound name (e.g. "Star Wars Theme") when the
-  // feature is configured. null means "no active chime", which hides
-  // the indicator entirely. Fetched once on mount + refreshed every
-  // 5 minutes (the active chime rarely changes — manual user action
-  // on the LockChime page is the only source).
-  const [activeChimeName, setActiveChimeName] = useState<string | null>(null)
 
   const archiveHistoryRef = useRef<ProgressSample[]>([])
-  const processHistoryRef = useRef<ProgressSample[]>([])
   const updateInfo = useUpdateAvailable()
-  const { status: awayStatus } = useAwayMode()
-  const { mode: keepAwakeMode } = useKeepAwake()
 
   useEffect(() => {
     let mounted = true
@@ -176,33 +133,16 @@ export default function Dashboard() {
         setUptime(parseFloat(data.uptime))
         setError(null)
       } catch {
-        if (mounted) setError("Unable to connect to Sentry USB")
+        if (mounted) setError("Unable to connect to Dash USB")
       }
     }
 
-    async function fetchDriveStats() {
+    async function fetchArchiveStatus() {
       try {
-        const [stats, driveStatus] = await Promise.all([
-          api.getDriveStats(),
-          api.getDriveStatus(),
-        ])
+        const d: ArchiveStatus = await api.getArchiveStatus()
         if (!mounted) return
-        setDriveStats(stats)
-        setProcessing(driveStatus.running)
-        if (!driveStatus.running) {
-          setProcessProgress(null)
-        } else if (driveStatus.process_total != null && driveStatus.process_total > 0) {
-          setProcessProgress({
-            current: driveStatus.process_current ?? 0,
-            total: driveStatus.process_total,
-          })
-        }
-
-        if (driveStatus.phase === "archiving" && driveStatus.total != null) {
-          setArchiveProgress({
-            current: driveStatus.current ?? 0,
-            total: driveStatus.total,
-          })
+        if (d.phase === "archiving" && d.total != null && d.total > 0) {
+          setArchiveProgress({ current: d.current ?? 0, total: d.total })
         } else {
           setArchiveProgress(null)
         }
@@ -221,7 +161,7 @@ export default function Dashboard() {
     }
 
     fetchStatus()
-    fetchDriveStats()
+    fetchArchiveStatus()
     fetchStorageBreakdown()
 
     fetch("/api/system/rtc-status")
@@ -233,115 +173,14 @@ export default function Dashboard() {
       })
       .catch(() => {})
 
-    // Tire history: probe once at mount. The card only mounts (and
-    // pulls in recharts) when the response has samples. Empty
-    // response = the user hasn't paired BLE telemetry; we just hide
-    // the card to keep the dashboard clean.
-    fetch("/api/telemetry/tire-history?days=30")
-      .then((r) => (r.ok ? r.json() : { points: [], days: 30 }))
-      .then((d: TireHistoryResponse) => { if (mounted) setTireHistory(d) })
-      .catch(() => { if (mounted) setTireHistory({ points: [], days: 30 }) })
-
-    // Latest BLE sample drives the CarStatusCard's battery + temps +
-    // tire-health summary. Hide-on-error since this is purely an
-    // overview tile; the user can still pair BLE from Settings.
-    async function fetchCarStatusSample() {
-      try {
-        const res = await fetch("/api/system/ble-latest-sample")
-        if (!res.ok) return
-        const d = (await res.json()) as CarStatusSample
-        if (mounted) setCarStatusSample(d)
-      } catch {
-        /* non-critical */
-      }
-    }
-
-    // Most recent drive's end-time → used by CarStatusCard to render
-    // "Parked Xh Ym". /api/drives returns the cached list in
-    // insertion order (NOT newest-first), so we have to find the
-    // entry with the latest endTime ourselves — `drives[0]` would
-    // give the oldest drive and produce a "Parked 600d 9h"-style
-    // bogus duration.
-    async function fetchLatestDrive() {
-      try {
-        const res = await fetch("/api/drives")
-        if (!res.ok) return
-        const drives = (await res.json()) as Array<{ endTime?: string }>
-        if (!mounted) return
-        if (!Array.isArray(drives) || drives.length === 0) return
-        let latest: string | null = null
-        let latestMs = -Infinity
-        for (const d of drives) {
-          if (!d.endTime) continue
-          const ms = new Date(d.endTime).getTime()
-          if (Number.isFinite(ms) && ms > latestMs) {
-            latestMs = ms
-            latest = d.endTime
-          }
-        }
-        if (latest) setLatestDriveEnd(latest)
-      } catch {
-        /* non-critical */
-      }
-    }
-
-    // Active lock-chime probe. Endpoint is /api/lockchime/list — it
-    // returns the full sound directory, but we only need
-    // active_name/active_set. The list is small (filename + size per
-    // sound) so the extra payload is negligible.
-    async function fetchActiveChime() {
-      try {
-        const res = await fetch("/api/lockchime/list")
-        if (!res.ok) return
-        const d = (await res.json()) as {
-          active_set?: boolean
-          active_name?: string
-        }
-        if (!mounted) return
-        setActiveChimeName(d.active_set && d.active_name ? d.active_name : null)
-      } catch {
-        /* non-critical */
-      }
-    }
-
-    async function fetchChargeStatus() {
-      try {
-        const c = await fetchCurrentCharge()
-        if (mounted) setCurrentCharge(c)
-      } catch {
-        /* non-critical */
-      }
-    }
-
-    fetchCarStatusSample()
-    fetchLatestDrive()
-    fetchActiveChime()
-    fetchChargeStatus()
     // Pause every poller while the tab is hidden (phone in a pocket, a
-    // backgrounded tab) so the dashboard stops hitting the Pi every 1-2s
-    // and draining the phone battery for data nobody's looking at. The
-    // `visibilitychange` handler below refreshes immediately on return so
-    // the tiles don't sit stale waiting for the next tick.
-    const carStatusInterval = setInterval(() => {
-      if (!document.hidden) fetchCarStatusSample()
-    }, 30_000)
-    const chargeInterval = setInterval(() => {
-      if (!document.hidden) fetchChargeStatus()
-    }, 30_000)
-    const chimeInterval = setInterval(() => {
-      if (!document.hidden) fetchActiveChime()
-    }, 300_000)
-
-    // Status drives the live-tile values (CPU, mem, temp). 2s is fast
-    // enough that a glance still feels real-time and halves the
-    // server hits vs the previous 1s cadence. The uptime tile uses a
-    // separate local 1s interval below so the seconds counter still
-    // advances smoothly between server polls.
+    // backgrounded tab) so the dashboard stops hitting the Pi and
+    // draining the phone battery for data nobody's looking at.
     const statusInterval = setInterval(() => {
       if (!document.hidden) fetchStatus()
     }, 2000)
-    const statsInterval = setInterval(() => {
-      if (!document.hidden) fetchDriveStats()
+    const archiveInterval = setInterval(() => {
+      if (!document.hidden) fetchArchiveStatus()
     }, 5000)
     const storageInterval = setInterval(() => {
       if (!document.hidden) fetchStorageBreakdown()
@@ -353,48 +192,22 @@ export default function Dashboard() {
     }, 1000)
 
     // Snap the live tiles back to current the moment the tab is shown
-    // again, rather than waiting up to 30s for the slow intervals.
+    // again, rather than waiting for the slower intervals.
     const onVisible = () => {
       if (document.hidden) return
       fetchStatus()
-      fetchDriveStats()
+      fetchArchiveStatus()
       fetchStorageBreakdown()
-      fetchCarStatusSample()
-      fetchChargeStatus()
     }
     document.addEventListener("visibilitychange", onVisible)
-
-    const unsubscribe = wsClient.subscribe("drive_process", (data) => {
-      if (!mounted) return
-      const msg = data as { status: string; current?: number; total?: number }
-      if (msg.status === "started") {
-        setProcessing(true)
-        setProcessProgress(null)
-      } else if (
-        msg.status === "progress" &&
-        msg.current !== undefined &&
-        msg.total !== undefined
-      ) {
-        setProcessing(true)
-        setProcessProgress({ current: msg.current, total: msg.total })
-      } else if (msg.status === "complete" || msg.status === "error") {
-        setProcessing(false)
-        setProcessProgress(null)
-        fetchDriveStats()
-      }
-    })
 
     return () => {
       mounted = false
       clearInterval(statusInterval)
-      clearInterval(statsInterval)
+      clearInterval(archiveInterval)
       clearInterval(storageInterval)
       clearInterval(uptimeInterval)
-      clearInterval(carStatusInterval)
-      clearInterval(chargeInterval)
-      clearInterval(chimeInterval)
       document.removeEventListener("visibilitychange", onVisible)
-      unsubscribe()
     }
   }, [])
 
@@ -408,23 +221,13 @@ export default function Dashboard() {
     }
   }, [archiveProgress])
 
-  useEffect(() => {
-    if (processProgress && processProgress.current > 0) {
-      const h = processHistoryRef.current
-      h.push({ time: Date.now(), current: processProgress.current })
-      if (h.length > RATE_WINDOW) h.shift()
-    } else {
-      processHistoryRef.current = []
-    }
-  }, [processProgress])
-
   if (error) {
     return (
       <div className="flex flex-col items-center justify-center py-20">
         <Activity className="mb-4 h-12 w-12 text-slate-600" />
         <p className="text-lg font-medium text-slate-400">{error}</p>
         <p className="mt-1 text-sm text-slate-600">
-          Make sure the Sentry USB API server is running
+          Make sure the Dash USB API server is running
         </p>
       </div>
     )
@@ -474,8 +277,6 @@ export default function Dashboard() {
     })
   }
 
-  const isAwayActive = awayStatus.state === "active"
-
   return (
     <div className="space-y-3">
       <div>
@@ -485,14 +286,11 @@ export default function Dashboard() {
 
       <BannerStack banners={banners} />
 
-      <CloudStatusBar />
-
       <div className="tile-grid">
         <SystemTile
           status={status}
           uptime={uptime}
           useFahrenheit={systemUseFahrenheit}
-          keepAwakeIdle={keepAwakeMode == null}
         />
         <NetworkTile status={status} />
         <StorageTile
@@ -500,36 +298,11 @@ export default function Dashboard() {
           breakdown={storageBreakdown}
         />
         <ActivityTile
-          driveStats={driveStats}
           archiveProgress={archiveProgress}
-          processProgress={processProgress}
-          processing={processing}
-          metric={metric}
-          // eslint-disable-next-line react-hooks/refs -- ETA history is intentionally a ref (push-only, no re-render needed) and the original Dashboard read .current the same way.
+          // eslint-disable-next-line react-hooks/refs -- ETA history is intentionally a ref (push-only, no re-render needed).
           archiveEta={archiveProgress ? computeETA(archiveProgress.current, archiveProgress.total, archiveHistoryRef.current) : null}
-          // eslint-disable-next-line react-hooks/refs -- same as above
-          processEta={processProgress ? computeETA(processProgress.current, processProgress.total, processHistoryRef.current) : null}
         />
-        {isAwayActive && <AwayModeTile />}
       </div>
-
-      {/* Car status overview — last-known battery / cabin temps / tire
-          health as chips, with the tire-pressure history chart behind an
-          expand toggle (recharts stays unloaded until expanded). Spans the
-          full content width so its flex-1 chips line up under the status
-          tiles above; the page-level max-width keeps it from over-stretching
-          on ultrawide. */}
-      {(carStatusSample?.ts != null || currentCharge?.soc != null) && (
-        <CarStatusCard
-          sample={carStatusSample}
-          latestDriveEnd={latestDriveEnd}
-          tireHistory={tireHistory ?? undefined}
-          useFahrenheit={useFahrenheit}
-          metric={metric}
-          currentCharge={currentCharge}
-          lockChimeName={activeChimeName}
-        />
-      )}
     </div>
   )
 }
@@ -540,12 +313,10 @@ function SystemTile({
   status,
   uptime,
   useFahrenheit,
-  keepAwakeIdle,
 }: {
   status: PiStatus
   uptime: number
   useFahrenheit: boolean
-  keepAwakeIdle: boolean
 }) {
   const cpuTemp = parseInt(status.cpu_temp)
   return (
@@ -574,10 +345,9 @@ function SystemTile({
       )}
       {/* Three-state: "Connected" needs the host link up ("configured"),
           not just the gadget bound in configfs — a bound gadget with a
-          dead link is exactly how the car shows an X while the old
-          two-state pill stayed green. udc_state is absent on older
-          backends; treat absent as link-unknown and keep the old view.
-          Label and color derive from ONE state value so they can't drift. */}
+          dead link is exactly how the car shows an error while the old
+          two-state pill stayed green. Label and color derive from ONE
+          state value so they can't drift. */}
       <Row
         icon={<HardDrive className="h-3.5 w-3.5" />}
         label="USB Drives"
@@ -591,25 +361,11 @@ function SystemTile({
           const pill = {
             disconnected: { value: "Disconnected", valueColor: "#fbbf24" },
             "no-link": { value: "No host link", valueColor: "#f87171" },
-            connected: { value: "Connected", valueColor: "oklch(0.82 0.18 150)" },
+            connected: { value: "Connected", valueColor: "oklch(0.78 0.14 240)" },
           } as const
           return pill[drivesState]
         })()}
       />
-      {keepAwakeIdle && (
-        <Row
-          icon={<HeartPulse className="h-3.5 w-3.5" />}
-          label="Keep Awake"
-          value={
-            <Link
-              to="/settings?tab=Device"
-              className="text-blue-400 hover:text-blue-300"
-            >
-              Off
-            </Link>
-          }
-        />
-      )}
     </StatusTile>
   )
 }
@@ -725,8 +481,6 @@ function StorageTile({
     ? [
         { label: "Dashcam", size: breakdown.cam_size, color: "#3b82f6" },
         { label: "Music", size: breakdown.music_size, color: "#a855f7" },
-        { label: "Lightshow", size: breakdown.lightshow_size, color: "#f59e0b" },
-        { label: "Boombox", size: breakdown.boombox_size, color: "#ec4899" },
         { label: "Snapshots", size: breakdown.snapshots_size, color: "#6366f1" },
       ].filter((s) => s.size > 0)
     : []
@@ -745,12 +499,9 @@ function StorageTile({
           / {formatBytes(totalSpace)} · {usedPctStr} used
         </span>
         {/* Reassurance tooltip — high storage usage triggers panic
-            for new users ("96% used!"), but Sentry USB rotates
+            for new users ("96% used!"), but Dash USB rotates
             snapshots automatically as space gets tight. CSS-only
-            group-hover so we don't need React state for it.
-            Anchored right-0 so the 256px tooltip extends LEFT into
-            the card body rather than overflowing off the right
-            edge on narrow grid columns. */}
+            group-hover so we don't need React state for it. */}
         <span className="group relative inline-flex items-center self-center">
           <Info
             aria-label="About storage management"
@@ -758,7 +509,7 @@ function StorageTile({
           />
           <span className="pointer-events-none absolute right-0 top-full z-50 mt-2 w-64 rounded-xl border border-white/10 bg-slate-900 p-3 text-[11px] leading-relaxed text-slate-400 opacity-0 shadow-xl transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
             <span className="absolute bottom-full right-3 block border-4 border-transparent border-b-slate-900" />
-            Sentry USB automatically manages your storage. Old
+            Dash USB automatically manages your storage. Old
             snapshots are deleted when space is needed — you don't
             need to manually free up space. Low remaining space is
             normal and expected, especially with dashcam footage
@@ -829,56 +580,22 @@ function StorageTile({
 }
 
 function ActivityTile({
-  driveStats,
   archiveProgress,
-  processProgress,
-  processing,
-  metric,
   archiveEta,
-  processEta,
 }: {
-  driveStats: DriveStats | null
   archiveProgress: ProcessProgress | null
-  processProgress: ProcessProgress | null
-  processing: boolean
-  metric: boolean
   archiveEta: string | null
-  processEta: string | null
 }) {
-  // Keep-Awake is rendered as a sub-section inside the Activity card
-  // (used to be its own tile next door, but the dead space below
-  // Activity made the grid look unbalanced). The hook is only
-  // consumed here now.
-  //
-  // Mirror the old standalone card's behaviour: the inline UI only
-  // exposes start/stop affordances, not the Off/Manual/Auto picker
-  // (that lives in Settings → Device), so showing it when the user
-  // has chosen Off would be a useless dead section. `mode` from the
-  // hook is `null` while the preference is still loading and `""`
-  // when the user explicitly picked Off — collapse the section in
-  // both cases by gating on the active modes only. When mode flips
-  // to manual/auto in Settings, this re-renders and the section
-  // appears on its own.
-  const keepAwake = useKeepAwake()
-  const keepAwakeVisible =
-    keepAwake.mode === "manual" || keepAwake.mode === "auto"
-
-  const phase = archiveProgress
-    ? ("archiving" as const)
-    : processing
-    ? ("processing" as const)
-    : null
+  const archiving = archiveProgress != null
 
   return (
     <div className="relative flex flex-col">
-      {/* Phase notification — pinned to the card's top-right corner
-          as an absolutely-positioned pill so it doesn't crowd the
-          ⚡ ACTIVITY title or the inline FSD link. Only renders
-          during an actual archive/process run. */}
-      {phase && (
+      {/* Phase pill — pinned to the card's top-right corner; only
+          renders during an actual archive run. */}
+      {archiving && (
         <div className="pointer-events-none absolute right-2 top-2 z-10">
-          <Pill kind={phase === "archiving" ? "accent" : "sky"}>
-            <LiveDot /> {phase}
+          <Pill kind="accent">
+            <LiveDot /> archiving
           </Pill>
         </div>
       )}
@@ -888,80 +605,24 @@ function ActivityTile({
         title="Activity"
         className="flex-1"
       >
-      {driveStats ? (
-        driveStats.processed_count === 0 && driveStats.drives_count === 0 ? (
-          <p className="t-xs">
-            No drives processed yet. Plug a Sentry USB to ingest dashcam footage.
-          </p>
-        ) : (
+        {archiveProgress && archiveProgress.total > 0 ? (
           <>
-            <Row
-              icon={<Film className="h-3.5 w-3.5" />}
-              label="Clips"
-              value={driveStats.processed_count.toLocaleString()}
+            <p className="t-xs">
+              Archiving recordings to your configured destination.
+            </p>
+            <ProgressBlock
+              current={archiveProgress.current}
+              total={archiveProgress.total}
+              eta={archiveEta}
+              color="emerald"
             />
-            <Row
-              icon={<MapPin className="h-3.5 w-3.5" />}
-              label="Drives"
-              value={driveStats.drives_count.toLocaleString()}
-            />
-            <Row
-              icon={<Route className="h-3.5 w-3.5" />}
-              label="Distance"
-              value={`${
-                metric
-                  ? driveStats.total_distance_km.toFixed(0)
-                  : driveStats.total_distance_mi.toFixed(0)
-              } ${metric ? "km" : "mi"}`}
-            />
-            {driveStats.fsd_engaged_ms > 0 && (
-              <Row
-                icon={<Zap className="h-3.5 w-3.5" />}
-                label="FSD"
-                value={
-                  <Link to="/fsd" className="text-emerald-400 hover:text-emerald-300">
-                    {driveStats.fsd_percent}%
-                  </Link>
-                }
-              />
-            )}
-
-            {archiveProgress && archiveProgress.total > 0 ? (
-              <ProgressBlock
-                current={archiveProgress.current}
-                total={archiveProgress.total}
-                eta={archiveEta}
-                color="emerald"
-              />
-            ) : processProgress && processProgress.total > 0 ? (
-              <ProgressBlock
-                current={processProgress.current}
-                total={processProgress.total}
-                eta={processEta}
-                color="blue"
-              />
-            ) : processing ? (
-              <div className="bar">
-                <div
-                  className="w-2/5 animate-pulse bg-gradient-to-r from-blue-500 to-blue-400"
-                />
-              </div>
-            ) : null}
           </>
-        )
-      ) : (
-        <>
-          <div className="h-3 w-1/2 animate-pulse rounded bg-slate-800" />
-          <div className="h-1.5 w-full animate-pulse rounded-full bg-slate-800" />
-        </>
-      )}
-
-      {keepAwakeVisible && (
-        <>
-          <TileDivider />
-          <KeepAwakeInline keepAwake={keepAwake} />
-        </>
-      )}
+        ) : (
+          <p className="t-xs">
+            Idle. Snapshots are captured continuously; archiving starts
+            automatically when the archive destination is reachable.
+          </p>
+        )}
       </StatusTile>
     </div>
   )
@@ -1004,158 +665,5 @@ function ProgressBlock({
         <div className={grad} style={{ width: `${pct}%` }} />
       </div>
     </>
-  )
-}
-
-const KEEP_AWAKE_DURATIONS = [
-  { label: "15m", value: 15 },
-  { label: "30m", value: 30 },
-  { label: "1h", value: 60 },
-  { label: "2h", value: 120 },
-]
-
-/**
- * Keep-Awake sub-section rendered inline inside the Activity tile
- * (below the clips/drives/distance stats row and a tile divider).
- * Same visual + behavioural state machine as the old standalone
- * KeepAwakeTile: animated icon when active/pending, value reflects
- * remaining time or mode state, action button is Start (with
- * duration dropdown) when manual + idle, Stop when active/pending,
- * nothing otherwise.
- *
- * Caller (ActivityTile) gates rendering on `mode != null` so this
- * component can assume the feature is configured.
- */
-function KeepAwakeInline({ keepAwake }: { keepAwake: ReturnType<typeof useKeepAwake> }) {
-  const { status, mode, start, stop } = keepAwake
-  const [showDurations, setShowDurations] = useState(false)
-
-  const isActive = status.state === "active"
-  const isPending = status.state === "pending"
-  const isIdle = status.state === "idle"
-  const remainingMin = status.remaining_sec ? Math.ceil(status.remaining_sec / 60) : 0
-
-  const value = isActive
-    ? `${remainingMin}m`
-    : isPending
-    ? "Pending"
-    : mode === "auto"
-    ? "Auto"
-    : "Idle"
-  const sub = isActive
-    ? "Keeping car awake"
-    : isPending
-    ? "Waiting for archive..."
-    : mode === "auto"
-    ? "Activates on interaction"
-    : "Tap to start"
-
-  const iconColor = isActive
-    ? "text-rose-400"
-    : isPending
-    ? "text-amber-400"
-    : "text-blue-400"
-
-  const actionBtn =
-    mode === "manual" && isIdle ? (
-      <div className="relative">
-        <button
-          onClick={() => setShowDurations(!showDurations)}
-          className="rounded-lg bg-blue-500/20 px-2.5 py-1 text-[11px] font-medium text-blue-400 transition-colors hover:bg-blue-500/30"
-        >
-          Start
-        </button>
-        {showDurations && (
-          <div className="absolute right-0 top-full z-10 mt-1 w-28 rounded-lg border border-white/10 bg-slate-900 p-1 shadow-xl">
-            {KEEP_AWAKE_DURATIONS.map((opt) => (
-              <button
-                key={opt.value}
-                onClick={() => {
-                  start(opt.value)
-                  setShowDurations(false)
-                }}
-                className="w-full rounded-md px-3 py-1.5 text-left text-xs text-slate-300 hover:bg-white/5"
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-    ) : isActive || isPending ? (
-      <button
-        onClick={stop}
-        className="rounded-lg bg-red-500/15 px-2.5 py-1 text-[11px] font-medium text-red-400 transition-colors hover:bg-red-500/25"
-      >
-        Stop
-      </button>
-    ) : null
-
-  return (
-    <div>
-      <div className="flex items-center gap-2">
-        <span className={`inline-flex ${iconColor}`}>
-          {isActive ? (
-            <HeartPulse className="h-3.5 w-3.5 animate-pulse" />
-          ) : isPending ? (
-            <Timer className="h-3.5 w-3.5 animate-pulse" />
-          ) : (
-            <HeartPulse className="h-3.5 w-3.5" />
-          )}
-        </span>
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-          Keep Awake
-        </span>
-        {actionBtn && <span className="ml-auto">{actionBtn}</span>}
-      </div>
-      <div className="mt-1 flex items-baseline gap-2">
-        <span className="text-base font-semibold text-slate-100">{value}</span>
-      </div>
-      <p className="t-xs">{sub}</p>
-    </div>
-  )
-}
-
-function AwayModeTile() {
-  const { status } = useAwayMode()
-  const remaining = status.remaining_sec ?? 0
-  const h = Math.floor(remaining / 3600)
-  const m = Math.floor((remaining % 3600) / 60)
-
-  let totalSec = 0
-  if (status.enabled_at && status.expires_at) {
-    totalSec =
-      (new Date(status.expires_at).getTime() -
-        new Date(status.enabled_at).getTime()) /
-      1000
-  }
-  const pct = totalSec > 0 ? ((totalSec - remaining) / totalSec) * 100 : 0
-
-  return (
-    <StatusTile
-      icon={<Wifi className="h-4 w-4" />}
-      halo="blue"
-      title="Away Mode"
-      badge={
-        <Pill kind="sky">
-          <LiveDot /> Active
-        </Pill>
-      }
-    >
-      <div className="flex items-baseline gap-1.5">
-        <span className="text-lg font-semibold text-slate-100">
-          {h}h {m}m
-        </span>
-        <span className="t-xs">remaining</span>
-      </div>
-      <div className="bar">
-        <div className="bg-sky-400" style={{ width: `${pct}%` }} />
-      </div>
-      {status.ap_ssid && (
-        <p className="t-xs">
-          AP <span className="t-mono text-slate-300">{status.ap_ssid}</span>
-        </p>
-      )}
-    </StatusTile>
   )
 }

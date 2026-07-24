@@ -361,7 +361,7 @@ export function UpdateSection({ onInstallStart }: Props) {
                   Stable: {stableUpdate.version}
                 </p>
                 <p className="mt-0.5 text-[11px] text-slate-400">
-                  Updates server, scripts &amp; BLE daemon.{" "}
+                  Updates server &amp; scripts.{" "}
                   <a
                     href={stableUpdate.release_url}
                     target="_blank"

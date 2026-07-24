@@ -11,15 +11,12 @@ import {
   Clock,
   Archive,
   Thermometer,
-  Zap,
-  HardDrive,
   Download,
   Battery,
   Music,
   Filter,
   Loader2,
   Info,
-  Plug,
   Wrench,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -41,12 +38,9 @@ interface NotificationSettings {
   archive_complete: boolean
   archive_error: boolean
   temperature: boolean
-  keep_awake_failure: boolean
   update: boolean
-  drives: boolean
   rtc_battery: boolean
   music_sync: boolean
-  keep_accessory: boolean
   storage_repair: boolean
 }
 
@@ -66,12 +60,9 @@ const NOTIFICATION_TYPES = [
   { key: "archive_complete", label: "Archive Complete", description: "When file archiving finishes successfully", icon: CheckCircle2 },
   { key: "archive_error", label: "Archive Errors", description: "When archiving encounters errors", icon: XCircle },
   { key: "temperature", label: "Temperature Alerts", description: "When CPU temperature exceeds safe thresholds", icon: Thermometer },
-  { key: "keep_awake_failure", label: "Keep-Awake Failures", description: "When Sentry Mode keep-awake fails after retries", icon: Zap },
   { key: "update", label: "Update Available", description: "When a new software update is detected", icon: Download },
-  { key: "drives", label: "New Drives Detected", description: "When new TeslaCam drives are mapped", icon: HardDrive },
   { key: "rtc_battery", label: "RTC Battery Warning", description: "When the real-time clock battery is low or missing", icon: Battery },
   { key: "music_sync", label: "Music Sync", description: "When music files finish syncing to USB", icon: Music },
-  { key: "keep_accessory", label: "Keep Accessory", description: "When the Pi releases 12V accessory power at home and is about to go offline", icon: Plug },
   { key: "storage_repair", label: "Storage Auto Repair", description: "When boot-time repair of dashcam storage succeeds, fails, or needs manual action", icon: Wrench },
 ] as const
 
@@ -91,9 +82,7 @@ function typeColor(type: string): string {
     case "archive_complete": return "text-emerald-400"
     case "archive_error": return "text-red-400"
     case "temperature": return "text-orange-400"
-    case "keep_awake_failure": return "text-amber-400"
     case "update": return "text-cyan-400"
-    case "drives": return "text-violet-400"
     case "rtc_battery": return "text-yellow-400"
     case "music_sync": return "text-pink-400"
     case "storage_repair": return "text-rose-400"
@@ -107,9 +96,7 @@ function typeBgColor(type: string): string {
     case "archive_complete": return "bg-emerald-500/15"
     case "archive_error": return "bg-red-500/15"
     case "temperature": return "bg-orange-500/15"
-    case "keep_awake_failure": return "bg-amber-500/15"
     case "update": return "bg-cyan-500/15"
-    case "drives": return "bg-violet-500/15"
     case "rtc_battery": return "bg-yellow-500/15"
     case "music_sync": return "bg-pink-500/15"
     case "storage_repair": return "bg-rose-500/15"
@@ -187,12 +174,9 @@ export default function Notifications() {
         archive_complete: true,
         archive_error: true,
         temperature: true,
-        keep_awake_failure: true,
         update: true,
-        drives: true,
         rtc_battery: true,
         music_sync: true,
-        keep_accessory: true,
         storage_repair: true,
       })
     }

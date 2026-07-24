@@ -28,16 +28,16 @@ const SystemTab = lazy(() => import("@/pages/settings/SystemTab").then(m => ({ d
 
 // Modals are only mounted while open — defer their bundles entirely
 // until the user opens them. SetupWizard alone pulls in several
-// step components + the BLE pairing flow.
+// step components.
 const SetupWizard = lazy(() => import("@/components/setup/SetupWizard").then(m => ({ default: m.SetupWizard })))
 const RawConfigEditor = lazy(() => import("@/components/settings/sections/RawConfigEditor").then(m => ({ default: m.RawConfigEditor })))
 const HealthCheckModal = lazy(() => import("@/components/settings/sections/HealthCheckModal").then(m => ({ default: m.HealthCheckModal })))
 const SpeedTestModal = lazy(() => import("@/components/settings/sections/SpeedTestModal").then(m => ({ default: m.SpeedTestModal })))
 
 // Four task-based groups (consolidated from the original seven):
-//   Device                  — keep-awake, units, keep-accessory, software updates
-//   Car & Network           — WiFi/Eth, Tesla BLE, Away Mode, SentryCloud
-//   Notifications & Community — mobile push + community features (wraps, chimes)
+//   Device                  — units, software updates
+//   Network                 — WiFi/Eth
+//   Notifications           — mobile push
 //   System                  — backups/export/raw-config, setup wizard, privacy
 const TABS = [
   "Device",
@@ -265,7 +265,7 @@ export default function Settings() {
       <TabBar tabs={TABS} active={activeTab} onSelect={setTab} scrollable={isMobile} />
 
       <Suspense fallback={<TabFallback />}>
-        {activeTab === "Device" && <DeviceTab onOpenWizard={handleOpenWizard} />}
+        {activeTab === "Device" && <DeviceTab />}
         {activeTab === "Car & Network" && (
           <NetworkTab status={status} onOpenWizard={handleOpenWizard} />
         )}

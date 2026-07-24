@@ -38,6 +38,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/snapshots", get(crate::snapshots::list_snapshots))
         .route("/api/snapshots/{id}", delete(crate::snapshots::delete_snapshot))
         .route("/api/backingfiles/free-space", get(crate::snapshots::get_free_space))
+        // Archive progress (archiveloop writes /tmp/archive_status.json)
+        .route("/api/archive/status", get(crate::archive_state::get_archive_status))
         // Clips
         .route("/api/clips", get(crate::clips::get_clips))
         // Files

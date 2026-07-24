@@ -35,7 +35,7 @@ export default function Login({ onLogin }: LoginProps) {
           <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-blue-500/15">
             <Shield className="h-7 w-7 text-blue-400" />
           </div>
-          <h1 className="text-lg font-semibold text-slate-100">Sentry USB</h1>
+          <h1 className="text-lg font-semibold text-slate-100">Dash USB</h1>
           <p className="mt-1 text-center text-sm text-slate-500">
             Sign in to access the dashboard.
           </p>

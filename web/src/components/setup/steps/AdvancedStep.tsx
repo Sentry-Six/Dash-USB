@@ -468,7 +468,7 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
           <Field label="Additional Packages" field="INSTALL_USER_REQUESTED_PACKAGES" placeholder="iftop mosh sysstat"
             data={data} onChange={onChange} hint="Space-separated list of apt packages" />
           <Field label="CPU Governor" field="CPU_GOVERNOR" placeholder="conservative"
-            data={data} onChange={onChange} hint="Leave empty for Sentry USB defaults" />
+            data={data} onChange={onChange} hint="Leave empty for Dash USB defaults" />
           <Field label="Dirty Background Bytes" field="DIRTY_BACKGROUND_BYTES" placeholder="65536"
             data={data} onChange={onChange} hint="VM write-back tuning. Leave empty for defaults." />
         </div>

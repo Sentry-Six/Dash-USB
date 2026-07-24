@@ -227,7 +227,7 @@ export function ConfigBackupSection() {
                     year: "numeric",
                   })}
                 </span>
-                . SSH keys, BLE pairing, and notification credentials will also be restored. You
+                . SSH keys and notification credentials will also be restored. You
                 will need to run setup afterward to apply changes.
               </p>
               <div className="mt-3 flex gap-2">

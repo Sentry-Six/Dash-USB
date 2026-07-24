@@ -94,7 +94,7 @@ export function NasSSHKey({
       </div>
       <div className="space-y-2 text-xs text-slate-500">
         <p>
-          Generate an SSH key so Sentry USB can rsync to your server without a password.
+          Generate an SSH key so Dash USB can rsync to your server without a password.
           To install it on your server:
         </p>
         <ol className="ml-4 list-decimal space-y-1">
@@ -112,7 +112,7 @@ chmod 600 ~/.ssh/authorized_keys`}
         </ol>
         <p className="text-slate-600">
           The test uses the <code className="rounded bg-white/10 px-1">ssh</code> client
-          built into Sentry USB — no extra packages need to be installed on this device.
+          built into Dash USB — no extra packages need to be installed on this device.
           The test is permissive about host-key verification; the real archive job uses
           strict host-key checking. If archiving later fails with{" "}
           <em>"Host key verification failed"</em>, SSH into the Pi and run{" "}

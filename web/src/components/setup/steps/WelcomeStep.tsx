@@ -408,10 +408,10 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
         <Shield className="h-10 w-10 text-blue-400" />
       </div>
       <h2 className="text-2xl font-bold text-slate-100">
-        Welcome to Sentry USB Setup
+        Welcome to Dash USB Setup
       </h2>
       <p className="mt-3 max-w-md text-sm leading-relaxed text-slate-400">
-        This wizard will guide you through configuring your Sentry USB device.
+        This wizard will guide you through configuring your Dash USB device.
         You&apos;ll set up storage, archive destinations, notifications,
         and more — all from this interface. WiFi should be configured
         in Raspberry Pi Imager before flashing your SD card.

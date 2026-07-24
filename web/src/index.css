@@ -25,23 +25,23 @@
   --color-glass: rgba(255, 255, 255, 0.04);
   --color-glass-border: rgba(255, 255, 255, 0.08);
   --color-glass-hover: rgba(255, 255, 255, 0.07);
-  --color-accent: oklch(0.82 0.18 150);
-  --color-accent-hover: oklch(0.87 0.16 150);
+  --color-accent: oklch(0.78 0.14 240);
+  --color-accent-hover: oklch(0.84 0.13 240);
 
-  /* ── SentryCloud palette: remap blue → green accent ────────────── */
-  --color-blue-50: oklch(0.97 0.04 150);
-  --color-blue-100: oklch(0.94 0.08 150);
-  --color-blue-200: oklch(0.90 0.12 150);
-  --color-blue-300: oklch(0.86 0.15 150);
-  --color-blue-400: oklch(0.82 0.18 150);
-  --color-blue-500: oklch(0.72 0.17 150);
-  --color-blue-600: oklch(0.62 0.16 150);
-  --color-blue-700: oklch(0.52 0.14 150);
-  --color-blue-800: oklch(0.42 0.12 150);
-  --color-blue-900: oklch(0.32 0.08 150);
-  --color-blue-950: oklch(0.22 0.06 150);
+  /* ── Dash USB palette: electric-blue accent (hue 240) ──────────── */
+  --color-blue-50: oklch(0.97 0.04 240);
+  --color-blue-100: oklch(0.94 0.08 240);
+  --color-blue-200: oklch(0.90 0.12 240);
+  --color-blue-300: oklch(0.86 0.15 240);
+  --color-blue-400: oklch(0.82 0.18 240);
+  --color-blue-500: oklch(0.72 0.17 240);
+  --color-blue-600: oklch(0.62 0.16 240);
+  --color-blue-700: oklch(0.52 0.14 240);
+  --color-blue-800: oklch(0.42 0.12 240);
+  --color-blue-900: oklch(0.32 0.08 240);
+  --color-blue-950: oklch(0.22 0.06 240);
 
-  /* ── SentryCloud backgrounds: darken slate scale ───────────────── */
+  /* ── Backgrounds: darkened slate scale ─────────────────────────── */
   --color-slate-950: #07090c;
   --color-slate-900: #0b0e13;
   --color-slate-800: #10141b;

@@ -210,7 +210,7 @@ export function ArchiveStep({ data, onChange }: StepProps) {
       {system === "nfs" && (
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="NFS Server" field="ARCHIVE_SERVER" placeholder="hostname or IP" data={data} onChange={onChange} error={req("ARCHIVE_SERVER", ["nfs"])} />
-          <Field label="Export Path" field="SHARE_NAME" placeholder="/volume1/TeslaCam" data={data} onChange={onChange} hint="Exact export path on the NAS" error={req("SHARE_NAME", ["nfs"])} />
+          <Field label="Export Path" field="SHARE_NAME" placeholder="/volume1/DashUSB" data={data} onChange={onChange} hint="Exact export path on the NAS" error={req("SHARE_NAME", ["nfs"])} />
         </div>
       )}
 
@@ -260,22 +260,19 @@ export function ArchiveStep({ data, onChange }: StepProps) {
           <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
             What to Archive
           </p>
-          {[
-            { field: "ARCHIVE_SAVEDCLIPS", label: "Saved Clips", def: "true" },
-            { field: "ARCHIVE_SENTRYCLIPS", label: "Sentry Clips", def: "true" },
-            { field: "ARCHIVE_RECENTCLIPS", label: "Recent Clips", def: "true" },
-            { field: "ARCHIVE_TRACKMODECLIPS", label: "Track Mode Clips", def: "true" },
-          ].map(({ field, label, def }) => (
-            <label key={field} className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={(data[field] ?? def) === "true"}
-                onChange={(e) => onChange(field, e.target.checked ? "true" : "false")}
-                className="h-4 w-4 rounded border-white/20 bg-white/5 accent-blue-500"
-              />
-              <span className="text-sm text-slate-300">{label}</span>
-            </label>
-          ))}
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={(data.ARCHIVE_RECORDINGS ?? "true") === "true"}
+              onChange={(e) => onChange("ARCHIVE_RECORDINGS", e.target.checked ? "true" : "false")}
+              className="h-4 w-4 rounded border-white/20 bg-white/5 accent-blue-500"
+            />
+            <span className="text-sm text-slate-300">Recordings (everything the car saves)</span>
+          </label>
+          <p className="text-xs text-slate-600">
+            The car keeps only a rolling window of footage on the drive; archiving
+            is what preserves it. Turn this off only if local snapshots are all you want.
+          </p>
         </div>
       )}
 

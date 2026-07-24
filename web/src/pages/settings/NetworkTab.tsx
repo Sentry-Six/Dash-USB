@@ -3,15 +3,11 @@ import { PrefCard } from "@/components/settings/PrefCard"
 import { SectionErrorBoundary } from "@/components/ErrorBoundary"
 import { Row } from "@/components/ui/StatusTile"
 import { Pill } from "@/components/ui/Pill"
-import CloudPairingSection from "@/components/CloudPairingSection"
-import { AwayModeControl } from "@/components/settings/sections/AwayModeControl"
-import { BleEnableToggle } from "@/components/settings/sections/BleEnableToggle"
-import { BlePairButton } from "@/components/settings/sections/BlePairButton"
 import type { PiStatus } from "@/lib/api"
 
 interface Props {
   status: PiStatus | null
-  /** Forwarded to AwayModeControl so its disabled-state CTA can re-launch
+  /** Forwarded so a disabled-state CTA can re-launch
    *  the Setup Wizard. */
   onOpenWizard?: () => void
 }
@@ -24,7 +20,7 @@ export function NetworkTab({ status, onOpenWizard }: Props) {
   return (
     // One unified 2-column grid for the whole tab so every card aligns to the
     // same two columns. The old layout stacked three separate containers — a
-    // 50/50 grid (WiFi/Ethernet), a masonry PrefGrid (BLE), and another grid
+    // 50/50 grid (WiFi/Ethernet) and another grid
     // with a different breakpoint (Away/Cloud) — so column edges never lined
     // up row-to-row. Cards now pair up in order and collapse to one column
     // below lg (where two ~360px cards would get cramped).
@@ -75,25 +71,6 @@ export function NetworkTab({ status, onOpenWizard }: Props) {
         )}
       </PrefCard>
 
-      {/* Tesla BLE — enable the telemetry / keep-awake features, then pair.
-          Kept adjacent so "enable" sits right next to "pair".
-          The self-fetching sections each get an error boundary (this tab
-          doesn't use PrefGrid, which wraps its children automatically): a
-          render crash in one card must not blank the whole app. */}
-      <SectionErrorBoundary>
-        <BleEnableToggle />
-      </SectionErrorBoundary>
-      <SectionErrorBoundary>
-        <BlePairButton />
-      </SectionErrorBoundary>
-
-      {/* Remote access */}
-      <SectionErrorBoundary>
-        <AwayModeControl onOpenWizard={onOpenWizard} />
-      </SectionErrorBoundary>
-      <SectionErrorBoundary>
-        <CloudPairingSection />
-      </SectionErrorBoundary>
     </div>
   )
 }

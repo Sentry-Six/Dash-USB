@@ -127,7 +127,7 @@ export function MobileNotificationsSection() {
 
       {pairingCode && (
         <p className="text-xs text-slate-600">
-          Enter this code in the Sentry USB mobile app under Settings → Pair for Notifications.
+          Enter this code in the Dash USB mobile app under Settings → Pair for Notifications.
         </p>
       )}
 

@@ -5,77 +5,40 @@ import {
   Video,
   FolderOpen,
   ScrollText,
-  MapPin,
   MessageCircle,
   Settings,
   X,
   Shield,
   TerminalSquare,
-  HeartPulse,
-  Timer,
   LogOut,
-  Users,
-  Paintbrush,
-  Volume2,
   BellRing,
-  Wifi,
   Camera,
-  BatteryCharging,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { useAwayMode } from "@/hooks/useAwayMode"
-import { useKeepAwake } from "@/hooks/useKeepAwake"
 import { useUpdateAvailable } from "@/hooks/useUpdateAvailable"
 import { useConnectionStatus } from "@/hooks/useConnectionStatus"
 import { useAuth } from "@/hooks/useAuth"
-import { useCommunityPrefs } from "@/hooks/useCommunityPrefs"
 
 interface MobileNavProps {
   open: boolean
   onClose: () => void
 }
 
-const baseNavItems = [
+const navItems = [
   { to: "/", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/viewer", icon: Video, label: "Viewer" },
   { to: "/files", icon: FolderOpen, label: "Files" },
   { to: "/snapshots", icon: Camera, label: "Snapshots" },
   { to: "/logs", icon: ScrollText, label: "Logs" },
-  { to: "/drives", icon: MapPin, label: "Drives" },
-  { to: "/community", icon: Users, label: "Community" },
   { to: "/notifications", icon: BellRing, label: "Notifications" },
   { to: "/settings", icon: Settings, label: "Settings" },
 ]
 
-function buildNavItems(
-  mode: ReturnType<typeof useCommunityPrefs>["mode"],
-) {
-  // Charging history is a standard view now — slot it right after Drives.
-  const items = baseNavItems.flatMap((item) =>
-    item.to === "/drives"
-      ? [item, { to: "/charging", icon: BatteryCharging, label: "Charging" }]
-      : [item],
-  )
-  return items
-    .filter((item) => item.to !== "/community" || mode !== "none")
-    .map((item) => {
-      if (item.to !== "/community") return item
-      if (mode === "wraps-only") return { ...item, icon: Paintbrush, label: "Wraps" }
-      if (mode === "chimes-only") return { ...item, icon: Volume2, label: "Lock Chimes" }
-      return item
-    })
-}
-
 export function MobileNav({ open, onClose }: MobileNavProps) {
-  const { status: awayModeStatus } = useAwayMode()
-  const { status } = useKeepAwake()
-  const isAwake = status.state === "active" || status.state === "pending"
   const { available: updateAvailable } = useUpdateAvailable()
   const { state: connState } = useConnectionStatus()
   const { authRequired, logout } = useAuth()
-  const { mode: communityMode } = useCommunityPrefs()
   const [version, setVersion] = useState<string | null>(null)
-  const navItems = buildNavItems(communityMode)
 
   useEffect(() => {
     fetch("/api/system/version")
@@ -103,7 +66,7 @@ export function MobileNav({ open, onClose }: MobileNavProps) {
             </div>
             <div>
               <span className="text-lg font-semibold tracking-tight text-slate-100" style={{ fontFamily: '"Inter", -apple-system, system-ui, sans-serif' }}>
-                Sentry USB
+                Dash USB
               </span>
               {version && (
                 <p className="text-[10px] leading-tight text-slate-600">
@@ -204,33 +167,6 @@ export function MobileNav({ open, onClose }: MobileNavProps) {
             {connState === "connected" ? "Connected" : connState === "reconnecting" ? "Reconnecting" : "Offline"}
           </span>
         </div>
-
-        {/* Away Mode indicator */}
-        {awayModeStatus.state === "active" && (
-          <div className="mx-2 mb-1 flex items-center gap-2 rounded-lg px-3 py-2 text-xs text-blue-400">
-            <Wifi className="h-3.5 w-3.5 animate-pulse" />
-            <span className="opacity-70">Away Mode</span>
-          </div>
-        )}
-
-        {/* Keep-awake indicator */}
-        {isAwake && (
-          <div className={cn(
-            "mx-2 mb-2 flex items-center gap-2 rounded-lg px-3 py-2 text-xs",
-            status.state === "active"
-              ? "text-rose-400"
-              : "text-amber-400"
-          )}>
-            {status.state === "active" ? (
-              <HeartPulse className="h-3.5 w-3.5 animate-pulse" />
-            ) : (
-              <Timer className="h-3.5 w-3.5 animate-pulse" />
-            )}
-            <span className="opacity-70">
-              {status.state === "active" ? "Keeping awake" : "Waiting for archive..."}
-            </span>
-          </div>
-        )}
 
         {/* Logout */}
         {authRequired && (
