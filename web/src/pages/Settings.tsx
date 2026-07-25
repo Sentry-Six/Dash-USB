@@ -267,7 +267,7 @@ export default function Settings() {
       <Suspense fallback={<TabFallback />}>
         {activeTab === "Device" && <DeviceTab />}
         {activeTab === "Car & Network" && (
-          <NetworkTab status={status} onOpenWizard={handleOpenWizard} />
+          <NetworkTab status={status} />
         )}
         {activeTab === "Notifications & Community" && <NotificationsTab />}
         {activeTab === "System" && (

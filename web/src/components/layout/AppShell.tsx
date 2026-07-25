@@ -8,9 +8,9 @@ import { cn } from "@/lib/utils"
 import { ConnectionProvider } from "@/hooks/useConnectionStatus"
 
 // Routes likely to be visited after the Dashboard. Prefetched on idle
-// so navigation is instant. Heavy/rare routes (Terminal, Viewer with
-// leaflet, Community wraps) are intentionally NOT in this list — we
-// don't want to burn data on screens the user may never open.
+// so navigation is instant. Heavy/rare routes (Terminal) are
+// intentionally NOT in this list — we don't want to burn data on
+// screens the user may never open.
 const PREFETCH_ROUTES: Array<() => Promise<unknown>> = [
   () => import("@/pages/Viewer"),
   () => import("@/pages/Files"),

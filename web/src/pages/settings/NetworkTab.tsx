@@ -1,18 +1,14 @@
 import { Wifi, EthernetPort } from "lucide-react"
 import { PrefCard } from "@/components/settings/PrefCard"
-import { SectionErrorBoundary } from "@/components/ErrorBoundary"
 import { Row } from "@/components/ui/StatusTile"
 import { Pill } from "@/components/ui/Pill"
 import type { PiStatus } from "@/lib/api"
 
 interface Props {
   status: PiStatus | null
-  /** Forwarded so a disabled-state CTA can re-launch
-   *  the Setup Wizard. */
-  onOpenWizard?: () => void
 }
 
-export function NetworkTab({ status, onOpenWizard }: Props) {
+export function NetworkTab({ status }: Props) {
   const wifiConnected = !!status?.wifi_ssid
   const ethConnected =
     !!status?.ether_speed && status.ether_speed !== "Unknown!"
