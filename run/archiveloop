@@ -62,6 +62,12 @@ export CAM_MOUNT=/mnt/cam
 # read the setup variables and define other environment variables and functions
 source /root/bin/envsetup.sh
 
+# Gadget-cycle lock shared with the daemon's enable/disable handlers.
+# MUST match GADGET_CYCLE_LOCK_PATH in crates/usb_gadget/src/cycle_lock.rs.
+# (set -u is active: this definition was lost in the travel-mode strip
+# and its absence crash-looped the service before the gadget came up.)
+GADGET_CYCLE_LOCK=/tmp/sentryusb_gadget_cycle.lock
+
 # Vehicle-profile defaults (RECORDINGS_TREE, RECORDING_ROOT,
 # SNAPSHOT_INTERVAL_DEFAULT, RECORDINGS_ARCHIVE_DEFAULT, CLIP_MIN_BYTES).
 # Written by the daemon at startup; user conf still wins everywhere via
