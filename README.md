@@ -11,12 +11,6 @@
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg"></a>
 </p>
 
-> [!WARNING]
-> **Early development.** Dash USB has not yet been validated against a real GM vehicle.
-> GM lists USB 3.0 among its drive requirements; the Raspberry Pi's USB gadget mode is
-> USB 2.0, and whether the car actually enforces USB 3.0 is unverified. Follow the
-> issues/Discord for test results before relying on this.
-
 ---
 
 ## What it does
