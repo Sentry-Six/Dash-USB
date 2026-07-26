@@ -295,6 +295,7 @@ export default function Viewer() {
     // Only probe the first EAGER_PROBE_COUNT segments initially
     loadBatched(0, Math.min(EAGER_PROBE_COUNT, clipSets.length))
     return () => { cancelled = true; cleanups.forEach((c) => c()) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- segmentSeconds/primaryCamera are stable once the profile loads
   }, [clipSets])
 
   // Lazily probe segment durations as user navigates near un-probed segments
@@ -424,7 +425,6 @@ export default function Viewer() {
       if (v) { masterVideoRef.current = v; return }
     }
     masterVideoRef.current = null
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentSet, currentSetIdx, primaryCamera])
 
   // Time update animation loop — only runs during playback, throttles React updates to ~15fps
