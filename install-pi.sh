@@ -353,65 +353,6 @@ if [ -x "$PATCHES_DST" ]; then
     "$PATCHES_DST" || warn "runtime-patches first-run reported issues — see output above"
 fi
 
-# ── Step 3e: ifupdown AP resurrector (away_mode + archiveloop coexistence) ──
-# archiveloop's wifi_cycle() tears down ap0 every ~5 min to free the radio for
-# wlan0 to scan/reconnect (single-radio chipset — STA scans need exclusive
-# channel access). On NetworkManager systems, /etc/NetworkManager/dispatcher.d/
-# 10-dashusb-ap re-runs `nmcli con up DASHUSB_AP` when wlan0 comes back.
-# On ifupdown systems (DietPi/Armbian) there's no equivalent hook, so once
-# archiveloop deletes ap0 the AP stays dead until reboot. This watcher is the
-# ifupdown counterpart: re-up via `ifup ap0` when ap0 is missing OR exists
-# but hostapd died. Self-gates on /mutable/sentryusb_away_mode.json (Away Mode
-# active) and on the /etc/network/interfaces.d/dashusb-ap config existing,
-# so the unit is a no-op on NM systems and when Away Mode is off.
-cat > /usr/local/bin/dashusb-ap-resurrect <<'RESURRECT'
-#!/bin/bash
-# ifupdown counterpart to /etc/NetworkManager/dispatcher.d/10-dashusb-ap:
-# bring ap0 back when archiveloop's wifi_cycle tears it down mid-session.
-while true; do
-  if systemctl is-active --quiet NetworkManager.service; then
-    sleep 30; continue
-  fi
-  if [ ! -f /etc/network/interfaces.d/dashusb-ap ]; then
-    sleep 30; continue
-  fi
-  if [ -f /mutable/sentryusb_away_mode.json ] \
-     && ip link show wlan0 2>/dev/null | grep -q 'state UP'; then
-    if ! ip -o link show ap0 >/dev/null 2>&1; then
-      logger -t dashusb-ap-resurrect "ap0 missing — ifup ap0"
-      ifdown ap0 2>/dev/null
-      ifup ap0 2>&1 | logger -t dashusb-ap-resurrect
-    elif ! pgrep -f hostapd.conf >/dev/null 2>&1; then
-      logger -t dashusb-ap-resurrect "ap0 up but hostapd dead — bounce"
-      ifdown ap0 2>/dev/null
-      iw dev ap0 del 2>/dev/null
-      ifup ap0 2>&1 | logger -t dashusb-ap-resurrect
-    fi
-  fi
-  sleep 5
-done
-RESURRECT
-chmod +x /usr/local/bin/dashusb-ap-resurrect
-
-cat > /etc/systemd/system/dashusb-ap-resurrect.service <<'UNIT'
-[Unit]
-Description=DashUSB: re-up ap0 after archiveloop wifi_cycle (ifupdown only)
-After=network.target dashusb.service
-Wants=dashusb.service
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/dashusb-ap-resurrect
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-systemctl daemon-reload >/dev/null 2>&1 || true
-systemctl enable --now dashusb-ap-resurrect.service >/dev/null 2>&1 || true
-ok "Installed dashusb-ap-resurrect.service (ifupdown AP wifi_cycle resilience)"
-
 # ── Step 3f: Rock Pi 4C+ (RK3399 / dwc3) hardware setup ────────────────────
 # A NO-OP on Raspberry Pi and every non-4C+ board (detection-gated). On a Rock
 # Pi 4C+ a generic install leaves three things broken, all fixed here so SC works

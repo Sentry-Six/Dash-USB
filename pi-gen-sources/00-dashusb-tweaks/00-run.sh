@@ -161,7 +161,7 @@ RestartSec=5
 # flooded with framework-level logs that nobody reads. Result: less
 # write IO to the SD card, smaller journal footprint, less per-log
 # CPU on Pi Zero 2 W.
-Environment=RUST_LOG=dashusb=info,sentryusb_api=info,sentryusb_drives=info,sentryusb_cloud_uploader=info,sentryusb_setup=info,sentryusb_gadget=info,sentryusb_notify=info,sentryusb_ws=info,sentryusb_cloud_crypto=info,tower_http=warn,warn
+Environment=RUST_LOG=dashusb=info,sentryusb_api=info,sentryusb_setup=info,sentryusb_gadget=info,sentryusb_notify=info,sentryusb_ws=info,sentryusb_vehicle_profile=info,tower_http=warn,warn
 # Cap glibc malloc arenas to 2. Default on multicore ARM is 8× nproc
 # arenas, each holding a fragmented heap fork that the kernel never
 # reclaims. Steady-state RSS on Pi-class hardware drops ~40-50% with

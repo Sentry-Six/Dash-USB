@@ -147,7 +147,7 @@ pub async fn install_runtime_scripts(emitter: &crate::SetupEmitter) -> Result<bo
         // Archive flow — these are the universal scripts that don't depend
         // on which archive system the user picked. The per-system variants
         // (archive-clips.sh, archive-is-reachable.sh, connect-archive.sh,
-        // disconnect-archive.sh, copy-music.sh, verify-and-configure-
+        // disconnect-archive.sh, archive-clips.sh and friends —
         // archive.sh) are installed by `archive::install_archive_scripts`
         // based on ARCHIVE_SYSTEM, since each system has its own copy.
         ("archiveloop", ARCHIVELOOP),

@@ -821,7 +821,7 @@ fi
     Ok(())
 }
 
-/// Ensure cmdline.txt has `modules-load=dwc2,g_ether`. Returns true if a change
+/// Ensure cmdline.txt loads the dwc2 UDC at boot. Returns true if a change
 /// was made (caller should reboot).
 async fn fix_cmdline_modules(env: &SetupEnv, emitter: &SetupEmitter) -> Result<bool> {
     let cmdline_path = match &env.cmdline_path {
@@ -830,7 +830,7 @@ async fn fix_cmdline_modules(env: &SetupEnv, emitter: &SetupEmitter) -> Result<b
     };
 
     let content = std::fs::read_to_string(&cmdline_path)?;
-    if content.contains("dwc2") && content.contains("g_ether") {
+    if content.contains("modules-load=dwc2") || content.contains("dwc2") {
         return Ok(false);
     }
 
@@ -844,9 +844,12 @@ async fn fix_cmdline_modules(env: &SetupEnv, emitter: &SetupEmitter) -> Result<b
         new_content
     };
 
-    let final_content = format!("{} modules-load=dwc2,g_ether\n", new_content.trim());
+    // dwc2 only — g_ether was the legacy TeslaUSB USB-ethernet debug
+    // gadget; loading a competing gadget function at boot fights the
+    // configfs mass-storage gadget the daemon manages.
+    let final_content = format!("{} modules-load=dwc2\n", new_content.trim());
     std::fs::write(&cmdline_path, final_content)?;
-    emitter.progress("Updated cmdline.txt with modules-load=dwc2,g_ether");
+    emitter.progress("Updated cmdline.txt with modules-load=dwc2");
     Ok(true)
 }
 
@@ -1016,7 +1019,6 @@ async fn initialize_drive_directories() -> Result<()> {
     let cam_dirs: &[&str] = &[recording_root.as_str()];
     let drives: &[(&str, &[&str])] = &[
         ("/mnt/cam", cam_dirs),
-        ("/mnt/music", &[]),
     ];
 
     for (mnt, dirs) in drives {

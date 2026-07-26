@@ -516,7 +516,7 @@ pub async fn install_required_packages(emitter: &SetupEmitter) -> Result<bool> {
     // this every archive cycle exits 127 from the reachability probe
     // and archiveloop is permanently stuck on "Waiting for archive to
     // be reachable..." — clips never sync. The bash flow
-    // installed it inside `verify-and-configure-archive.sh`, which is
+    // installed it inside the legacy bash archive-verify script, which is
     // no longer executed in the Rust port.
     let packages: &[(&str, &str)] = &[
         ("dos2unix", "dos2unix"),
@@ -524,7 +524,6 @@ pub async fn install_required_packages(emitter: &SetupEmitter) -> Result<bool> {
         ("fdisk", "fdisk"),
         ("curl", "curl"),
         ("rsync", "rsync"),
-        ("jq", "jq"),
         ("ntpdig", "ntpsec-ntpdig"),
         ("nc", "netcat-openbsd"),
     ];

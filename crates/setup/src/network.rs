@@ -105,9 +105,6 @@ pub async fn configure_ap(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> 
 /// Away Mode session is running so re-running setup doesn't kill the AP the
 /// user is connected through.
 async fn teardown_ap_scaffolding() {
-    if Path::new("/mutable/sentryusb_away_mode.json").exists() {
-        return;
-    }
     let _ = sentryusb_shell::run("nmcli", &["con", "down", "DASHUSB_AP"]).await;
     let _ = sentryusb_shell::run("iw", &["dev", "ap0", "del"]).await;
 }
@@ -131,11 +128,6 @@ pub async fn deconfigure_ap(emitter: &SetupEmitter) -> Result<()> {
     emitter.begin_phase("wifi_ap", "WiFi access point");
     emitter.progress("Removing WiFi access point configuration");
 
-    // End any Away Mode session: with the profile gone the flag file would
-    // only make the dispatcher and archiveloop chase an AP that no longer
-    // exists.
-    let _ = std::fs::remove_file("/mutable/sentryusb_away_mode.json");
-    let _ = std::fs::remove_file("/mutable/sentryusb_away_mode.json.tmp");
 
     let _ = sentryusb_shell::run("nmcli", &["con", "down", "DASHUSB_AP"]).await;
     let _ = sentryusb_shell::run("nmcli", &["con", "delete", "DASHUSB_AP"]).await;
@@ -207,8 +199,6 @@ async fn nm_add_ap(
 
     // Clean up stale if-up.d script from previous installs.
     let _ = std::fs::remove_file("/etc/network/if-up.d/dashusb-ap");
-
-    install_ap_dispatcher(&wlan).await?;
     Ok(())
 }
 
@@ -272,7 +262,6 @@ async fn nm_write_ap_file(
     let _ = sentryusb_shell::run("nmcli", &["con", "reload"]).await;
 
     let _ = std::fs::remove_file("/etc/network/if-up.d/dashusb-ap");
-    install_ap_dispatcher(&wlan).await?;
     Ok(())
 }
 
@@ -519,40 +508,6 @@ async fn find_wifi_device() -> Result<String> {
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
     bail!("Could not determine WiFi client device")
-}
-
-/// Install the NM dispatcher that activates the AP on Away Mode events.
-async fn install_ap_dispatcher(wlan: &str) -> Result<()> {
-    // Dispatcher only brings the AP up when the away-mode flag file exists.
-    // During normal operation the AP stays off so wlan0 can scan freely.
-    let script = format!(
-        "#!/bin/bash\n\
-         # Recreate ap0 virtual interface when the wifi client comes up,\n\
-         # but ONLY if Away Mode is active (flag file exists).\n\
-         # Created by DashUSB configure-ap.\n\
-         \n\
-         IFACE=\"$1\"\n\
-         ACTION=\"$2\"\n\
-         \n\
-         if [ \"$IFACE\" = \"{wlan}\" ] && [ \"$ACTION\" = \"up\" ]\n\
-         then\n\
-         \x20\x20if [ -f /mutable/sentryusb_away_mode.json ]; then\n\
-         \x20\x20\x20\x20if ! iw dev ap0 info &> /dev/null; then\n\
-         \x20\x20\x20\x20\x20\x20iw dev {wlan} interface add ap0 type __ap || true\n\
-         \x20\x20\x20\x20fi\n\
-         \x20\x20\x20\x20iw {wlan} set power_save off 2>/dev/null || true\n\
-         \x20\x20\x20\x20iw ap0 set power_save off 2>/dev/null || true\n\
-         \x20\x20\x20\x20nmcli con up DASHUSB_AP 2>/dev/null || true\n\
-         \x20\x20fi\n\
-         fi\n"
-    );
-
-    let dispatcher_dir = "/etc/NetworkManager/dispatcher.d";
-    std::fs::create_dir_all(dispatcher_dir)?;
-    let path = format!("{}/10-dashusb-ap", dispatcher_dir);
-    std::fs::write(&path, script)?;
-    let _ = sentryusb_shell::run("chmod", &["755", &path]).await;
-    Ok(())
 }
 
 fn append_unless_contains(path: &str, needle: &str, text: &str) -> Result<()> {

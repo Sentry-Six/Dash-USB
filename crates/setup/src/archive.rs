@@ -223,31 +223,26 @@ const CIFS_ARCHIVE_CLIPS: &str = include_str!("../../../run/cifs_archive/archive
 const CIFS_ARCHIVE_IS_REACHABLE: &str = include_str!("../../../run/cifs_archive/archive-is-reachable.sh");
 const CIFS_CONNECT_ARCHIVE: &str = include_str!("../../../run/cifs_archive/connect-archive.sh");
 const CIFS_DISCONNECT_ARCHIVE: &str = include_str!("../../../run/cifs_archive/disconnect-archive.sh");
-const CIFS_VERIFY_CONFIGURE: &str = include_str!("../../../run/cifs_archive/verify-and-configure-archive.sh");
 
 const NFS_ARCHIVE_CLIPS: &str = include_str!("../../../run/nfs_archive/archive-clips.sh");
 const NFS_ARCHIVE_IS_REACHABLE: &str = include_str!("../../../run/nfs_archive/archive-is-reachable.sh");
 const NFS_CONNECT_ARCHIVE: &str = include_str!("../../../run/nfs_archive/connect-archive.sh");
 const NFS_DISCONNECT_ARCHIVE: &str = include_str!("../../../run/nfs_archive/disconnect-archive.sh");
-const NFS_VERIFY_CONFIGURE: &str = include_str!("../../../run/nfs_archive/verify-and-configure-archive.sh");
 
 const RSYNC_ARCHIVE_CLIPS: &str = include_str!("../../../run/rsync_archive/archive-clips.sh");
 const RSYNC_ARCHIVE_IS_REACHABLE: &str = include_str!("../../../run/rsync_archive/archive-is-reachable.sh");
 const RSYNC_CONNECT_ARCHIVE: &str = include_str!("../../../run/rsync_archive/connect-archive.sh");
 const RSYNC_DISCONNECT_ARCHIVE: &str = include_str!("../../../run/rsync_archive/disconnect-archive.sh");
-const RSYNC_VERIFY_CONFIGURE: &str = include_str!("../../../run/rsync_archive/verify-and-configure-archive.sh");
 
 const RCLONE_ARCHIVE_CLIPS: &str = include_str!("../../../run/rclone_archive/archive-clips.sh");
 const RCLONE_ARCHIVE_IS_REACHABLE: &str = include_str!("../../../run/rclone_archive/archive-is-reachable.sh");
 const RCLONE_CONNECT_ARCHIVE: &str = include_str!("../../../run/rclone_archive/connect-archive.sh");
 const RCLONE_DISCONNECT_ARCHIVE: &str = include_str!("../../../run/rclone_archive/disconnect-archive.sh");
-const RCLONE_VERIFY_CONFIGURE: &str = include_str!("../../../run/rclone_archive/verify-and-configure-archive.sh");
 
 const NONE_ARCHIVE_CLIPS: &str = include_str!("../../../run/none_archive/archive-clips.sh");
 const NONE_ARCHIVE_IS_REACHABLE: &str = include_str!("../../../run/none_archive/archive-is-reachable.sh");
 const NONE_CONNECT_ARCHIVE: &str = include_str!("../../../run/none_archive/connect-archive.sh");
 const NONE_DISCONNECT_ARCHIVE: &str = include_str!("../../../run/none_archive/disconnect-archive.sh");
-const NONE_VERIFY_CONFIGURE: &str = include_str!("../../../run/none_archive/verify-and-configure-archive.sh");
 
 /// Drop the per-archive-system bash helpers into /root/bin/ with mode 0755.
 /// Idempotent — overwriting existing files is fine, and a stale entry from
@@ -261,35 +256,30 @@ fn install_archive_scripts(system: ArchiveSystem, emitter: &SetupEmitter) -> Res
             ("archive-is-reachable.sh", CIFS_ARCHIVE_IS_REACHABLE),
             ("connect-archive.sh", CIFS_CONNECT_ARCHIVE),
             ("disconnect-archive.sh", CIFS_DISCONNECT_ARCHIVE),
-            ("verify-and-configure-archive.sh", CIFS_VERIFY_CONFIGURE),
         ],
         ArchiveSystem::Nfs => &[
             ("archive-clips.sh", NFS_ARCHIVE_CLIPS),
             ("archive-is-reachable.sh", NFS_ARCHIVE_IS_REACHABLE),
             ("connect-archive.sh", NFS_CONNECT_ARCHIVE),
             ("disconnect-archive.sh", NFS_DISCONNECT_ARCHIVE),
-            ("verify-and-configure-archive.sh", NFS_VERIFY_CONFIGURE),
         ],
         ArchiveSystem::Rsync => &[
             ("archive-clips.sh", RSYNC_ARCHIVE_CLIPS),
             ("archive-is-reachable.sh", RSYNC_ARCHIVE_IS_REACHABLE),
             ("connect-archive.sh", RSYNC_CONNECT_ARCHIVE),
             ("disconnect-archive.sh", RSYNC_DISCONNECT_ARCHIVE),
-            ("verify-and-configure-archive.sh", RSYNC_VERIFY_CONFIGURE),
         ],
         ArchiveSystem::Rclone => &[
             ("archive-clips.sh", RCLONE_ARCHIVE_CLIPS),
             ("archive-is-reachable.sh", RCLONE_ARCHIVE_IS_REACHABLE),
             ("connect-archive.sh", RCLONE_CONNECT_ARCHIVE),
             ("disconnect-archive.sh", RCLONE_DISCONNECT_ARCHIVE),
-            ("verify-and-configure-archive.sh", RCLONE_VERIFY_CONFIGURE),
         ],
         ArchiveSystem::None => &[
             ("archive-clips.sh", NONE_ARCHIVE_CLIPS),
             ("archive-is-reachable.sh", NONE_ARCHIVE_IS_REACHABLE),
             ("connect-archive.sh", NONE_CONNECT_ARCHIVE),
             ("disconnect-archive.sh", NONE_DISCONNECT_ARCHIVE),
-            ("verify-and-configure-archive.sh", NONE_VERIFY_CONFIGURE),
         ],
     };
 
@@ -398,8 +388,8 @@ async fn configure_cifs_mount(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
 
     // Credentials live in a 0600 file referenced by fstab so the
     // password doesn't leak into the world-readable fstab itself.
-    // Matches `/root/.teslaCamArchiveCredentials` from the bash flow.
-    let creds_path = "/root/.teslaCamArchiveCredentials";
+    // Matches `/root/.dashusbArchiveCredentials` from the bash flow.
+    let creds_path = "/root/.dashusbArchiveCredentials";
     let mut creds = format!("username={}\npassword={}\n", user, pass);
     if !domain.is_empty() {
         creds.push_str(&format!("domain={}\n", domain));

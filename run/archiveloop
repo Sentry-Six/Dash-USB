@@ -7,7 +7,6 @@ then
 fi
 
 # Unload the module that was loaded by cmdline.txt
-modprobe -r g_ether
 
 export LOG_FILE=/mutable/archiveloop.log
 
