@@ -2,7 +2,7 @@
 # Package/crate name stays `sentryusb` for upstream merge-friendliness;
 # the shipped binary is renamed below.
 name = "sentryusb"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 
 [dependencies]
