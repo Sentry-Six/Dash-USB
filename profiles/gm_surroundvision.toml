@@ -9,10 +9,10 @@ display_name = "GM Surround Vision"
 brand = "GM"
 
 [recording]
-# Path inside the virtual drive the car records to. The car is an
-# Android Automotive system writing through standard external-storage
-# paths; bench testing must confirm whether the car creates this tree
-# on a blank drive or expects it to exist.
+# Path inside the virtual drive the car records to. Confirmed on a
+# 2026 model (tester, 2026-07): the car auto-creates this whole tree
+# on a blank FAT32 drive — no in-car format step — and doesn't care
+# about the volume label (recorded onto a factory "SANDISK USB" label).
 root = "Android/media/com.gm.ultifi.gmconnectedcameraservice/Recordings/SurroundVisionRecorder"
 # Segment filenames: FRONT_2026_07_17_T_19_34_53.mp4
 filename_regex = '^(?P<camera>FRONT|LEFT|RIGHT|REAR|INTERIOR)_(?P<y>\d{4})_(?P<mo>\d{2})_(?P<d>\d{2})_T_(?P<h>\d{2})_(?P<mi>\d{2})_(?P<s>\d{2})\.mp4$'

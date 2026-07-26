@@ -1008,10 +1008,10 @@ async fn update_image_fstab_entries() -> Result<()> {
 async fn initialize_drive_directories() -> Result<()> {
     let _ = sentryusb_gadget::disable();
 
-    // Pre-create the vehicle profile's recording tree on the cam drive
-    // so the car can start recording even if its firmware doesn't create
-    // the folder structure on a blank drive itself (unverified on GM —
-    // creating it up front is harmless either way).
+    // Pre-create the vehicle profile's recording tree on the cam drive.
+    // GM firmware is confirmed to create the tree on a blank drive
+    // itself; seeding it anyway is harmless insurance and gives the
+    // snapshot walker a stable root from the first boot.
     let recording_root = sentryusb_vehicle_profile::Profile::active().recording.root.clone();
     let cam_dirs: &[&str] = &[recording_root.as_str()];
     let drives: &[(&str, &[&str])] = &[
