@@ -235,7 +235,7 @@ jobs:
         # corruption before the much slower cargo build step.
         run: cargo fetch --target ${{ matrix.target }}
 
-      - name: Build release binaries (dashusb + telemetry sampler)
+      - name: Build release binaries (dashusb)
         # RUSTFLAGS overrides the per-target rustflags in .cargo/config.toml
         # so each aarch64 matrix entry produces a binary tuned to its
         # specific Cortex-A microarchitecture.
