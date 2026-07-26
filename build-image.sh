@@ -116,7 +116,15 @@ elif command -v cross &>/dev/null && command -v node &>/dev/null; then
         (
             cd "$SCRIPT_DIR"
             cargo clean --release --target "$RUST_TARGET" -p sentryusb 2>/dev/null || true
-            RUSTFLAGS="-C target-cpu=${cpu}" cross build --release --target "$RUST_TARGET" -p sentryusb
+            # a53/a72 (BCM2710/2711) lack the ARMv8 crypto extension; LLVM's
+            # CPU defs assume it, and RustCrypto skips runtime detection when
+            # the feature is compile-time on — baked-in AES/SHA SIGILLs on
+            # those boards. Mirror build.yml: strip crypto except on a76.
+            case "$cpu" in
+                cortex-a76) FEATURES="" ;;
+                *)          FEATURES=" -C target-feature=-aes,-sha2" ;;
+            esac
+            RUSTFLAGS="-C target-cpu=${cpu}${FEATURES}" cross build --release --target "$RUST_TARGET" -p sentryusb
         )
         STASH="/tmp/dashusb-image-build/${sfx}"
         mkdir -p "$STASH"

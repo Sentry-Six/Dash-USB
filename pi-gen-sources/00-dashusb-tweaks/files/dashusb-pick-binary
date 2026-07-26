@@ -127,6 +127,10 @@ fi
 # half-written link.
 ln -sfn "$PICKED_PATH" "$CURRENT_LINK"
 
+# The /root/bin shims installed by setup exec bare `dashusb`; keep a
+# stable PATH entry pointed at the picked variant.
+ln -sfn "$CURRENT_LINK" /usr/local/bin/dashusb 2>/dev/null || true
+
 # Record what this CPU NEEDS (the detected variant) — NOT what we ended
 # up running. The fallback pick above reflects what happened to be on
 # disk, and recording it poisons every downstream consumer that trusts

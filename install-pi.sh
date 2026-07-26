@@ -236,6 +236,11 @@ if curl -fsSL "$BLE_REPO_URL/dashusb-ble.py" -o "$BLE_INSTALL_PATH" 2>/dev/null;
     curl -fsSL "$BLE_REPO_URL/com.dashusb.ble.conf" -o /etc/dbus-1/system.d/com.dashusb.ble.conf 2>/dev/null || true
 
     apt-get install -y python3-dbus python3-gi bluez >/dev/null 2>&1 || warn "BLE daemon apt deps install failed — the daemon may not start"
+    # Pi-OS extras the unit leans on (rfkill in ExecStartPre; pi-bluetooth
+    # wires the UART firmware). Best-effort: absent on non-Pi distros,
+    # usually preinstalled on Pi OS.
+    apt-get install -y rfkill >/dev/null 2>&1 || true
+    apt-get install -y pi-bluetooth >/dev/null 2>&1 || true
     systemctl daemon-reload
     systemctl enable dashusb-ble 2>/dev/null || true
     # Reload (SIGHUP) — NOT restart. Restarting dbus on Pi OS kills logind,
@@ -537,6 +542,21 @@ if is_known_broken_ble_chip; then
         ok "BLE legacy-advertising helper installed (script + service + hci0 udev rule)"
     fi
 fi
+
+# ── Step 3z: clean up a previous Sentry USB (Tesla) install ─────────
+# Installing Dash USB over a repurposed Tesla Pi must not leave the old
+# product's services fighting ours. Idempotent; silent on fresh systems.
+for unit in sentryusb sentryusb-archive sentryusb-ble sentryusb-telemetry sentryusb-ble-adv; do
+    systemctl disable --now "$unit" >/dev/null 2>&1 || true
+    rm -f "/etc/systemd/system/${unit}.service" "/lib/systemd/system/${unit}.service"
+done
+rm -f /root/bin/sentryusb* /root/bin/awake_start /root/bin/awake_stop \
+      /root/bin/post-archive-process.sh /root/bin/copy-music.sh \
+      /usr/local/bin/sentryusb* /etc/dbus-1/system.d/com.sentryusb.ble.conf \
+      /etc/udev/rules.d/99-sentryusb-ble-hci.rules \
+      /usr/local/bin/dashusb-ap-resurrect /etc/systemd/system/dashusb-ap-resurrect.service
+rm -rf /opt/sentryusb /root/.ble
+systemctl daemon-reload >/dev/null 2>&1 || true
 
 # ── Step 4: Sample Config ───────────────────────────────────────────
 

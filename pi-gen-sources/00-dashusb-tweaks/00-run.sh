@@ -141,6 +141,24 @@ else
         -o "${BLE_SERVICE}" 2>/dev/null || echo "WARNING: Could not fetch BLE service file"
 fi
 
+# The daemon the unit executes, and its dbus policy — without these the
+# enabled service just crash-loops and phone provisioning is dead on a
+# fresh image (no Ethernet fallback on a Zero 2 W).
+mkdir -p "${ROOTFS_DIR}/root/bin" "${ROOTFS_DIR}/etc/dbus-1/system.d"
+for src_dir in files ../../server/ble; do
+    [ -f "${src_dir}/dashusb-ble.py" ] && install -m 755 "${src_dir}/dashusb-ble.py" "${ROOTFS_DIR}/root/bin/dashusb-ble.py" && break
+done
+for src_dir in files ../../server/ble; do
+    [ -f "${src_dir}/com.dashusb.ble.conf" ] && install -m 644 "${src_dir}/com.dashusb.ble.conf" "${ROOTFS_DIR}/etc/dbus-1/system.d/com.dashusb.ble.conf" && break
+done
+
+# envsetup.sh — archiveloop sources /root/bin/envsetup.sh unconditionally;
+# the Rust setup installs it on wizard runs, but the image must carry it
+# so the archive service can start before/without a re-run.
+if [ -f "../../setup/pi/envsetup.sh" ]; then
+    install -m 755 "../../setup/pi/envsetup.sh" "${ROOTFS_DIR}/root/bin/envsetup.sh"
+fi
+
 # ── Install systemd service for the web UI ──
 cat > "${ROOTFS_DIR}/lib/systemd/system/dashusb.service" << 'SERVICEEOF'
 [Unit]

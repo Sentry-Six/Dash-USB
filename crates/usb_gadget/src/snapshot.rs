@@ -32,7 +32,21 @@ const RECORDINGS: &str = "/mutable/Recordings";
 /// Returns `Some(name)` on a fresh snapshot, `None` when the new snapshot
 /// is byte-equivalent to the previous one (in which case we delete the
 /// reflink to avoid accumulating identical copies).
+/// Serializes snapshot creation, release, and free-space pruning —
+/// deleting a snapshot mid-`make_snapshot` (or two pruners racing)
+/// corrupts the TOC-diff chain.
+const SNAPSHOT_MGMT_LOCK: &str = "/tmp/dashusb_snapshot_mgmt.lock";
+
+/// Take the snapshot-management flock. Blocking; released on drop.
+pub(crate) fn acquire_mgmt_lock() -> std::io::Result<super::cycle_lock::CycleGuard> {
+    super::cycle_lock::acquire_path(
+        Path::new(SNAPSHOT_MGMT_LOCK),
+        Duration::from_secs(120),
+    )
+}
+
 pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
+    let _mgmt = acquire_mgmt_lock()?;
     let _ = std::fs::create_dir_all(SNAPSHOTS_DIR);
 
     if !Path::new(CAM_DISK).exists() {
@@ -76,11 +90,6 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
         if let Err(e) = fsck_snapshot(&snap_file).await {
             warn!("fsck on {} failed (non-fatal): {}", snap_file, e);
         }
-    }
-
-    // ── 32-bit Bookworm timestamp fix (bash 292-299) ──────────────────
-    if cfg!(target_pointer_width = "32") {
-        let _ = apply_bookworm_32bit_timestamp_fix(&snap_file).await;
     }
 
     // ── wait for autofs (bash 301-305) ────────────────────────────────
@@ -134,7 +143,10 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
     }
 
     // ── build /mutable/Recordings/... symlinks ────────────────────────
-    if let Err(e) = make_links_for_snapshot(&snap_mnt, &snap_mnt_link) {
+    // Previous snapshot's TOC feeds the newest-per-camera stability
+    // check (see make_links_in).
+    let prev_sizes = prev_toc.as_deref().map(parse_toc_sizes);
+    if let Err(e) = make_links_for_snapshot(&snap_mnt, &snap_mnt_link, prev_sizes.as_ref()) {
         warn!("make_links_for_snapshot failed: {}", e);
     }
 
@@ -172,6 +184,14 @@ fn normalize_snap_name(input: &str) -> Option<String> {
 /// Release (delete) a snapshot. Accepts a bare `snap-NNNNNN` name or a full
 /// path under the snapshots dir (see [`normalize_snap_name`]).
 pub async fn release_snapshot(snap_name: &str) -> Result<()> {
+    let _mgmt = acquire_mgmt_lock()?;
+    release_snapshot_unlocked(snap_name).await
+}
+
+/// [`release_snapshot`] body without the management lock — for callers
+/// that already hold it (the space manager); flock is per-fd, so
+/// re-acquiring from the same process would deadlock against ourselves.
+pub(crate) async fn release_snapshot_unlocked(snap_name: &str) -> Result<()> {
     let name = match normalize_snap_name(snap_name) {
         Some(n) => n,
         None => bail!("invalid snapshot name: {}", snap_name),
@@ -188,8 +208,41 @@ pub async fn release_snapshot(snap_name: &str) -> Result<()> {
     }
 
     std::fs::remove_dir_all(&snap_dir)?;
+    // Parity with the bash release flow: drop every /mutable/Recordings
+    // symlink that pointed into this snapshot, then prune date folders
+    // left empty. Without this, released snapshots leave broken links
+    // that clutter the Viewer/Samba and slowly eat mutable's inodes.
+    prune_links_into(&name);
     info!("Released snapshot: {}", name);
     Ok(())
+}
+
+/// Remove symlinks under `/mutable/Recordings` targeting `snap_name`,
+/// then delete any directories left empty.
+fn prune_links_into(snap_name: &str) {
+    let needle = format!("/{}/", snap_name);
+    fn walk(dir: &Path, needle: &str, depth: u8) {
+        if depth > 4 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(ftype) = entry.file_type() else { continue };
+            if ftype.is_symlink() {
+                if let Ok(target) = std::fs::read_link(&path) {
+                    if target.to_string_lossy().contains(needle) {
+                        let _ = std::fs::remove_file(&path);
+                    }
+                }
+            } else if ftype.is_dir() {
+                walk(&path, needle, depth + 1);
+                // Empty after pruning ⇒ remove (fails harmlessly if not).
+                let _ = std::fs::remove_dir(&path);
+            }
+        }
+    }
+    walk(Path::new(RECORDINGS), &needle, 0);
 }
 
 /// List all snapshots.
@@ -338,6 +391,20 @@ fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// Parse a TOC (`<size> <path>` per line, `find -printf '%s %P'`) into
+/// a relative-path → size map for the stability check.
+fn parse_toc_sizes(toc_path: &str) -> std::collections::HashMap<String, u64> {
+    let mut map = std::collections::HashMap::new();
+    for line in std::fs::read_to_string(toc_path).unwrap_or_default().lines() {
+        if let Some((size, path)) = line.split_once(' ') {
+            if let Ok(size) = size.parse::<u64>() {
+                map.insert(path.to_string(), size);
+            }
+        }
+    }
+    map
+}
+
 /// Returns true if `new_toc` has any line that isn't in `old_toc`.
 /// Mirrors the bash `diff old new | grep -qe '^>'` check at line 310.
 /// Lines are `<size> <path>`, compared whole: a clip that merely grew
@@ -361,41 +428,100 @@ fn toc_has_additions(old_toc: &str, new_toc: &str) -> Result<bool> {
 /// the scan). `final_mnt` is `<snapdir>/mnt` — the symlink to the autofs
 /// path. Per-clip symlinks are retargeted onto `final_mnt` so they keep
 /// working even if the autofs path is unmounted later.
-fn make_links_for_snapshot(cur_mnt: &str, final_mnt: &str) -> Result<()> {
+fn make_links_for_snapshot(
+    cur_mnt: &str,
+    final_mnt: &str,
+    prev_sizes: Option<&std::collections::HashMap<String, u64>>,
+) -> Result<()> {
     let profile = sentryusb_vehicle_profile::Profile::active();
-    make_links_in(Path::new(RECORDINGS), profile, cur_mnt, final_mnt)
+    make_links_in(Path::new(RECORDINGS), profile, cur_mnt, final_mnt, prev_sizes)
 }
 
 /// [`make_links_for_snapshot`] over an explicit recordings root (testable).
+///
+/// Guard against archiving a segment the car is still writing (which
+/// would poison the dedup ledger with a permanently truncated offsite
+/// copy): per camera, every clip EXCEPT the newest links immediately —
+/// the existence of a successor proves the predecessor closed, with no
+/// dependence on any clock. The newest clip per camera links only when
+/// its size is unchanged versus the previous snapshot's TOC (snapshots
+/// are ≥ the segment length apart by default, so equal size means
+/// closed). First snapshot (no previous TOC) holds the newest back one
+/// cycle — the snapshot itself still preserves the bytes.
 fn make_links_in(
     recordings: &Path,
     profile: &sentryusb_vehicle_profile::Profile,
     cur_mnt: &str,
     final_mnt: &str,
+    prev_sizes: Option<&std::collections::HashMap<String, u64>>,
 ) -> Result<()> {
     let rec_root = Path::new(cur_mnt).join(&profile.recording.root);
     info!("Making links for {}, retargeted to {}", cur_mnt, final_mnt);
+
+    let mut clips = Vec::new();
+    collect_clips_under(&rec_root, profile, cur_mnt, 0, &mut clips);
+
+    // Newest timestamp per camera in THIS snapshot.
+    let mut newest: std::collections::HashMap<&str, chrono::NaiveDateTime> =
+        std::collections::HashMap::new();
+    for (_, _, clip, _) in &clips {
+        newest
+            .entry(clip.camera.as_str())
+            .and_modify(|t| {
+                if clip.timestamp > *t {
+                    *t = clip.timestamp;
+                }
+            })
+            .or_insert(clip.timestamp);
+    }
+
     let mut made = 0usize;
-    link_clips_under(&rec_root, recordings, profile, cur_mnt, final_mnt, 0, &mut made);
-    info!("Made {} link(s) for {}", made, cur_mnt);
+    let mut held = 0usize;
+    for (path, name, clip, size) in &clips {
+        let is_newest = newest.get(clip.camera.as_str()) == Some(&clip.timestamp);
+        if is_newest {
+            // Relative path as the TOC records it (`find -printf '%P'`).
+            let rel = path
+                .strip_prefix(cur_mnt)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let stable = prev_sizes
+                .and_then(|m| m.get(&rel))
+                .is_some_and(|prev| *prev == *size);
+            if !stable {
+                held += 1;
+                continue;
+            }
+        }
+        let day_dir = recordings.join("Continuous").join(clip.date_str());
+        let _ = std::fs::create_dir_all(&day_dir);
+        let link = day_dir.join(name);
+        let _ = std::fs::remove_file(&link);
+        #[cfg(unix)]
+        {
+            let target = retarget_path(path, cur_mnt, final_mnt);
+            if std::os::unix::fs::symlink(&target, &link).is_ok() {
+                made += 1;
+            }
+        }
+    }
+    info!(
+        "Made {} link(s) for {} ({} newest-per-camera held until size-stable)",
+        made, cur_mnt, held
+    );
     Ok(())
 }
 
-/// Recursive walk (bounded depth — today's GM layout is flat, but a
-/// firmware that starts date-bucketing must not break capture). Every
-/// file whose name matches the profile's clip pattern gets one symlink
-/// under `<recordings>/Continuous/<YYYY-MM-DD>/`, dated from the
-/// filename timestamp — clip names carry no leading date on GM, so the
-/// parsed timestamp is the only reliable bucket key.
-#[cfg_attr(not(unix), allow(unused_variables))]
-fn link_clips_under(
+/// Recursive collection walk (bounded depth — today's GM layout is
+/// flat, but a firmware that starts date-bucketing must not break
+/// capture). Collects every file whose name matches the profile's clip
+/// pattern; linking decisions happen in [`make_links_in`].
+fn collect_clips_under(
     dir: &Path,
-    recordings: &Path,
     profile: &sentryusb_vehicle_profile::Profile,
     cur_mnt: &str,
-    final_mnt: &str,
     depth: u8,
-    made: &mut usize,
+    out: &mut Vec<(std::path::PathBuf, String, sentryusb_vehicle_profile::ClipInfo, u64)>,
 ) {
     if depth > 3 {
         return;
@@ -407,24 +533,15 @@ fn link_clips_under(
         let path = entry.path();
         let Ok(ftype) = entry.file_type() else { continue };
         if ftype.is_dir() {
-            link_clips_under(&path, recordings, profile, cur_mnt, final_mnt, depth + 1, made);
+            collect_clips_under(&path, profile, cur_mnt, depth + 1, out);
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_string();
         let Some(clip) = profile.parse_clip_filename(&name) else {
             continue;
         };
-        let day_dir = recordings.join("Continuous").join(clip.date_str());
-        let _ = std::fs::create_dir_all(&day_dir);
-        let link = day_dir.join(&name);
-        let _ = std::fs::remove_file(&link);
-        #[cfg(unix)]
-        {
-            let target = retarget_path(&path, cur_mnt, final_mnt);
-            if std::os::unix::fs::symlink(&target, &link).is_ok() {
-                *made += 1;
-            }
-        }
+        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        out.push((path, name, clip, size));
     }
 }
 
@@ -485,6 +602,7 @@ pub fn rebuild_all_snapshot_links() -> Result<()> {
         if let Err(e) = make_links_for_snapshot(
             &snap_mnt,
             &snap_mnt_link.to_string_lossy().to_string(),
+            None,
         ) {
             warn!("rebuild: make_links_for_snapshot {}: {}", snap_name, e);
             continue;
@@ -535,44 +653,6 @@ fn walk_for_symlink_pointing_at(dir: &Path, needle: &str, depth: u8) -> bool {
     false
 }
 
-/// On 32-bit Bookworm (Pi Zero/Zero2/Pi3 + 32-bit userspace) the exFAT
-/// driver mis-handles atimes past Y2038, leaving snapshots unfsck-able.
-/// Mount the snapshot RW, find files newer-than-2038, touch them to
-/// "now", then unmount. Bash lines 292-299.
-async fn apply_bookworm_32bit_timestamp_fix(snap_file: &str) -> Result<()> {
-    // Bookworm = Debian VERSION_ID="12".
-    let osr = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
-    let is_bookworm = osr
-        .lines()
-        .any(|l| l.trim() == "VERSION_ID=\"12\"" || l.trim() == "VERSION_ID=12");
-    if !is_bookworm {
-        return Ok(());
-    }
-
-    let tmpmnt = sentryusb_shell::run("mktemp", &["-d"]).await?.trim().to_string();
-    if tmpmnt.is_empty() {
-        return Ok(());
-    }
-    let mount_ok = sentryusb_shell::run(
-        "/root/bin/mountimage",
-        &[snap_file, &tmpmnt, "rw"],
-    )
-    .await
-    .is_ok();
-    if !mount_ok {
-        let _ = sentryusb_shell::run("rmdir", &[&tmpmnt]).await;
-        return Ok(());
-    }
-    let cmd = format!(
-        "find {} -newerat 20380101 -print0 | xargs -r -0 touch",
-        shell_escape(&tmpmnt)
-    );
-    let _ = sentryusb_shell::run("bash", &["-c", &cmd]).await;
-    let _ = sentryusb_shell::run("umount", &[&tmpmnt]).await;
-    let _ = sentryusb_shell::run("rmdir", &[&tmpmnt]).await;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -618,10 +698,10 @@ mod tests {
         assert_eq!(normalize_snap_name("/etc/../snap-1/.."), None);
     }
 
-    /// The profile-driven link farm: GM-named clips land in dated
-    /// Continuous buckets keyed by the filename timestamp, non-matching
-    /// files are ignored, and targets are retargeted onto the stable
-    /// `<snapdir>/mnt` path.
+    /// The profile-driven link farm with the closed-segment guard:
+    /// per camera, non-newest clips link immediately (a successor
+    /// proves the predecessor closed); the newest clip links only when
+    /// its size matches the previous snapshot's TOC.
     #[cfg(unix)]
     #[test]
     fn links_gm_clips_into_dated_continuous_buckets() {
@@ -633,12 +713,13 @@ mod tests {
             "Android/media/com.gm.ultifi.gmconnectedcameraservice/Recordings/SurroundVisionRecorder",
         );
         std::fs::create_dir_all(&rec).unwrap();
+        // FRONT has two segments (old + newest); LEFT has one (newest only).
         for name in [
             "FRONT_2026_07_17_T_19_34_53.mp4",
-            "REAR_2026_07_17_T_19_34_53.mp4",
+            "FRONT_2026_07_17_T_19_39_53.mp4",
             "LEFT_2026_07_18_T_08_00_00.mp4",
         ] {
-            std::fs::write(rec.join(name), b"x").unwrap();
+            std::fs::write(rec.join(name), b"xxxx").unwrap();
         }
         std::fs::write(rec.join("metadata.json"), b"x").unwrap();
 
@@ -647,29 +728,76 @@ mod tests {
             .unwrap();
         let recordings = tmp.path().join("Recordings");
         let cur = snap_mnt.to_string_lossy().to_string();
+
+        // No previous TOC: only the non-newest FRONT clip may link.
+        make_links_in(&recordings, &profile, &cur, "/backingfiles/snapshots/snap-000001/mnt", None)
+            .unwrap();
+        let day = recordings.join("Continuous/2026-07-17");
+        assert!(day.join("FRONT_2026_07_17_T_19_34_53.mp4").is_symlink());
+        assert!(
+            !day.join("FRONT_2026_07_17_T_19_39_53.mp4").exists(),
+            "newest FRONT must be held without a stability proof"
+        );
+        assert!(
+            !recordings.join("Continuous/2026-07-18/LEFT_2026_07_18_T_08_00_00.mp4").exists(),
+            "sole LEFT clip is newest — held"
+        );
+        assert!(!day.join("metadata.json").exists(), "non-clips must be skipped");
+        let target = std::fs::read_link(day.join("FRONT_2026_07_17_T_19_34_53.mp4")).unwrap();
+        assert!(
+            target.to_string_lossy().starts_with("/backingfiles/snapshots/snap-000001/mnt/"),
+            "target must be retargeted, got {target:?}",
+        );
+
+        // Previous TOC says the newest clips already had these sizes →
+        // stable → they link now.
+        let mut prev = std::collections::HashMap::new();
+        let root = "Android/media/com.gm.ultifi.gmconnectedcameraservice/Recordings/SurroundVisionRecorder";
+        prev.insert(format!("{root}/FRONT_2026_07_17_T_19_39_53.mp4"), 4u64);
+        prev.insert(format!("{root}/LEFT_2026_07_18_T_08_00_00.mp4"), 4u64);
         make_links_in(
             &recordings,
             &profile,
             &cur,
-            "/backingfiles/snapshots/snap-000001/mnt",
+            "/backingfiles/snapshots/snap-000002/mnt",
+            Some(&prev),
         )
         .unwrap();
-
-        let day = recordings.join("Continuous/2026-07-17");
-        for name in ["FRONT_2026_07_17_T_19_34_53.mp4", "REAR_2026_07_17_T_19_34_53.mp4"] {
-            assert!(day.join(name).is_symlink(), "{name} must be linked");
-        }
+        assert!(day.join("FRONT_2026_07_17_T_19_39_53.mp4").is_symlink());
         assert!(recordings
             .join("Continuous/2026-07-18/LEFT_2026_07_18_T_08_00_00.mp4")
             .is_symlink());
-        assert!(!day.join("metadata.json").exists(), "non-clips must be skipped");
 
-        let target = std::fs::read_link(day.join("FRONT_2026_07_17_T_19_34_53.mp4")).unwrap();
+        // A newest clip whose size GREW since the previous TOC stays held.
+        std::fs::write(rec.join("REAR_2026_07_17_T_19_39_53.mp4"), b"xxxxxxxx").unwrap();
+        let mut grew = std::collections::HashMap::new();
+        grew.insert(format!("{root}/REAR_2026_07_17_T_19_39_53.mp4"), 4u64);
+        make_links_in(
+            &recordings,
+            &profile,
+            &cur,
+            "/backingfiles/snapshots/snap-000003/mnt",
+            Some(&grew),
+        )
+        .unwrap();
         assert!(
-            target
-                .to_string_lossy()
-                .starts_with("/backingfiles/snapshots/snap-000001/mnt/"),
-            "target must be retargeted, got {target:?}",
+            !day.join("REAR_2026_07_17_T_19_39_53.mp4").exists(),
+            "size changed since last snapshot — still recording, must hold"
         );
+    }
+
+    /// TOC parsing: `<size> <path>` lines → map.
+    #[test]
+    fn parses_toc_sizes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let toc = tmp.path().join("snap.bin.toc");
+        std::fs::write(&toc, "111 a/b/FRONT_x.mp4
+not-a-line
+222 c.mp4
+").unwrap();
+        let m = parse_toc_sizes(&toc.to_string_lossy());
+        assert_eq!(m.get("a/b/FRONT_x.mp4"), Some(&111));
+        assert_eq!(m.get("c.mp4"), Some(&222));
+        assert_eq!(m.len(), 2);
     }
 }

@@ -212,8 +212,15 @@ if [ -f "$TMPDIR/server/ble/dashusb-ble.service" ]; then
   systemctl daemon-reload
 fi
 
+# ── Update the BLE dbus policy alongside the daemon ──
+if [ -f "$TMPDIR/server/ble/com.dashusb.ble.conf" ]; then
+  cp "$TMPDIR/server/ble/com.dashusb.ble.conf" "/etc/dbus-1/system.d/com.dashusb.ble.conf"
+fi
+
 # ── Install BLE Python dependencies if missing ──
-for pkg in python3-dbus python3-gi bluez; do
+# pi-bluetooth/rfkill are Pi-OS niceties: best-effort (absent on other
+# distros, usually preinstalled on Pi OS — cheap insurance either way).
+for pkg in python3-dbus python3-gi bluez pi-bluetooth rfkill; do
   if ! dpkg-query -W --showformat='${{db:Status-Status}}\n' "$pkg" 2>/dev/null | grep -q '^installed$'; then
     DEBIAN_FRONTEND=noninteractive apt-get -y install "$pkg" 2>/dev/null || true
   fi

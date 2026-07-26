@@ -14,6 +14,7 @@ interface VehicleProfile {
   cameras: { id: string; label: string; optional?: boolean }[]
   grid: string[][]
   filename_regex: string
+  segment_seconds: number
 }
 
 const CATEGORY = "Continuous"
@@ -135,6 +136,11 @@ export default function Viewer() {
   }, [profile, clipSets])
 
   const currentSet = clipSets[currentSetIdx] as ClipSet | undefined
+  // Placeholder duration for unprobed segments — the profile's segment
+  // length (300 s on GM), not Tesla's 60 s. Probed indices are tracked
+  // explicitly instead of the old `duration !== 60` sentinel.
+  const segmentSeconds = profile?.segment_seconds ?? 300
+  const probedRef = useRef<Set<number>>(new Set())
 
   const videoRefs = useRef<Map<string, HTMLVideoElement>>(new Map())
   const masterVideoRef = useRef<HTMLVideoElement | null>(null)
@@ -250,8 +256,9 @@ export default function Viewer() {
   // defer the rest until the user navigates near them
   const EAGER_PROBE_COUNT = 6
   useEffect(() => {
+    probedRef.current = new Set()
     if (!clipSets.length) { setSegmentDurations([]); return }
-    const durations = new Array(clipSets.length).fill(60)
+    const durations = new Array(clipSets.length).fill(segmentSeconds)
     setSegmentDurations([...durations])
 
     let cancelled = false
@@ -273,6 +280,7 @@ export default function Viewer() {
             v.onloadedmetadata = () => {
               if (!cancelled && Number.isFinite(v.duration)) {
                 durations[i] = v.duration
+                probedRef.current.add(i)
                 setSegmentDurations([...durations])
               }
               resolve()
@@ -300,8 +308,7 @@ export default function Viewer() {
     const cleanups: (() => void)[] = []
 
     for (let i = probeStart; i < probeEnd; i++) {
-      // Skip already-probed segments (non-default duration)
-      if (segmentDurations[i] !== 60) continue
+      if (probedRef.current.has(i)) continue
       const set = clipSets[i]
       const url = (primaryCamera && set.cameras[primaryCamera]) || Object.values(set.cameras)[0]
       if (!url) continue
@@ -310,6 +317,7 @@ export default function Viewer() {
       v.src = url
       v.onloadedmetadata = () => {
         if (!cancelled && Number.isFinite(v.duration)) {
+          probedRef.current.add(i)
           setSegmentDurations((prev) => {
             const next = [...prev]
             next[i] = v.duration

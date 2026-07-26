@@ -141,17 +141,18 @@ async fn trust_rsync_host_key(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
     Ok(())
 }
 
-/// Ensure rsync is installed. Silent when already present.
-async fn ensure_rsync(emitter: &SetupEmitter) -> Result<()> {
-    if sentryusb_shell::run("which", &["rsync"]).await.is_ok() {
+/// Ensure a tool is installed (binary probe, not dpkg — see
+/// install_required_packages for why). Silent when already present.
+async fn ensure_tool(binary: &str, package: &str, emitter: &SetupEmitter) -> Result<()> {
+    if sentryusb_shell::run("which", &[binary]).await.is_ok() {
         return Ok(());
     }
-    emitter.progress("Installing rsync...");
+    emitter.progress(&format!("Installing {}...", package));
     crate::apt::apt_install(
         |m| emitter.progress(m),
-        &["rsync"],
+        &[package],
         Duration::from_secs(600),
-    ).await.context("failed to install rsync")?;
+    ).await.with_context(|| format!("failed to install {}", package))?;
     Ok(())
 }
 
@@ -175,7 +176,12 @@ pub async fn configure_archive(env: &SetupEnv, emitter: &SetupEmitter) -> Result
     emitter.begin_phase("archive", "Archive configuration");
     emitter.progress(&format!("Configuring archive system: {:?}", archive_system));
 
-    ensure_rsync(emitter).await?;
+    ensure_tool("rsync", "rsync", emitter).await?;
+    // rclone talks to the remote itself — the wizard offers it, so make
+    // sure the binary actually exists before archiveloop needs it.
+    if archive_system == ArchiveSystem::Rclone {
+        ensure_tool("rclone", "rclone", emitter).await?;
+    }
 
     // Port of run/nfs_archive/verify-and-configure-archive.sh::configure_archive
     // and its cifs_archive counterpart. The bash flow always wrote an

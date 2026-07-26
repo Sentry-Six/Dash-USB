@@ -81,7 +81,10 @@ async fn available_space_kb() -> Result<u64> {
     Ok(avail.saturating_sub(padding))
 }
 
-/// Check if an existing image file matches the requested size (within 10MB).
+/// Check if an existing image file matches the requested size (within
+/// 10MB) AND carries a FAT32 partition. A repurposed Tesla install can
+/// hold a same-sized exFAT image (`USE_EXFAT` era) that GM cannot read
+/// — size alone must not let it survive.
 fn image_matches(file: &str, requested_kb: u64) -> bool {
     if requested_kb == 0 {
         return !Path::new(file).exists();
@@ -89,6 +92,19 @@ fn image_matches(file: &str, requested_kb: u64) -> bool {
     if let Ok(meta) = std::fs::metadata(file) {
         let current_kb = meta.len() / 1024;
         let diff = (current_kb as i64 - requested_kb as i64).unsigned_abs();
+        if diff >= 10240 {
+            return false;
+        }
+        // MBR partition type: 0x0c = FAT32 LBA (what we create);
+        // 0x07 = exFAT/NTFS (legacy USE_EXFAT images). Byte 450 is the
+        // type field of partition entry 1 (446 + 4).
+        if let Ok(mut f) = std::fs::File::open(file) {
+            use std::io::{Read, Seek, SeekFrom};
+            let mut b = [0u8; 1];
+            if f.seek(SeekFrom::Start(450)).is_ok() && f.read_exact(&mut b).is_ok() {
+                return b[0] == 0x0c;
+            }
+        }
         diff < 10240
     } else {
         false
@@ -252,7 +268,34 @@ pub async fn create_disk_images(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
     // breakdown. The wizard pre-flight surfaces the same calculation
     // before submit (see verify::verify_disk_space). Never auto-delete
     // snapshots as a side effect of a settings change.
-    let total_requested: u64 = sizes.iter().map(|(_, _, sz, _)| sz).sum();
+    //
+    // The image is SPARSE (truncate + mkfs.vfat): the car must SEE the
+    // full logical size, but on a pure-rolling profile (no persistent
+    // event tier) real allocation tops out near the rolling window, so
+    // requiring the full logical size physically free would wrongly
+    // reject e.g. a 128 GB card hosting a 64 GB virtual drive. Require
+    // instead: min(logical, max(half the logical size, 2x the rolling
+    // window for live + one COW generation)) + a snapshot reserve. The
+    // reserve stays OUTSIDE the cap — snapshots live next to the image
+    // on the same fs, so even a profile whose estimate hits the logical
+    // ceiling still needs headroom beyond it. The 0.5x-logical floor is
+    // deliberate: it pads for per-segment size variance and future
+    // profile drift beyond the 2x-window estimate.
+    let logical_requested: u64 = sizes.iter().map(|(_, _, sz, _)| sz).sum();
+    let total_requested: u64 = if profile.features.event_folders {
+        logical_requested
+    } else {
+        let seg = profile.recording.segment_seconds.max(1) as u64;
+        let window_secs = profile.recording.rolling_window_minutes as u64 * 60;
+        let rolling_bytes = profile.recording.approx_bytes_per_camera_segment
+            * profile.cameras.len() as u64
+            * window_secs.div_ceil(seg);
+        let rolling_kb = rolling_bytes / 1024;
+        const SNAPSHOT_RESERVE_KB: u64 = 15 * 1024 * 1024; // 15 GB
+        logical_requested
+            .min((logical_requested / 2).max(rolling_kb.saturating_mul(2)))
+            .saturating_add(SNAPSHOT_RESERVE_KB)
+    };
     // Credit back the allocation of images we're about to delete and
     // recreate (du reports referenced KB; reflink-shared snapshot blocks
     // stay allocated either way, so this only ever under-frees).

@@ -94,7 +94,8 @@ enum SnapshotAction {
 enum SpaceAction {
     /// Delete old snapshots until `/backingfiles` has enough free space.
     Manage {
-        /// Reserved for future compat (e.g. reserve size); ignored for now.
+        /// Reserve in bytes (archiveloop passes its 10GB+3% figure);
+        /// omitted = same formula computed here.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -402,12 +403,15 @@ async fn run_snapshot(action: SnapshotAction) -> i32 {
 
 async fn run_space(action: SpaceAction) -> i32 {
     match action {
-        SpaceAction::Manage { .. } => match sentryusb_gadget::space::manage_free_space().await {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("space manage: {}", e);
-                1
+        SpaceAction::Manage { args } => {
+            let reserve = args.first().and_then(|a| a.parse::<u64>().ok());
+            match sentryusb_gadget::space::manage_free_space(reserve).await {
+                Ok(()) => 0,
+                Err(e) => {
+                    eprintln!("space manage: {}", e);
+                    1
+                }
             }
-        },
+        }
     }
 }

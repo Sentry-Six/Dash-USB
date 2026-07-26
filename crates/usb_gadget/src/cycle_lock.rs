@@ -40,7 +40,7 @@ pub fn acquire(timeout: Duration) -> io::Result<CycleGuard> {
     acquire_path(Path::new(GADGET_CYCLE_LOCK_PATH), timeout)
 }
 
-fn acquire_path(path: &Path, timeout: Duration) -> io::Result<CycleGuard> {
+pub(crate) fn acquire_path(path: &Path, timeout: Duration) -> io::Result<CycleGuard> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)

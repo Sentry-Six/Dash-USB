@@ -60,8 +60,16 @@ pub fn mutable_dir() -> &'static str {
 /// Reads a dashusb.conf file and returns both active (exported) and
 /// commented-out variables.
 pub fn parse_file(path: &str) -> Result<(SetupConfig, SetupConfig)> {
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("failed to open config file: {}", path))?;
+    // A missing conf is a valid starting state (pi-gen images ship only
+    // dashusb.conf.sample; the wizard's first save creates the real file).
+    // Treat it as an empty template — every key lands via the append pass.
+    let content = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(e).with_context(|| format!("failed to open config file: {}", path))
+        }
+    };
 
     let mut active = SetupConfig::new();
     let mut commented = SetupConfig::new();
@@ -101,8 +109,16 @@ pub fn write_file(path: &str, new_config: &SetupConfig) -> Result<()> {
     if let Some((k, _)) = new_config.iter().find(|(_, v)| v.contains(['\n', '\r'])) {
         anyhow::bail!("refusing to write config: value for {:?} contains a newline", k);
     }
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("failed to open config file: {}", path))?;
+    // A missing conf is a valid starting state (pi-gen images ship only
+    // dashusb.conf.sample; the wizard's first save creates the real file).
+    // Treat it as an empty template — every key lands via the append pass.
+    let content = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(e).with_context(|| format!("failed to open config file: {}", path))
+        }
+    };
 
     let mut seen = HashMap::new();
     let mut output = Vec::new();
