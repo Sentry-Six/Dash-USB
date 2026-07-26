@@ -8,7 +8,7 @@ const sections = [
   },
   {
     title: "Storage",
-    fields: ["CAM_SIZE", "MUSIC_SIZE", "DATA_DRIVE"],
+    fields: ["CAM_SIZE", "DATA_DRIVE"],
   },
   {
     title: "Archive",

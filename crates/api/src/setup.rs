@@ -35,6 +35,11 @@ const SETUP_STARTED_PATHS: &[&str] = &[
 ];
 
 fn is_setup_finished() -> bool {
+    // Dev override for desktop UI work: pretend setup completed so the
+    // full app renders instead of the wizard (no Pi paths exist here).
+    if std::env::var_os("DASHUSB_SETUP_FINISHED").is_some_and(|v| v == "1") {
+        return true;
+    }
     SETUP_FINISHED_PATHS.iter().any(|p| std::path::Path::new(p).exists())
 }
 
@@ -556,7 +561,7 @@ pub async fn test_archive(
 
 /// POST /api/setup/preflight
 ///
-/// Body: JSON map of `*_SIZE` keys (CAM_SIZE, MUSIC_SIZE, etc.) as
+/// Body: JSON map of `*_SIZE` keys (CAM_SIZE) as
 /// human-readable size strings ("40G", "4GB", "100M").
 ///
 /// Returns whether the proposed sizes will fit on the backingfiles
@@ -572,12 +577,7 @@ pub async fn preflight(
     State(_s): State<AppState>,
     Json(body): Json<std::collections::HashMap<String, String>>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    const SIZE_KEYS: &[&str] = &[
-        "CAM_SIZE",
-        "MUSIC_SIZE",
-        "LIGHTSHOW_SIZE",
-        "BOOMBOX_SIZE",
-    ];
+    const SIZE_KEYS: &[&str] = &["CAM_SIZE"];
 
     let mut requested_kb: u64 = 0;
     let mut breakdown = serde_json::Map::new();

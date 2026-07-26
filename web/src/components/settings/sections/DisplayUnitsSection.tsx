@@ -5,14 +5,11 @@ import { useUnits } from "@/lib/units"
 import { cn } from "@/lib/utils"
 
 export function DisplayUnitsSection() {
-  // The Metric/Imperial pill is the source of truth: it sets the dashboard
-  // temperature (TEMPERATURE_UNIT) and the distance default together. The two
-  // toggles below are per-quantity overrides — each one opts a single readout
-  // OUT of the selected system, so its label always names the *opposite* unit
-  // (in Metric: "miles" / "°F"; in Imperial: "kilometres" / "°C"). Off =
-  // follow the pill; on = use the unit named in the label.
-  const { systemTempF, km, pressureBar, isMetric, setMetric, setSystemTempF, setKm, setPressureBar } =
-    useUnits()
+  // The Metric/Imperial pill sets the dashcam temperature unit
+  // (TEMPERATURE_UNIT). The toggle below opts the System tile's CPU
+  // readout OUT of the selected system, so its label always names the
+  // *opposite* unit. Off = follow the pill; on = use the labeled unit.
+  const { systemTempF, isMetric, setMetric, setSystemTempF } = useUnits()
 
   return (
     <PrefCard
@@ -63,18 +60,6 @@ export function DisplayUnitsSection() {
         onChange={(next) => setSystemTempF(isMetric ? next : !next)}
         label={isMetric ? "System temperatures in °F" : "System temperatures in °C"}
         sub="Pi CPU temperature on the System tile"
-      />
-      <Toggle
-        checked={isMetric ? !km : km}
-        onChange={(next) => setKm(isMetric ? !next : next)}
-        label={isMetric ? "Distance in miles" : "Distance in kilometres"}
-        sub="Drive distances, maps and stats"
-      />
-      <Toggle
-        checked={isMetric ? !pressureBar : pressureBar}
-        onChange={(next) => setPressureBar(isMetric ? !next : next)}
-        label={isMetric ? "Tire pressure in psi" : "Tire pressure in bar"}
-        sub="Tire-pressure history chart"
       />
     </PrefCard>
   )

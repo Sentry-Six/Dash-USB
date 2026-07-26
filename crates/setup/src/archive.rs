@@ -222,21 +222,18 @@ pub async fn configure_archive(env: &SetupEnv, emitter: &SetupEmitter) -> Result
 const CIFS_ARCHIVE_CLIPS: &str = include_str!("../../../run/cifs_archive/archive-clips.sh");
 const CIFS_ARCHIVE_IS_REACHABLE: &str = include_str!("../../../run/cifs_archive/archive-is-reachable.sh");
 const CIFS_CONNECT_ARCHIVE: &str = include_str!("../../../run/cifs_archive/connect-archive.sh");
-const CIFS_COPY_MUSIC: &str = include_str!("../../../run/cifs_archive/copy-music.sh");
 const CIFS_DISCONNECT_ARCHIVE: &str = include_str!("../../../run/cifs_archive/disconnect-archive.sh");
 const CIFS_VERIFY_CONFIGURE: &str = include_str!("../../../run/cifs_archive/verify-and-configure-archive.sh");
 
 const NFS_ARCHIVE_CLIPS: &str = include_str!("../../../run/nfs_archive/archive-clips.sh");
 const NFS_ARCHIVE_IS_REACHABLE: &str = include_str!("../../../run/nfs_archive/archive-is-reachable.sh");
 const NFS_CONNECT_ARCHIVE: &str = include_str!("../../../run/nfs_archive/connect-archive.sh");
-const NFS_COPY_MUSIC: &str = include_str!("../../../run/nfs_archive/copy-music.sh");
 const NFS_DISCONNECT_ARCHIVE: &str = include_str!("../../../run/nfs_archive/disconnect-archive.sh");
 const NFS_VERIFY_CONFIGURE: &str = include_str!("../../../run/nfs_archive/verify-and-configure-archive.sh");
 
 const RSYNC_ARCHIVE_CLIPS: &str = include_str!("../../../run/rsync_archive/archive-clips.sh");
 const RSYNC_ARCHIVE_IS_REACHABLE: &str = include_str!("../../../run/rsync_archive/archive-is-reachable.sh");
 const RSYNC_CONNECT_ARCHIVE: &str = include_str!("../../../run/rsync_archive/connect-archive.sh");
-const RSYNC_COPY_MUSIC: &str = include_str!("../../../run/rsync_archive/copy-music.sh");
 const RSYNC_DISCONNECT_ARCHIVE: &str = include_str!("../../../run/rsync_archive/disconnect-archive.sh");
 const RSYNC_VERIFY_CONFIGURE: &str = include_str!("../../../run/rsync_archive/verify-and-configure-archive.sh");
 
@@ -263,7 +260,6 @@ fn install_archive_scripts(system: ArchiveSystem, emitter: &SetupEmitter) -> Res
             ("archive-clips.sh", CIFS_ARCHIVE_CLIPS),
             ("archive-is-reachable.sh", CIFS_ARCHIVE_IS_REACHABLE),
             ("connect-archive.sh", CIFS_CONNECT_ARCHIVE),
-            ("copy-music.sh", CIFS_COPY_MUSIC),
             ("disconnect-archive.sh", CIFS_DISCONNECT_ARCHIVE),
             ("verify-and-configure-archive.sh", CIFS_VERIFY_CONFIGURE),
         ],
@@ -271,7 +267,6 @@ fn install_archive_scripts(system: ArchiveSystem, emitter: &SetupEmitter) -> Res
             ("archive-clips.sh", NFS_ARCHIVE_CLIPS),
             ("archive-is-reachable.sh", NFS_ARCHIVE_IS_REACHABLE),
             ("connect-archive.sh", NFS_CONNECT_ARCHIVE),
-            ("copy-music.sh", NFS_COPY_MUSIC),
             ("disconnect-archive.sh", NFS_DISCONNECT_ARCHIVE),
             ("verify-and-configure-archive.sh", NFS_VERIFY_CONFIGURE),
         ],
@@ -279,7 +274,6 @@ fn install_archive_scripts(system: ArchiveSystem, emitter: &SetupEmitter) -> Res
             ("archive-clips.sh", RSYNC_ARCHIVE_CLIPS),
             ("archive-is-reachable.sh", RSYNC_ARCHIVE_IS_REACHABLE),
             ("connect-archive.sh", RSYNC_CONNECT_ARCHIVE),
-            ("copy-music.sh", RSYNC_COPY_MUSIC),
             ("disconnect-archive.sh", RSYNC_DISCONNECT_ARCHIVE),
             ("verify-and-configure-archive.sh", RSYNC_VERIFY_CONFIGURE),
         ],
@@ -366,35 +360,6 @@ fn replace_fstab_entry(fstype: &str, mount_point: &str, new_line: &str) -> Resul
     Ok(())
 }
 
-/// Strip any prior entry for `mount_point` with filesystem type `fstype`
-/// from `/etc/fstab` without writing a replacement. Used when the wizard
-/// clears an optional share (e.g. MUSIC_SHARE_NAME) so the old line
-/// doesn't linger and confuse archiveloop on the next mount cycle.
-fn remove_fstab_entry(fstype: &str, mount_point: &str) -> Result<()> {
-    let _ = std::process::Command::new("mount")
-        .args(["/", "-o", "remount,rw"])
-        .output();
-
-    let existing = std::fs::read_to_string("/etc/fstab").unwrap_or_default();
-    let kept: Vec<String> = existing
-        .lines()
-        .filter(|l| {
-            let fields: Vec<&str> = l.split_whitespace().collect();
-            !(fields.len() >= 3 && fields[1] == mount_point && fields[2] == fstype)
-        })
-        .map(|s| s.to_string())
-        .collect();
-    if kept.len() == existing.lines().count() {
-        return Ok(());
-    }
-    let mut out = kept.join("\n");
-    if !out.ends_with('\n') {
-        out.push('\n');
-    }
-    std::fs::write("/etc/fstab", out).context("write /etc/fstab")?;
-    Ok(())
-}
-
 async fn configure_nfs_mount(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> {
     let server = env.get("ARCHIVE_SERVER", "");
     let share = env.get("SHARE_NAME", "");
@@ -415,20 +380,6 @@ async fn configure_nfs_mount(env: &SetupEnv, emitter: &SetupEmitter) -> Result<(
     replace_fstab_entry("nfs", "/mnt/archive", &line)?;
     emitter.progress("Added NFS mount to /etc/fstab");
 
-    // Optional read-only music share. archiveloop mounts /mnt/musicarchive
-    // from this entry and copy-music.sh rsyncs it into music_disk.bin;
-    // without the fstab line the mount retries and bails, so a configured
-    // MUSIC_SHARE_NAME would silently never sync.
-    let music_share = env.get("MUSIC_SHARE_NAME", "");
-    if music_share.is_empty() {
-        clear_music_archive_mount("nfs", emitter)?;
-        return Ok(());
-    }
-    std::fs::create_dir_all("/mnt/musicarchive").context("mkdir /mnt/musicarchive")?;
-    let music_line =
-        format!("{server}:{music_share} /mnt/musicarchive nfs ro,noauto,nolock,proto=tcp,vers=3 0 0");
-    replace_fstab_entry("nfs", "/mnt/musicarchive", &music_line)?;
-    emitter.progress("Added NFS music mount to /etc/fstab");
     Ok(())
 }
 
@@ -472,43 +423,6 @@ async fn configure_cifs_mount(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
     replace_fstab_entry("cifs", "/mnt/archive", &line)?;
     emitter.progress("Added CIFS mount to /etc/fstab");
 
-    // Optional music share — CIFS counterpart of the NFS music block
-    // above. archiveloop's `connect-archive.sh` mounts /mnt/musicarchive
-    // from this fstab entry and `copy-music.sh` rsyncs from there into
-    // music_disk.bin. `ro` because we only ever read the share; reuses
-    // the same credentials file as the cam share (matches the bash
-    // `cifs_archive/verify-and-configure-archive.sh` flow). Without
-    // this block, CIFS installs that set MUSIC_SHARE_NAME never get
-    // a fstab entry, /mnt/musicarchive is never created, and music
-    // sync silently never runs — only NFS users hit the working path.
-    let music_share = env.get("MUSIC_SHARE_NAME", "");
-    if !music_share.is_empty() {
-        std::fs::create_dir_all("/mnt/musicarchive").context("mkdir /mnt/musicarchive")?;
-        let music_escaped = music_share.replace(' ', "\\040");
-        let music_line = format!(
-            "//{}/{} /mnt/musicarchive cifs ro,noauto,credentials={},iocharset=utf8,file_mode=0777,dir_mode=0777,vers={} 0 0",
-            server, music_escaped, creds_path, vers
-        );
-        replace_fstab_entry("cifs", "/mnt/musicarchive", &music_line)?;
-        emitter.progress("Added CIFS music mount to /etc/fstab");
-    } else {
-        clear_music_archive_mount("cifs", emitter)?;
-    }
     Ok(())
 }
 
-/// Drop the /mnt/musicarchive fstab line of `fstype` (if any) and remove
-/// the mount-point directory. Called when MUSIC_SHARE_NAME is cleared so
-/// archiveloop stops trying to mount a share the user no longer wants.
-/// `rmdir` is intentional — refuses to remove a dir that's still mounted
-/// or has content, which is the safe behavior.
-fn clear_music_archive_mount(fstype: &str, emitter: &SetupEmitter) -> Result<()> {
-    let path = "/mnt/musicarchive";
-    remove_fstab_entry(fstype, path)?;
-    if std::path::Path::new(path).is_dir() {
-        if std::fs::remove_dir(path).is_ok() {
-            emitter.progress("Removed stale /mnt/musicarchive (MUSIC_SHARE_NAME unset)");
-        }
-    }
-    Ok(())
-}

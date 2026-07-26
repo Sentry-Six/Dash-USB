@@ -521,7 +521,7 @@ pub async fn install_required_packages(emitter: &SetupEmitter) -> Result<bool> {
     // alternative images (DietPi, Radxa Debian, etc.) don't, so without
     // this every archive cycle exits 127 from the reachability probe
     // and archiveloop is permanently stuck on "Waiting for archive to
-    // be reachable..." — clips and music never sync. The bash flow
+    // be reachable..." — clips never sync. The bash flow
     // installed it inside `verify-and-configure-archive.sh`, which is
     // no longer executed in the Rust port.
     let packages: &[(&str, &str)] = &[

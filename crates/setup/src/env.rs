@@ -211,9 +211,7 @@ fn migrate_legacy_config_keys(config: &mut std::collections::HashMap<String, Str
     const LEGACY_MAP: &[(&str, &str)] = &[
         ("archiveserver", "ARCHIVE_SERVER"),
         ("camsize", "CAM_SIZE"),
-        ("musicsize", "MUSIC_SIZE"),
         ("sharename", "SHARE_NAME"),
-        ("musicsharename", "MUSIC_SHARE_NAME"),
         ("shareuser", "SHARE_USER"),
         ("sharepassword", "SHARE_PASSWORD"),
         ("tesla_email", "TESLA_EMAIL"),

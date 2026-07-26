@@ -76,7 +76,6 @@ export interface ClipEntry {
 
 export interface StorageBreakdown {
   cam_size: number
-  music_size: number
   snapshots_size: number
   total_space: number
   free_space: number

@@ -27,7 +27,6 @@ const CFG: &str = "c";
 /// Disk images that can be exposed as USB mass storage LUNs.
 const DISK_IMAGES: &[(&str, &str)] = &[
     ("/backingfiles/cam_disk.bin", "CAM"),
-    ("/backingfiles/music_disk.bin", "MUSIC"),
 ];
 
 /// Find the configfs root mount point.

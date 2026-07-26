@@ -149,8 +149,6 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
         None => st.push(item("Backingfiles free space", "warn", Some("partition not mounted".to_string()))),
     }
     // Only nag about disks the user actually asked for. If MUSIC_SIZE=0
-    // (or unset) the user opted out of the music disk entirely — warning
-    // "music disk image missing" when they never configured it is just noise.
     let user_wants = |size_key: &str| -> bool {
         // "0", "0G", "0M", "0K", empty, unset → disabled. Any non-zero
         // numeric prefix → enabled. Strict-enough for health: the
@@ -170,7 +168,6 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
     let disks: &[(&str, &str, Option<&str>)] = &[
         // cam disk is always expected — hard fail if it's missing.
         ("/backingfiles/cam_disk.bin", "cam disk image", None),
-        ("/backingfiles/music_disk.bin", "music disk image", Some("MUSIC_SIZE")),
     ];
     for (img, label, size_key) in disks {
         // Optional disk the user didn't ask for → skip the check entirely.
@@ -512,7 +509,7 @@ const DIAGNOSTICS_SCRIPT: &str = r#"{
 
   echo "====== disk / images ======"
   df -h /dashusb/ / /backingfiles/ /mutable/ 2>/dev/null
-  for img in cam music; do
+  for img in cam; do
     f="/backingfiles/${img}_disk.bin"
     if [ -f "$f" ]; then
       echo "$img disk: $(du -h "$f" | cut -f1)"

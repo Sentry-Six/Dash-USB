@@ -31,4 +31,3 @@ function mount_archive_locked() {
 }
 
 mount_archive_locked "${ARCHIVE_MOUNT:-}"
-mount_if_set "${MUSIC_ARCHIVE_MOUNT:-}"

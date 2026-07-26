@@ -60,34 +60,6 @@ export function StorageStep({ data, onChange }: StepProps) {
           hint="GM requires a drive of at least 64 GB, so keep this at 64 or higher. Do NOT use your entire card — leave room for snapshots, which hold your archived footage."
           warning={camWarning}
         />
-        <SizeInput
-          label="Music"
-          field="MUSIC_SIZE"
-          data={data}
-          onChange={onChange}
-          defaultVal=""
-          hint="Optional. Leave empty for no music drive."
-        />
-        {(data.MUSIC_SIZE ?? "").replace(/[^0-9]/g, "") && (
-          <div className="rounded-lg border border-white/5 bg-white/[0.02] p-4">
-            <div className="mb-2">
-              <label className="text-sm font-medium text-slate-300">Music Share Name</label>
-              <span className="ml-2 text-xs text-slate-600">(optional)</span>
-            </div>
-            <input
-              type="text"
-              value={data.MUSIC_SHARE_NAME ?? ""}
-              onChange={(e) => onChange("MUSIC_SHARE_NAME", e.target.value)}
-              placeholder={(data.ARCHIVE_SYSTEM ?? "cifs") === "rsync" ? "/mnt/user/music" : "e.g. Music or Media/Music"}
-              className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-100 placeholder-slate-600 outline-none transition focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/25"
-            />
-            <p className="mt-1 text-xs text-slate-600">
-              {(data.ARCHIVE_SYSTEM ?? "cifs") === "rsync"
-                ? "The absolute path to your music folder on the rsync server (e.g. /mnt/user/music). Leave empty to skip music syncing."
-                : "The share name on your Archive Server where your music is stored. Leave empty to skip music syncing — the drive will be created but not auto-synced."}
-            </p>
-          </div>
-        )}
       </div>
 
       {/* Data Drive */}

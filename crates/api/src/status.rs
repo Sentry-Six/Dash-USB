@@ -446,7 +446,6 @@ async fn compute_network_info() -> CachedNetwork {
 #[derive(Serialize)]
 struct StorageBreakdown {
     cam_size: i64,
-    music_size: i64,
     snapshots_size: i64,
     total_space: i64,
     free_space: i64,
@@ -455,13 +454,9 @@ struct StorageBreakdown {
 pub async fn get_storage_breakdown(
     State(_state): State<AppState>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let (cam, music) = tokio::join!(
-        disk_usage("/backingfiles/cam_disk.bin"),
-        disk_usage("/backingfiles/music_disk.bin"),
-    );
+    let cam = disk_usage("/backingfiles/cam_disk.bin").await;
     let mut sb = StorageBreakdown {
         cam_size: cam,
-        music_size: music,
         snapshots_size: 0,
         total_space: 0,
         free_space: 0,
@@ -476,7 +471,7 @@ pub async fn get_storage_breakdown(
     }
 
     // Derive snapshot usage by subtraction (reflink clones make du unreliable)
-    let disk_images = sb.cam_size + sb.music_size;
+    let disk_images = sb.cam_size;
     let used = sb.total_space - sb.free_space;
     sb.snapshots_size = (used - disk_images).max(0);
 
@@ -496,7 +491,6 @@ pub async fn get_config(
 
     (StatusCode::OK, Json(serde_json::json!({
         "has_cam": has("/backingfiles/cam_disk.bin"),
-        "has_music": has("/backingfiles/music_disk.bin"),
     })))
 }
 

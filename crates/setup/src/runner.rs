@@ -977,9 +977,6 @@ async fn mount_partitions(emitter: &SetupEmitter) -> Result<()> {
 async fn update_image_fstab_entries() -> Result<()> {
     let images = [
         ("/backingfiles/cam_disk.bin", "/mnt/cam"),
-        ("/backingfiles/music_disk.bin", "/mnt/music"),
-        ("/backingfiles/lightshow_disk.bin", "/mnt/lightshow"),
-        ("/backingfiles/boombox_disk.bin", "/mnt/boombox"),
     ];
 
     let mut fstab = std::fs::read_to_string("/etc/fstab").unwrap_or_default();

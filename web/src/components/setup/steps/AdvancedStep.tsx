@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react"
-import { Cog, Thermometer, MapPin, Search, Battery, AlertTriangle, Ruler } from "lucide-react"
+import { Cog, Thermometer, Search, Battery, AlertTriangle, Ruler } from "lucide-react"
 import type { StepProps } from "../SetupWizard"
 import { SizeInput } from "../SizeInput"
 
@@ -311,12 +311,12 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
         </div>
         <div className="flex w-fit overflow-hidden rounded-lg border border-white/10">
           <button type="button"
-            onClick={() => { onChange("TEMPERATURE_UNIT", "C"); onChange("DRIVE_MAP_UNIT", "km"); onChange("PRESSURE_UNIT", "bar") }}
+            onClick={() => onChange("TEMPERATURE_UNIT", "C")}
             className={`px-4 py-1.5 text-xs font-medium transition-colors ${isMetric ? "bg-blue-500 text-white" : "text-slate-500 hover:text-slate-300"}`}>
             Metric
           </button>
           <button type="button"
-            onClick={() => { onChange("TEMPERATURE_UNIT", "F"); onChange("DRIVE_MAP_UNIT", "mi"); onChange("PRESSURE_UNIT", "psi") }}
+            onClick={() => onChange("TEMPERATURE_UNIT", "F")}
             className={`px-4 py-1.5 text-xs font-medium transition-colors ${!isMetric ? "bg-blue-500 text-white" : "text-slate-500 hover:text-slate-300"}`}>
             Imperial
           </button>
@@ -469,42 +469,7 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
             data={data} onChange={onChange} hint="Space-separated list of apt packages" />
           <Field label="CPU Governor" field="CPU_GOVERNOR" placeholder="conservative"
             data={data} onChange={onChange} hint="Leave empty for Dash USB defaults" />
-          <Field label="Dirty Background Bytes" field="DIRTY_BACKGROUND_BYTES" placeholder="65536"
-            data={data} onChange={onChange} hint="VM write-back tuning. Leave empty for defaults." />
         </div>
-      </div>
-
-      {/* Drive Map */}
-      <div>
-        <div className="mb-3 flex items-center gap-2">
-          <MapPin className="h-4 w-4 text-blue-400" />
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
-            Drive Map
-          </h3>
-        </div>
-        <p className="mb-3 text-xs text-slate-500">
-          Automatically extract GPS data from dashcam clips after archiving and build a map of all your drives.
-        </p>
-        <label className="flex cursor-pointer items-center gap-2">
-          <input type="checkbox" checked={(data.DRIVE_MAP_ENABLED ?? "true") === "true"}
-            onChange={(e) => onChange("DRIVE_MAP_ENABLED", e.target.checked ? "true" : "false")}
-            className="h-4 w-4 rounded border-white/20 bg-white/5 accent-blue-500" />
-          <span className="text-sm text-slate-300">Enable drive map processing after archive</span>
-        </label>
-        {(data.DRIVE_MAP_ENABLED ?? "true") === "true" && (
-          <>
-            <label className="mt-2 flex cursor-pointer items-center gap-2">
-              <input type="checkbox" checked={(data.DRIVE_MAP_WHILE_AWAY ?? "true") === "true"}
-                onChange={(e) => onChange("DRIVE_MAP_WHILE_AWAY", e.target.checked ? "true" : "false")}
-                className="h-4 w-4 rounded border-white/20 bg-white/5 accent-blue-500" />
-              <span className="text-sm text-slate-300">Map drives while away</span>
-            </label>
-            <p className="ml-6 text-xs text-slate-600">
-              Process new clips after each snapshot while the car is away. Reduces processing time when you arrive home.
-              Disable if you experience overheating issues.
-            </p>
-          </>
-        )}
       </div>
 
       {/* Source */}

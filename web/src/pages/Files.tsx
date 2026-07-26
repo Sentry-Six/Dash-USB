@@ -9,7 +9,6 @@ import {
   Folder,
   ArrowLeft,
   Loader2,
-  Music,
   Video,
   CheckCircle,
   X,
@@ -48,18 +47,16 @@ interface FileEntry {
 interface DriveTab {
   id: string
   base: string
-  icon: "cam" | "media" | "drive"
+  icon: "cam" | "drive"
 }
 
 const ALL_DRIVES: DriveTab[] = [
   { id: "USB Drive", base: "/mutable", icon: "drive" },
   { id: "Recordings", base: "/mutable/Recordings", icon: "cam" },
-  { id: "Music", base: "/var/www/html/fs/Music", icon: "media" },
 ]
 
 const TAB_ICONS: Record<DriveTab["icon"], React.ComponentType<{ className?: string }>> = {
   cam: Video,
-  media: Music,
   drive: HardDrive,
 }
 
@@ -112,7 +109,6 @@ export default function Files() {
         if (cfg.has_cam === "yes") {
           visible.push(ALL_DRIVES.find(d => d.id === "Recordings")!)
         }
-        if (cfg.has_music === "yes") visible.push(ALL_DRIVES.find(d => d.id === "Music")!)
         // If nothing is configured (e.g. dev mode), show all
         const result = visible.length > 0 ? visible : ALL_DRIVES
         setDrives(result)
@@ -145,7 +141,7 @@ export default function Files() {
         // Server returns { path, entries: [...] } wrapper
         const data: FileEntry[] = Array.isArray(raw) ? raw : (raw.entries ?? [])
         // Auto-navigate into the matching subfolder when at a drive's base path
-        // (Music/LightShow/Boombox disk images have a root folder matching the
+        // (disk images have a root folder matching the
         // drive name, possibly alongside hidden metadata folders)
         if (activeDrive && path === activeDrive.base && !searchQuery) {
           const match = data.find(

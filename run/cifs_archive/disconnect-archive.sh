@@ -44,4 +44,3 @@ unmount_if_set() {
   fi
   unmount_if_set "${ARCHIVE_MOUNT:-}"
 ) 210>"$ARCHIVE_MOUNT_LOCK"
-unmount_if_set "${MUSIC_ARCHIVE_MOUNT:-}" &

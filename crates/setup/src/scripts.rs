@@ -107,46 +107,6 @@ fi
 cat "$optfile"
 "#;
 
-/// autofs map script for `/var/www/html/fs` — resolves Music to the
-/// corresponding backing disk image with an rw mount.
-const AUTO_WWW: &str = r#"#!/bin/dash
-
-case "$1" in
-  Music)
-    diskimage="/backingfiles/music_disk.bin"
-    ;;
-  *)
-    exit 1
-    ;;
-esac
-
-optfile="${diskimage}.opts"
-
-if [ ! -r "$diskimage" ]
-then
-  exit 1
-fi
-
-if [ -f "$optfile" ] && [ "$diskimage" -nt "$optfile" ]
-then
-  rm -f "$optfile"
-fi
-
-if [ ! -f "$optfile" ]
-then
-  rm -rf "$optfile"
-  /root/bin/mountoptsforimage "${diskimage}" | {
-    read -r fstype opts
-    if [ -z "$fstype" ]
-    then
-      exit 1
-    fi
-    echo "-fstype=${fstype},rw,${opts} :${diskimage}" > "$optfile"
-  }
-fi
-
-cat "$optfile"
-"#;
 
 // ── archiveloop + supporting bash scripts ──────────────────────────────────
 //
@@ -184,7 +144,6 @@ pub async fn install_runtime_scripts(emitter: &crate::SetupEmitter) -> Result<bo
         ("enable_gadget.sh", ENABLE_GADGET),
         ("disable_gadget.sh", DISABLE_GADGET),
         ("auto.dashusb", AUTO_SENTRYUSB),
-        ("auto.www", AUTO_WWW),
         // Archive flow — these are the universal scripts that don't depend
         // on which archive system the user picked. The per-system variants
         // (archive-clips.sh, archive-is-reachable.sh, connect-archive.sh,

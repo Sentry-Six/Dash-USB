@@ -59,7 +59,6 @@ then
 fi
 
 export CAM_MOUNT=/mnt/cam
-export MUSIC_MOUNT=/mnt/music
 
 # read the setup variables and define other environment variables and functions
 source /root/bin/envsetup.sh
@@ -102,7 +101,6 @@ elif [ "${ARCHIVE_SYSTEM:-none}" = "cifs" ] || [ "${ARCHIVE_SYSTEM:-none}" = "nf
 then
   # For CIFS and NFS
   [[ -n "${SHARE_NAME:-}" && -f /backingfiles/cam_disk.bin ]] && export ARCHIVE_MOUNT=/mnt/archive
-  [[ -n "${MUSIC_SHARE_NAME:-}" && -f /backingfiles/music_disk.bin ]] && export MUSIC_ARCHIVE_MOUNT=/mnt/musicarchive
 fi
 
 function timestamp () {
@@ -141,13 +139,6 @@ function archive_is_reachable () {
   true
 }
 
-function sync_disk_media_to_host () {
-  # Clear stale autofs mount-option cache files for media disks.
-  # These are regenerated on next access. Stale files can cause mount
-  # failures after disk images are recreated (wizard re-run / disk wipe).
-  rm -f /backingfiles/music_disk.bin.opts
-}
-
 function with_gadget_lock () {
   (
     flock 209
@@ -172,11 +163,6 @@ function connect_usb_drives_to_host_locked() {
     log "Disabled stale USB gadget before sync"
     fix_errors_in_images
   fi
-  sync_disk_media_to_host
-  # Pre-trigger the autofs mount for the music directory while the disk
-  # image is free (before the gadget takes over), so the web UI can
-  # display Music files immediately after boot.
-  ls "/var/www/html/fs/Music" > /dev/null 2>&1 || true
   if ! /root/bin/enable_gadget.sh; then
     log "ERROR: enable_gadget.sh failed (exit $?)"
   fi
@@ -312,13 +298,6 @@ function ensure_cam_file_is_mounted () {
   log "Ensured cam file is mounted."
 }
 
-function ensure_music_file_is_mounted () {
-  log "Ensuring music backing file is mounted..."
-  disconnect_usb_drives_from_host
-  ensure_mountpoint_is_mounted_with_retry "$MUSIC_MOUNT"
-  log "Ensured music drive is mounted."
-}
-
 function unmount_mount_point () {
   local mount_point="$1"
   log "Unmounting $mount_point..."
@@ -338,10 +317,6 @@ function unmount_mount_point () {
 
 function unmount_cam_file () {
   unmount_mount_point "$CAM_MOUNT"
-}
-
-function unmount_music_file () {
-  unmount_mount_point "$MUSIC_MOUNT"
 }
 
 function wait_for_archive_to_be_unreachable () {
@@ -402,7 +377,7 @@ function trim_free_space() {
 }
 
 function fix_errors_in_images () {
-  for i in cam music
+  for i in cam
   do
     img="/backingfiles/${i}_disk.bin"
     if [ -e "$img" ]
@@ -817,19 +792,6 @@ function archive_recordings () {
   [ "$archive_success" = "true" ]
 }
 
-function copy_music_files () {
-  log "Starting music sync..."
-
-  ensure_music_file_is_mounted
-
-  /root/bin/copy-music.sh
-
-  # Trim the empty space from the music archive.
-  trim_free_space "$MUSIC_MOUNT"
-
-  unmount_music_file
-}
-
 function has_cam_disk () {
   [ -f /backingfiles/cam_disk.bin ]
 }
@@ -838,7 +800,6 @@ function archive_clips () {
   log "Archiving..."
 
   # Track whether the clip-archiving part of this cycle succeeded.
-  # Failures in the post-archive extras (music sync) don't count.
   local clips_ok=true
 
   if ! /root/bin/connect-archive.sh
@@ -865,28 +826,13 @@ function archive_clips () {
   # If the user drove away during archive, the gadget is still presented to
   # the car (clean_cam_mount was skipped inside archive_recordings). Skip
   # all post-archive cleanup — every step below cycles the USB gadget,
-  # which would interrupt the car's recording. The skipped music sync runs
-  # on the next archive cycle when the car is parked at home again.
+  # which would interrupt the car's recording.
   if ! archive_is_reachable; then
-    log "Archive became unreachable during clip archiving (user likely drove away); skipping music sync to keep USB drive stable for the car"
+    log "Archive became unreachable during clip archiving (user likely drove away); skipping post-archive cleanup to keep USB drive stable for the car"
     touch /tmp/flag_post_archive
     clear_archive_status
     /root/bin/disconnect-archive.sh 2>> "$LOG_FILE" || true
     return 1
-  fi
-
-  if { timeout 5 [ -d "${MUSIC_ARCHIVE_MOUNT:-}" -a -d "$MUSIC_MOUNT" ]; } || \
-     { [ "${ARCHIVE_SYSTEM:-none}" = "rsync" ] && [ -n "${MUSIC_SHARE_NAME:-}" ] && [ -f /backingfiles/music_disk.bin ]; }
-  then
-    log "Copying music..."
-    if copy_music_files
-    then
-      log "Finished copying music."
-    else
-      log "ERROR: copy_music_files failed (exit $?)"
-    fi
-  else
-    log "Music archive not configured or unreachable (MUSIC_ARCHIVE_MOUNT=${MUSIC_ARCHIVE_MOUNT:-unset})"
   fi
 
   touch /tmp/flag_post_archive  #Set post-archive flag for optional temperature logging

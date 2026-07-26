@@ -17,16 +17,9 @@ use tokio_util::io::ReaderStream;
 use crate::router::AppState;
 
 /// Allowed base paths for file operations (security).
-///
-/// `/var/www/html/fs` is the autofs-mounted, on-demand RW path for the
-/// Music disk image (see `/root/bin/auto.www`). The UI
-/// hits these paths so accessing them triggers the automount; reading
-/// `/mnt/music` directly would just see an empty `noauto` mountpoint.
 const ALLOWED_BASES: &[&str] = &[
     "/mutable",
     "/mnt/cam",
-    "/mnt/music",
-    "/var/www/html/fs",
 ];
 
 /// Lexically normalize a request path: anchor at `/` and resolve `.`/`..`

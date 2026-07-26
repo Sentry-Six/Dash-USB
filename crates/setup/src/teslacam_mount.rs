@@ -11,7 +11,6 @@
 //! fstab entry on first run after upgrade, so installs that came up
 //! pre-bind-mount still migrate cleanly.
 
-use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -80,22 +79,6 @@ pub async fn configure_web_mount(emitter: &SetupEmitter) -> Result<bool> {
 
     // (Samba reads from /mutable/Recordings directly, so no FUSE
     // allow_other configuration is required for it.)
-
-    // Optional auto.www autofs for the music disk image.
-    if Path::new("/backingfiles/music_disk.bin").exists() {
-        std::fs::create_dir_all("/var/www/html/fs")?;
-        std::fs::create_dir_all("/etc/auto.master.d")?;
-        std::fs::write(
-            "/etc/auto.master.d/www.autofs",
-            "/var/www/html/fs  /root/bin/auto.www --timeout=0\n",
-        )?;
-        // `zip` is used by the web UI to offer bulk download of music dirs.
-        let _ = crate::apt::apt_install(
-            |m| emitter.progress(m),
-            &["zip"],
-            Duration::from_secs(180),
-        ).await;
-    }
 
     emitter.progress("done configuring web");
     Ok(true)

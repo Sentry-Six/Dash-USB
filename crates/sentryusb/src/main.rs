@@ -211,12 +211,6 @@ async fn main() {
         tower_http::services::ServeDir::new("/var/www/html/Recordings"),
     );
 
-    // Serve /fs/ for the music autofs mount
-    app = app.nest_service(
-        "/fs",
-        tower_http::services::ServeDir::new("/var/www/html/fs"),
-    );
-
     // Static file serving with SPA fallback (unless dev mode)
     if !args.dev {
         app = app.fallback(embed::spa_handler);
@@ -232,7 +226,6 @@ async fn main() {
     // (MP4, MP3, JPEG, ZIP) and binary streams out of the gzip path:
     //   - video/*  — dashcam MP4s under /Recordings/*; gzipping wastes CPU
     //                and produces no size win on already-compressed H.264.
-    //   - audio/*  — /fs/* music/lock_chimes (MP3/AAC/OGG are pre-compressed).
     //   - image/*  — already-compressed JPEG/PNG/WebP.
     //   - application/octet-stream — /api/files/download streams arbitrary
     //                binary; without Content-Length the default predicate

@@ -89,17 +89,7 @@ export SHARE_PASSWORD='password'
 #     sd card size.
 #   * CAM_SIZE must be at least 64G: the car checks for a drive of 64 GB
 #     or larger with 32 GB available before it will record.
-#   * MUSIC_SIZE should be large enough to hold your music library, obviously.
-#   * If no music size is specified, no music drive will be created.
 export CAM_SIZE=64G
-#export MUSIC_SIZE=4G
-
-# If you want to automatically copy music from a CIFS share every time
-# the Pi connects to wifi, set the following variable. The share is
-# assumed to exist on the same server as the archive share. It can
-# be the same share as the share used for backing up recordings, but
-# the folder needs to be different.
-# export MUSIC_SHARE_NAME=your_music_share/music_folder
 
 # Uncomment to enable a Samba/CIFS server that makes the recordings available
 # as a network share.
@@ -255,12 +245,12 @@ export CAM_SIZE=64G
 #
 #   Fixed-interval trigger logs (no push messages) the instantaneous and maximum
 #   values. The maximum value is held through the recording period and reset at
-#   the conclusion of the archiving/music sync process. This trigger may be useful
+#   the conclusion of the archiving process. This trigger may be useful
 #   to better understand the thermal activity throughout the day.
 #   The set value must be an integer and expressed in minutes (minimum = 1).  
 #export TEMPERATURE_INTERVAL=60
 #
-#   At the end of each archiving/music sync process, the device typically runs
+#   At the end of each archiving process, the device typically runs
 #   hotter, making it an ideal time to capture temperature.
 export TEMPERATURE_POSTARCHIVE=true
 #

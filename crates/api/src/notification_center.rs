@@ -69,7 +69,6 @@ pub struct NotificationSettings {
     pub temperature: bool,
     pub update: bool,
     pub rtc_battery: bool,
-    pub music_sync: bool,
     /// Boot-time storage auto repair events (success/failure/needs-manual).
     #[serde(default = "default_true")]
     pub storage_repair: bool,
@@ -88,7 +87,6 @@ impl Default for NotificationSettings {
             temperature: true,
             update: true,
             rtc_battery: true,
-            music_sync: true,
             storage_repair: true,
         }
     }
@@ -111,7 +109,6 @@ fn load_settings() -> NotificationSettings {
         temperature: bool_pref(&prefs, "notify_temperature", true),
         update: bool_pref(&prefs, "notify_update", true),
         rtc_battery: bool_pref(&prefs, "notify_rtc_battery", true),
-        music_sync: bool_pref(&prefs, "notify_music_sync", true),
         storage_repair: bool_pref(&prefs, "notify_storage_repair", true),
     }
 }
@@ -129,7 +126,6 @@ fn save_settings(s: &NotificationSettings) {
     put(&mut prefs, "notify_temperature", s.temperature);
     put(&mut prefs, "notify_update", s.update);
     put(&mut prefs, "notify_rtc_battery", s.rtc_battery);
-    put(&mut prefs, "notify_music_sync", s.music_sync);
     put(&mut prefs, "notify_storage_repair", s.storage_repair);
     crate::preferences::save_prefs(&prefs);
 }
@@ -258,7 +254,6 @@ pub(crate) fn is_type_enabled(notification_type: Option<&str>) -> bool {
         "temperature" => s.temperature,
         "update" => s.update,
         "rtc_battery" => s.rtc_battery,
-        "music_sync" => s.music_sync,
         "storage_repair" => s.storage_repair,
         // Unknown types default to allowed.
         _ => true,
@@ -324,7 +319,6 @@ pub async fn check_notification_type(
         "temperature" => s.temperature,
         "update" => s.update,
         "rtc_battery" => s.rtc_battery,
-        "music_sync" => s.music_sync,
         "storage_repair" => s.storage_repair,
         _ => true,
     };
@@ -357,7 +351,7 @@ mod tests {
             "archive_start": true, "archive_complete": true,
             "archive_error": true, "temperature": true,
             "update": true,
-            "rtc_battery": true, "music_sync": true
+            "rtc_battery": true
         }"#;
         let s: NotificationSettings = serde_json::from_str(json).unwrap();
         assert!(s.storage_repair);

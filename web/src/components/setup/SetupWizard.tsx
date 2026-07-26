@@ -139,7 +139,6 @@ function getStepError(stepIdx: number, data: SetupFormData): string | null {
 // every CAM_SIZE change).
 const DESTRUCTIVE_SIZE_KEYS: Record<string, string> = {
   CAM_SIZE: "Dashcam drive (live clips inside)",
-  MUSIC_SIZE: "Music drive",
 }
 
 interface DestructiveChange {
@@ -440,7 +439,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
     setSaveError(null)
     setSpaceRejection(null)
     try {
-      const sizeFields = new Set(["CAM_SIZE", "MUSIC_SIZE", "INCREASE_ROOT_SIZE"])
+      const sizeFields = new Set(["CAM_SIZE", "INCREASE_ROOT_SIZE"])
       const configData: Record<string, string> = Object.fromEntries(
         Object.entries(dataToSave)
           .filter(([k, v]) => !k.startsWith("_") && v !== "")

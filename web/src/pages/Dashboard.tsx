@@ -480,7 +480,6 @@ function StorageTile({
   const segments = breakdown
     ? [
         { label: "Dashcam", size: breakdown.cam_size, color: "#3b82f6" },
-        { label: "Music", size: breakdown.music_size, color: "#a855f7" },
         { label: "Snapshots", size: breakdown.snapshots_size, color: "#6366f1" },
       ].filter((s) => s.size > 0)
     : []

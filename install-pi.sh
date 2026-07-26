@@ -285,7 +285,7 @@ chmod +x /root/bin/disable_gadget.sh
 ok "Gadget shims installed at /root/bin/{enable,disable}_gadget.sh"
 
 # Fetch envsetup.sh from the repo. archiveloop sources this at runtime to read
-# /root/dashusb.conf and export CAM_MOUNT / MUSIC_MOUNT / ARCHIVE_* etc. The
+# /root/dashusb.conf and export CAM_MOUNT / ARCHIVE_* etc. The
 # pi-gen image build deploys it as part of the image; install-pi.sh users never
 # get it, so dashusb-archive.service fails fast with "envsetup.sh: No such
 # file or directory" and respawns until systemd gives up.
@@ -617,7 +617,6 @@ if [ ! -f /root/dashusb.conf ]; then
 #
 # Required:
 export CAM_SIZE=30G
-#export MUSIC_SIZE=4G
 #export LIGHTSHOW_SIZE=1G
 #export BOOMBOX_SIZE=100M
 

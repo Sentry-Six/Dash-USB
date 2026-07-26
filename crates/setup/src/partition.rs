@@ -456,7 +456,7 @@ async fn check_fstype(device: &str, expected: &str) -> bool {
 }
 
 async fn cleanup_mounts() {
-    for mount in &["/mnt/cam", "/mnt/music", "/mnt/lightshow", "/mnt/boombox", "/backingfiles", "/mutable"] {
+    for mount in &["/mnt/cam", "/backingfiles", "/mutable"] {
         let _ = sentryusb_shell::run("umount", &[mount]).await;
     }
     tokio::time::sleep(Duration::from_secs(2)).await;

@@ -96,21 +96,10 @@ then
   check_archive_mountable "$SHARE_NAME" rw
 fi
 
-if [ -n "${MUSIC_SHARE_NAME:+x}" ]
-then
-  if [ "$MUSIC_SIZE" = "0" ]
-  then
-    log_progress "STOP: MUSIC_SHARE_NAME specified but no music drive size specified"
-    exit 1
-  fi
-  check_archive_mountable "$MUSIC_SHARE_NAME" ro
-fi
-
 function configure_archive () {
   log_progress "Configuring the archive..."
 
   local archive_path="/mnt/archive"
-  local music_archive_path="/mnt/musicarchive"
 
   if [ ! -e "$archive_path" ] && [ -e /backingfiles/cam_disk.bin ]
   then
@@ -128,17 +117,6 @@ function configure_archive () {
     rmdir "$archive_path" || log_progress "failed to remove $archive_path"
   fi
 
-  if [ -n "${MUSIC_SHARE_NAME:+x}" ]
-  then
-    if [ ! -e "$music_archive_path" ]
-    then
-      mkdir "$music_archive_path"
-    fi
-    echo "$ARCHIVE_SERVER:$MUSIC_SHARE_NAME $music_archive_path nfs ro,noauto,nolock,proto=tcp,vers=3 0 0" >> /etc/fstab
-  elif [ -d "$music_archive_path" ]
-  then
-    rmdir "$music_archive_path" || log_progress "failed to remove $music_archive_path"
-  fi
   log_progress "Configured the archive."
 }
 

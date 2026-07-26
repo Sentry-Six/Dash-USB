@@ -100,7 +100,6 @@ function check_archive_mountable () {
        rm "$test_mount_location/testfile"
     fi
 
-    # the music archive must be mountable with the same mount options
     # so fix the options now
     export CIFS_VERSION=$vers
     export CIFS_SEC=$sec
@@ -130,21 +129,10 @@ then
   check_archive_mountable "$ARCHIVE_SERVER" "$SHARE_NAME" rw
 fi
 
-if [ -n "${MUSIC_SHARE_NAME:+x}" ]
-then
-  if [ "$MUSIC_SIZE" = "0" ]
-  then
-    log_progress "STOP: MUSIC_SHARE_NAME specified but no music drive size specified"
-    exit 1
-  fi
-  check_archive_mountable "$ARCHIVE_SERVER" "$MUSIC_SHARE_NAME" ro
-fi
-
 function configure_archive () {
   log_progress "Configuring the archive..."
 
   local archive_path="/mnt/archive"
-  local music_archive_path="/mnt/musicarchive"
 
   if [ ! -e "$archive_path" ] && [ -e /backingfiles/cam_disk.bin ]
   then
@@ -166,18 +154,6 @@ function configure_archive () {
     rmdir "$archive_path" || log_progress "failed to remove $archive_path"
   fi
 
-  if [ -n "${MUSIC_SHARE_NAME:+x}" ]
-  then
-    if [ ! -e "$music_archive_path" ]
-    then
-      mkdir "$music_archive_path"
-    fi
-    local musicsharenameforstab="${MUSIC_SHARE_NAME// /\\040}"
-    echo "//$ARCHIVE_SERVER/$musicsharenameforstab $music_archive_path cifs ro,noauto,credentials=${credentials_file_path},iocharset=utf8,file_mode=0777,dir_mode=0777,$VERS_OPT,$SEC_OPT 0" >> /etc/fstab
-  elif [ -d "$music_archive_path" ]
-  then
-    rmdir "$music_archive_path" || log_progress "failed to remove $music_archive_path"
-  fi
   log_progress "Configured the archive."
 }
 

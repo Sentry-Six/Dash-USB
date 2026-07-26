@@ -61,9 +61,7 @@ function read_setup_variables {
 
   newnamefor[archiveserver]=ARCHIVE_SERVER
   newnamefor[camsize]=CAM_SIZE
-  newnamefor[musicsize]=MUSIC_SIZE
   newnamefor[sharename]=SHARE_NAME
-  newnamefor[musicsharename]=MUSIC_SHARE_NAME
   newnamefor[shareuser]=SHARE_USER
   newnamefor[sharepassword]=SHARE_PASSWORD
   newnamefor[timezone]=TIME_ZONE
@@ -123,7 +121,6 @@ function read_setup_variables {
   SAMBA_GUEST=${SAMBA_GUEST:-false}
   INCREASE_ROOT_SIZE=${INCREASE_ROOT_SIZE:-0}
   export CAM_SIZE=${CAM_SIZE:-0}
-  export MUSIC_SIZE=${MUSIC_SIZE:-0}
   export BOOMBOX_SIZE=${BOOMBOX_SIZE:-0}
   export LIGHTSHOW_SIZE=${LIGHTSHOW_SIZE:-0}
   export DATA_DRIVE=${DATA_DRIVE:-''}

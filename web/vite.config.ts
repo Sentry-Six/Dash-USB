@@ -54,7 +54,7 @@ export default defineConfig({
       // set DASHUSB_API (e.g. http://dashusb.local) to develop the
       // UI against a live Pi without running the backend locally.
       '/api': process.env.DASHUSB_API || 'http://localhost:8788',
-      '/TeslaCam': process.env.DASHUSB_API || 'http://localhost:8788',
+      '/Recordings': process.env.DASHUSB_API || 'http://localhost:8788',
     },
   },
 })
