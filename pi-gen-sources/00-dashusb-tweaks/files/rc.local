@@ -184,9 +184,9 @@ then
   fi
   mv /dashusb/dashusb.conf /root/
   dos2unix /root/dashusb.conf
-  # A config on the boot partition means the user wants headless setup.
-  # Create the started marker so the boot-loop below will proceed.
-  touch "/dashusb/DASHUSB_SETUP_STARTED"
+  # The conf is used for WiFi/hostname below. Setup itself is owned
+  # exclusively by the daemon (web wizard / auto-resume) — rc.local
+  # never orchestrates it.
 fi
 if [ -e "/root/dashusb.conf" ]
 then
@@ -202,58 +202,9 @@ fi
 enable_wifi
 # Good to start setup at this point
 
-# This begins the Headless Setup loop
-# Only continue setup if it was explicitly started (via the web wizard or manually)
-# and hasn't finished yet. Without the STARTED check, a fresh install would auto-run
-# setup on boot before the user had a chance to configure via the wizard.
-if [ -e "/dashusb/DASHUSB_SETUP_STARTED" ] && [ ! -e "/dashusb/DASHUSB_SETUP_FINISHED" ]
-then
-  if [ -e /root/bin/remountfs_rw ]
-  then
-    /root/bin/remountfs_rw
-  fi
-
-  if [ -e "/root/dashusb.conf" ]
-  then
-    source "/root/dashusb.conf"
-  else
-    # No conf file found, can't complete setup
-    setup_progress "Setup appears not to have completed, but you didn't provide a dashusb.conf."
-  fi
-
-  # Make the bin dir if needed to grab the setup script into it and persist
-  if [ ! -d "/root/bin" ]
-  then
-    mkdir "/root/bin"
-  fi
-
-  if [ ! -e "/root/bin/setup-dashusb" ]
-  then
-    REPO=${REPO:-Sentry-Six}
-    REPO_NAME=${REPO_NAME:-Dash-USB}
-    BRANCH=${BRANCH:-main}
-    # Script doesn't exist, grab it.
-    setup_progress "Grabbing main setup file."
-    if ! get_script /root/bin setup-dashusb setup/pi
-    then
-      setup_progress "Failed to retrieve setup script. Check network settings."
-      error_strobe &
-      exit 0
-    fi
-  fi
-
-  setup_progress "Starting setup."
-
-  # Start setup. This should take us all the way through to reboot
-  if ! /root/bin/setup-dashusb
-  then
-    error_strobe &
-    exit 0
-  fi
-
-  # reboot for good measure, also restarts the rc.local script
-  exec reboot
-fi
+# Setup runs exclusively through the dashusb daemon (web wizard, or its
+# auto-resume of an interrupted run). The legacy bash setup orchestrator
+# was removed in the Dash USB fork — one orchestrator, no races.
 
 # we're done. If setup completed successfully, dashusb will have been
 # started as a systemd service at this point

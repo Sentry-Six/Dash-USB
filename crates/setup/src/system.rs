@@ -383,12 +383,6 @@ pub async fn configure_samba(env: &SetupEnv, emitter: &SetupEmitter) -> Result<b
     })?;
 
     // Move link folder from backingfiles to mutable if needed.
-    if !Path::new("/mutable/TeslaCam").is_dir() && Path::new("/backingfiles/TeslaCam").is_dir() {
-        emitter.progress("Moving TeslaCam symlink folder from backingfiles to mutable");
-        let _ = sentryusb_shell::run(
-            "mv", &["/backingfiles/TeslaCam", "/mutable/TeslaCam"],
-        ).await;
-    }
 
     // Always update smb.conf — matches bash behavior so upgrade installs
     // pick up config improvements. Exact contents mirror configure-samba.sh
@@ -415,10 +409,10 @@ pub async fn configure_samba(env: &SetupEnv, emitter: &SetupEmitter) -> Result<b
    unix extensions = no
    wide links = yes
 
-[TeslaCam]
+[Recordings]
    read only = yes
    locking = no
-   path = /mutable/TeslaCam
+   path = /mutable/Recordings
    guest ok = {guest_ok}
    create mask = 0775
    veto files = /._*/.DS_Store/

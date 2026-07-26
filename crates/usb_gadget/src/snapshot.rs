@@ -125,7 +125,7 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
 
     // ── Pre-create the <snapdir>/mnt symlink (bash 317) ───────────────
     // make_links_for_snapshot links each clip with a target like
-    // <snapdir>/mnt/TeslaCam/...  ; if the symlink doesn't exist yet
+    // <snapdir>/mnt/<recording root>/...  ; if the symlink doesn't exist yet
     // those per-clip symlinks resolve to nothing until autofs gets
     // poked, which is fragile. Create it explicitly.
     if !Path::new(&snap_mnt_link).exists() {

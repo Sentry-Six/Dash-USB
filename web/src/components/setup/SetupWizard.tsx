@@ -45,6 +45,10 @@ function storageError(data: SetupFormData): string | null {
   if (!Number.isFinite(cam) || cam <= 0) {
     return "Dashcam drive size must be greater than 0 GB."
   }
+  // GM refuses drives under 64 GB (needs 64 GB total / 32 GB available).
+  if (cam < 64) {
+    return "GM requires a dashcam drive of at least 64 GB."
+  }
   return null
 }
 

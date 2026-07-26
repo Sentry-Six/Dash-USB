@@ -222,7 +222,7 @@ fn check_required_config(env: &SetupEnv) -> Result<()> {
         // ConfigError so the boot-loop auto-resume halts and surfaces it.
         return Err(ConfigError(
             "STOP: Define the variable CAM_SIZE in dashusb.conf like this: \
-             export CAM_SIZE=32"
+             export CAM_SIZE=64G (GM requires a 64 GB or larger drive)"
                 .into(),
         )
         .into());

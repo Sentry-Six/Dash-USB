@@ -64,12 +64,6 @@ fi
 sed -i '/^tmpfs \/mnt\/smbexport tmpfs nodev,nosuid 0 0$/d' /etc/fstab
 
 # move link folder from backingfiles to mutable if needed
-if [ ! -d /mutable/TeslaCam ] && [ -d /backingfiles/TeslaCam ]
-then
-  log_progress "Moving TeslaCam symlink folder from backingfiles to mutable"
-  mv /backingfiles/TeslaCam /mutable/TeslaCam
-fi
-
 # always update smb.conf in case we're updating a previous install
 cat <<- EOF > /etc/samba/smb.conf
 	[global]
@@ -93,10 +87,10 @@ cat <<- EOF > /etc/samba/smb.conf
            unix extensions = no
            wide links = yes
 
-	[TeslaCam]
+	[Recordings]
 	   read only = yes
 	   locking = no
-	   path = /mutable/TeslaCam
+	   path = /mutable/Recordings
 	   guest ok = $GUEST_OK
 	   create mask = 0775
 	   veto files = /._*/.DS_Store/

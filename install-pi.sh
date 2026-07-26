@@ -615,10 +615,8 @@ if [ ! -f /root/dashusb.conf ]; then
 # DashUSB Configuration
 # Edit these values and run setup from the web UI.
 #
-# Required:
-export CAM_SIZE=30G
-#export LIGHTSHOW_SIZE=1G
-#export BOOMBOX_SIZE=100M
+# Required — GM needs a 64 GB or larger drive with 32 GB available:
+export CAM_SIZE=64G
 
 # Archive system: none, cifs, nfs, rsync, rclone
 #export ARCHIVE_SYSTEM=none
@@ -632,9 +630,6 @@ export CAM_SIZE=30G
 
 # Optional: External USB drive instead of SD card
 #export DATA_DRIVE=
-
-# Optional: Use exFAT instead of FAT32
-#export USE_EXFAT=false
 CONFEOF
         ok "Sample config created at /root/dashusb.conf (offline fallback)"
     fi

@@ -70,7 +70,7 @@ export function PrivacyStep(_props: StepProps) {
         Privacy
       </h2>
       <p className="mt-3 max-w-xl text-center text-sm leading-relaxed text-slate-400">
-        Before going further, here's everything Sentry-USB sends from your
+        Before going further, here's everything Dash USB sends from your
         device and when — so you know what's leaving your network before it
         does.
       </p>
@@ -92,12 +92,6 @@ export function PrivacyStep(_props: StepProps) {
             what="Empty ping (no body, no identifier)"
             why="Count gross install volume on the server"
             note="Anonymous. There's nothing to opt out of."
-          />
-          <FlowRow
-            when="When you use Sentry Cloud"
-            what="Your account login + the files you sync"
-            why="Sync requires it — the feature can't work otherwise"
-            note="Don't sign in to Cloud if you don't want this."
           />
           <FlowRow
             when="If you enable iOS push notifications"

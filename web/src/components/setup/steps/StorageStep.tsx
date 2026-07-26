@@ -30,10 +30,10 @@ export function StorageStep({ data, onChange }: StepProps) {
   const camRaw = data.CAM_SIZE ?? ""
   const camIsGB = !/[mM]$/.test(camRaw)
   const camSize = parseInt(camRaw.replace(/[^0-9]/g, "") || "0")
-  const camWarning = camIsGB && camSize >= 100
-    ? "Large dashcam sizes leave very little room for snapshots. The car saves ~1 hour of recent footage and rotates it. If there's not enough free space for snapshots, you won't see clips beyond the last hour. We recommend 40-60 GB for dashcam and leaving the rest for snapshots."
-    : camIsGB && camSize >= 80
-      ? "Consider leaving more space for snapshots. If the dashcam partition is too large, the car's recent clips may not save properly."
+  const camWarning = camIsGB && camSize > 0 && camSize < 64
+    ? "GM requires a drive of at least 64 GB with 32 GB available — the car will refuse to record onto anything smaller."
+    : camIsGB && camSize >= 100
+      ? "Large dashcam sizes leave very little room for snapshots — and snapshots are your footage history (the car itself only keeps ~2 hours). 64 GB is all the car needs; leave the rest for snapshots."
       : undefined
 
   return (

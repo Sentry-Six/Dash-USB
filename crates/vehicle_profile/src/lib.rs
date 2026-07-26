@@ -77,6 +77,9 @@ pub struct Viewer {
 pub struct VirtualDrive {
     pub default_size: String,
     pub min_size: String,
+    /// Free-space floor (bytes) the post-archive cleaner leaves on the
+    /// virtual drive so the car's available-space check keeps passing.
+    pub min_free_bytes: u64,
     /// Only "fat32" is supported today; the field exists so a future
     /// brand that formats its own drive differently stays data-only.
     pub filesystem: String,
@@ -232,11 +235,13 @@ impl Profile {
              export VEHICLE_PROFILE_ID={id}\n\
              export RECORDINGS_TREE=/mutable/Recordings\n\
              export RECORDING_ROOT={root}\n\
+             export CAM_MIN_FREE_BYTES={min_free}\n\
              export RECORDINGS_ARCHIVE_DEFAULT={archive}\n\
              export SNAPSHOT_INTERVAL_DEFAULT={interval}\n\
              export CLIP_MIN_BYTES=100000\n",
             id = self.profile.id,
             root = self.recording.root,
+            min_free = self.virtual_drive.min_free_bytes,
             archive = self.features.archive_everything_default,
             interval = self.snapshots.default_interval_secs,
         )
@@ -326,6 +331,7 @@ mod tests {
         assert!(env.contains(
             "export RECORDING_ROOT=Android/media/com.gm.ultifi.gmconnectedcameraservice/Recordings/SurroundVisionRecorder"
         ));
+        assert!(env.contains("export CAM_MIN_FREE_BYTES=34359738368"));
         assert!(env.contains("export SNAPSHOT_INTERVAL_DEFAULT=900"));
         assert!(env.contains("export RECORDINGS_ARCHIVE_DEFAULT=true"));
     }

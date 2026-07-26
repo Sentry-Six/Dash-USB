@@ -17,13 +17,11 @@ const BACKINGFILES: &str = "/backingfiles";
 /// Disk image spec.
 struct DriveSpec {
     name: &'static str,
-    label: &'static str,
     config_key: &'static str,
-    default_fallback: &'static str,
 }
 
 const DRIVE_SPECS: &[DriveSpec] = &[
-    DriveSpec { name: "cam", label: "CAM", config_key: "CAM_SIZE", default_fallback: "64G" },
+    DriveSpec { name: "cam", config_key: "CAM_SIZE" },
 ];
 
 /// One-time cleanup for installs that previously had a dedicated wraps disk.
@@ -64,17 +62,23 @@ pub fn dehumanize(s: &str) -> Result<u64> {
 
 /// Get available space in KB on /backingfiles, minus a safety margin.
 async fn available_space_kb() -> Result<u64> {
+    // AVAILABLE space, not filesystem size — with snapshots living on
+    // the same filesystem, sizing against the total let a re-run pass
+    // the check and then fail at truncate once snapshots had grown.
+    // Images being recreated are deleted first, so their current
+    // allocation is credited back by the caller.
     let output = sentryusb_shell::run(
-        "df", &["--output=size", "--block-size=1K", &format!("{}/", BACKINGFILES)],
+        "df", &["--output=avail", "--block-size=1K", &format!("{}/", BACKINGFILES)],
     ).await?;
-    let total: u64 = output.lines().last().unwrap_or("0").trim().parse().unwrap_or(0);
+    let avail: u64 = output.lines().last().unwrap_or("0").trim().parse().unwrap_or(0);
 
-    // Reserve 10% capped between 2GB and 10GB
-    let ten_pct = total / 10;
+    // Keep a reserve so image creation can never squeeze the fs to zero:
+    // 10% capped between 2GB and 10GB.
+    let ten_pct = avail / 10;
     let min_pad = 2 * 1024 * 1024; // 2GB in KB
     let max_pad = 10 * 1024 * 1024; // 10GB in KB
     let padding = ten_pct.max(min_pad).min(max_pad);
-    Ok(total.saturating_sub(padding))
+    Ok(avail.saturating_sub(padding))
 }
 
 /// Check if an existing image file matches the requested size (within 10MB).
@@ -96,7 +100,6 @@ async fn create_drive(
     name: &str,
     label: &str,
     size_kb: u64,
-    use_exfat: bool,
     emitter: &SetupEmitter,
 ) -> Result<()> {
     let filename = format!("{}/{}_disk.bin", BACKINGFILES, name);
@@ -114,10 +117,10 @@ async fn create_drive(
     sentryusb_shell::run("truncate", &["--size", &format!("{}K", size_kb), &filename]).await
         .context("truncate failed")?;
 
-    // Create partition table
-    let sfdisk_type = if use_exfat { "type=7" } else { "type=c" };
+    // Create partition table. FAT32 always — the GM head unit requires
+    // it, and the vehicle profile pins `filesystem = "fat32"`.
     sentryusb_shell::run(
-        "bash", &["-c", &format!("echo '{}' | sfdisk '{}'", sfdisk_type, filename)],
+        "bash", &["-c", &format!("echo 'type=c' | sfdisk '{}'", filename)],
     ).await.context("sfdisk failed on disk image")?;
 
     // Find partition offset
@@ -132,11 +135,8 @@ async fn create_drive(
 
     // Format
     emitter.progress(&format!("Creating filesystem with label '{}'", label));
-    let format_result = if use_exfat {
-        sentryusb_shell::run("mkfs.exfat", &[&loopdev, "-L", label]).await
-    } else {
-        sentryusb_shell::run("mkfs.vfat", &[&loopdev, "-F", "32", "-n", label]).await
-    };
+    let format_result =
+        sentryusb_shell::run("mkfs.vfat", &[&loopdev, "-F", "32", "-n", label]).await;
 
     let _ = sentryusb_shell::run("losetup", &["-d", &loopdev]).await;
     format_result.context("filesystem creation failed")?;
@@ -183,41 +183,6 @@ async fn release_all_images() {
     ).await;
 }
 
-/// Ensure exfat tools are available if needed.
-async fn ensure_exfat_tools(use_exfat: bool, emitter: &SetupEmitter) -> Result<bool> {
-    if !use_exfat {
-        return Ok(false);
-    }
-
-    // Check kernel support
-    let has_kernel = sentryusb_shell::run(
-        "bash", &["-c", "grep -q exfat /proc/filesystems || modprobe -n exfat"],
-    ).await.is_ok();
-
-    if !has_kernel {
-        // Surface to the wizard log — a silent fallback would let the
-        // user think they got an exFAT cam disk when they actually
-        // got FAT32 (and FAT32's 4 GB per-file cap silently truncates
-        // long Tesla clips).
-        emitter.progress("WARNING: kernel does not support ExFAT — falling back to FAT32");
-        return Ok(false);
-    }
-
-    // Install exfatprogs if needed
-    if sentryusb_shell::run("which", &["mkfs.exfat"]).await.is_err() {
-        if crate::apt::apt_install(
-            |m| emitter.progress(m),
-            &["exfatprogs"],
-            Duration::from_secs(600),
-        ).await.is_err() {
-            emitter.progress("WARNING: could not install exfatprogs — falling back to FAT32");
-            return Ok(false);
-        }
-    }
-
-    Ok(true)
-}
-
 /// Ensure dosfstools is available.
 async fn ensure_vfat_tools(emitter: &SetupEmitter) -> Result<()> {
     if sentryusb_shell::run("which", &["mkfs.vfat"]).await.is_err() {
@@ -232,20 +197,33 @@ async fn ensure_vfat_tools(emitter: &SetupEmitter) -> Result<()> {
 
 /// Create all disk images based on config settings. Returns true if any work was performed.
 pub async fn create_disk_images(env: &SetupEnv, emitter: &SetupEmitter) -> Result<bool> {
-    let use_exfat_cfg = env.get_bool("USE_EXFAT", false);
+    let profile = sentryusb_vehicle_profile::Profile::active();
+    let min_kb = dehumanize(&profile.virtual_drive.min_size)?;
 
     // Calculate requested sizes first (before any heavy work) so we can
-    // short-circuit when everything already matches.
+    // short-circuit when everything already matches. Size defaults, the
+    // volume label, and the size floor all come from the vehicle profile.
     let mut sizes: Vec<(String, String, u64, String)> = Vec::new();
     for spec in DRIVE_SPECS {
-        let raw = env.get(spec.config_key, "0");
+        let raw = env.get(spec.config_key, &profile.virtual_drive.default_size);
         let size_kb = if raw.contains('%') {
-            dehumanize(spec.default_fallback)?
+            dehumanize(&profile.virtual_drive.default_size)?
         } else {
             dehumanize(&raw)?
         };
+        if size_kb < min_kb {
+            bail!(
+                "CAM_SIZE {} is below the vehicle profile minimum {} — the                  car requires a drive of at least that size to record.",
+                raw, profile.virtual_drive.min_size,
+            );
+        }
         let filename = format!("{}/{}_disk.bin", BACKINGFILES, spec.name);
-        sizes.push((spec.name.to_string(), spec.label.to_string(), size_kb, filename));
+        sizes.push((
+            spec.name.to_string(),
+            profile.virtual_drive.label.clone(),
+            size_kb,
+            filename,
+        ));
     }
 
     // Reclaim the 4 GB the dedicated wraps disk used to occupy. Runs before
@@ -267,7 +245,6 @@ pub async fn create_disk_images(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
     emitter.begin_phase("disk_images", "Disk images");
     emitter.progress("Creating disk images...");
 
-    let use_exfat = ensure_exfat_tools(use_exfat_cfg, emitter).await?;
     ensure_vfat_tools(emitter).await?;
 
     // Space check. teslausb auto-shrinks because it has no UI to ask
@@ -276,7 +253,24 @@ pub async fn create_disk_images(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
     // before submit (see verify::verify_disk_space). Never auto-delete
     // snapshots as a side effect of a settings change.
     let total_requested: u64 = sizes.iter().map(|(_, _, sz, _)| sz).sum();
-    let available = available_space_kb().await.unwrap_or(0);
+    // Credit back the allocation of images we're about to delete and
+    // recreate (du reports referenced KB; reflink-shared snapshot blocks
+    // stay allocated either way, so this only ever under-frees).
+    let mut reclaimable: u64 = 0;
+    for (_, _, sz, filename) in &sizes {
+        if Path::new(filename).exists() && !image_matches(filename, *sz) {
+            if let Ok(out) =
+                sentryusb_shell::run("du", &["--block-size=1K", filename]).await
+            {
+                reclaimable += out
+                    .split_whitespace()
+                    .next()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0);
+            }
+        }
+    }
+    let available = available_space_kb().await.unwrap_or(0).saturating_add(reclaimable);
     if total_requested > available {
         let need_gb = (total_requested - available) / 1024 / 1024;
         let req_gb = total_requested / 1024 / 1024;
@@ -299,7 +293,7 @@ pub async fn create_disk_images(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
             continue;
         }
         emitter.progress(&format!("Recreating {} drive ({}K)...", name, size_kb));
-        create_drive(name, label, *size_kb, use_exfat, emitter).await?;
+        create_drive(name, label, *size_kb, emitter).await?;
     }
 
     // Clean up stale /mutable/Recordings symlinks when cam drive was

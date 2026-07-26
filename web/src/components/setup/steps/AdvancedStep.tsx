@@ -295,7 +295,7 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
           <Field label="Archive Delay (seconds)" field="ARCHIVE_DELAY" placeholder="20"
             data={data} onChange={onChange} hint="Delay between WiFi connect and archiving start" />
           <Field label="Snapshot Interval (seconds)" field="SNAPSHOT_INTERVAL" placeholder="default"
-            data={data} onChange={onChange} hint="Set ~2 min shorter than car's RecentClips retention" />
+            data={data} onChange={onChange} hint="Keep well under the car's rolling-delete window (GM ≈ 2 h; default 900 s)" />
         </div>
       </div>
 

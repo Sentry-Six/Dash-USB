@@ -519,7 +519,10 @@ function clean_cam_mount {
 
   if [ "$mode" = "freespace" ]
   then
-    # Remove files, oldest first, until there is at least 20GB of free space
+    # Remove files, oldest first, until the car's available-space check
+    # is comfortably satisfied. GM refuses to record below 32 GB free;
+    # the floor comes from the vehicle profile via profile_env.sh
+    # (CAM_MIN_FREE_BYTES, default 32 GiB).
  
     (cd "${CAM_MOUNT}"; find . -type f -a -path "./${RECORDING_ROOT:-}*" -printf '%P\0') > /tmp/rmcandidates.txt
     if [ -s /tmp/rmcandidates.txt ]
@@ -533,7 +536,7 @@ function clean_cam_mount {
     while read -r line
     do
       freespace=$(eval "$(stat --file-system --format="echo \$((%f*%S))" "${CAM_MOUNT}/.")")
-      if ((freespace > 20000000000))
+      if ((freespace > ${CAM_MIN_FREE_BYTES:-34359738368}))
       then
         break;
       fi

@@ -57,6 +57,10 @@ default_size = "64G"
 min_size = "64G"
 filesystem = "fat32"
 label = "DASHUSB"
+# Free-space floor the post-archive cleaner must leave on the virtual
+# drive, in bytes: 32 GiB exactly (the car's "32 GB available" check
+# must never fail by a hair after FAT overhead).
+min_free_bytes = 34359738368
 
 [snapshots]
 # 2 h delete window / 900 s = 8 capture chances per segment; worst-case

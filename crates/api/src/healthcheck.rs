@@ -429,12 +429,12 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
     ));
     let dns_ok = sentryusb_shell::run_with_timeout(
         std::time::Duration::from_secs(5),
-        "getent", &["hosts", "tesla.com"],
+        "getent", &["hosts", "github.com"],
     ).await.is_ok();
     net.push(item(
         "DNS resolution",
         if dns_ok { "pass" } else { "warn" },
-        if dns_ok { None } else { Some("tesla.com lookup failed".to_string()) },
+        if dns_ok { None } else { Some("github.com lookup failed".to_string()) },
     ));
     categories.push(HealthCategory { name: "Network".to_string(), items: net });
 
@@ -546,8 +546,8 @@ const DIAGNOSTICS_SCRIPT: &str = r#"{
   echo ""
 
   echo "====== drive-import history (persisted, last 20) ======"
-  curl -fsS --max-time 5 http://[::1]/api/drives/data/import-history 2>/dev/null \
-    || echo "could not reach /api/drives/data/import-history"
+  curl -fsS --max-time 5 http://[::1]/api/archive/status 2>/dev/null \
+    || echo "could not reach /api/archive/status"
   echo ""
 
   echo "====== drive-import logs (journalctl, last 7 days) ======"

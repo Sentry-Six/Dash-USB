@@ -26,7 +26,7 @@ if [ -f "${ROOTFS_DIR}/boot/firmware/cmdline.txt" ]; then
 fi
 
 install -m 755 files/rc.local                             "${ROOTFS_DIR}/etc/"
-install -m 666 files/dashusb.conf.sample                "${ROOTFS_DIR}/boot/firmware/dashusb.conf"
+install -m 666 files/dashusb.conf.sample                "${ROOTFS_DIR}/boot/firmware/dashusb.conf.sample"
 install -m 666 files/wpa_supplicant.conf.sample           "${ROOTFS_DIR}/boot/firmware"
 install -m 666 files/run_once                             "${ROOTFS_DIR}/boot/firmware"
 install -d "${ROOTFS_DIR}/root/bin"
