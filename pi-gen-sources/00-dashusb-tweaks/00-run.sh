@@ -143,14 +143,14 @@ for src_dir in files ../../server/ble; do
     [ -f "${src_dir}/com.dashusb.ble.conf" ] && install -m 644 "${src_dir}/com.dashusb.ble.conf" "${ROOTFS_DIR}/etc/dbus-1/system.d/com.dashusb.ble.conf" && break
 done
 
-# envsetup.sh: archiveloop sources /root/bin/envsetup.sh unconditionally;
-# the Rust setup installs it on wizard runs, but the image must carry it
-# so the archive service can start before/without a re-run.
+# archiveloop sources /root/bin/envsetup.sh unconditionally. The Rust setup
+# installs it on wizard runs, but the image must carry it so the archive
+# service can start without a re-run.
 if [ -f "../../setup/pi/envsetup.sh" ]; then
     install -m 755 "../../setup/pi/envsetup.sh" "${ROOTFS_DIR}/root/bin/envsetup.sh"
 fi
 
-# ── Install systemd service for the web UI ──
+# systemd unit for the web UI.
 cat > "${ROOTFS_DIR}/lib/systemd/system/dashusb.service" << 'SERVICEEOF'
 [Unit]
 Description=DashUSB Web Server
@@ -183,7 +183,7 @@ StandardError=journal
 WantedBy=multi-user.target
 SERVICEEOF
 
-# ── Install prerequisite packages and clean up ──
+# Install prerequisite packages and clean up.
 on_chroot << EOF
 # Enable the web server service
 systemctl enable dashusb.service
