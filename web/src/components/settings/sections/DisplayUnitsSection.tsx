@@ -1,15 +1,12 @@
 import { Thermometer } from "lucide-react"
 import { PrefCard } from "@/components/settings/PrefCard"
-import { Toggle } from "@/components/ui/Toggle"
 import { useUnits } from "@/lib/units"
 import { cn } from "@/lib/utils"
 
 export function DisplayUnitsSection() {
-  // The Metric/Imperial pill sets the dashcam temperature unit
-  // (TEMPERATURE_UNIT). The toggle below opts the System tile's CPU
-  // readout OUT of the selected system, so its label always names the
-  // *opposite* unit. Off = follow the pill; on = use the labeled unit.
-  const { systemTempF, isMetric, setMetric, setSystemTempF } = useUnits()
+  // One key (TEMPERATURE_UNIT) governs every CPU-temperature readout —
+  // dashboard tile, alert notifications, health checks, and logs.
+  const { isMetric, setMetric } = useUnits()
 
   return (
     <PrefCard
@@ -55,12 +52,10 @@ export function DisplayUnitsSection() {
         </span>
       }
     >
-      <Toggle
-        checked={isMetric ? systemTempF : !systemTempF}
-        onChange={(next) => setSystemTempF(isMetric ? next : !next)}
-        label={isMetric ? "System temperatures in °F" : "System temperatures in °C"}
-        sub="Pi CPU temperature on the System tile"
-      />
+      <p className="text-xs text-slate-500">
+        Metric shows °C, Imperial shows °F — applied to the Pi CPU temperature
+        everywhere: the System tile, temperature alerts, health checks, and logs.
+      </p>
     </PrefCard>
   )
 }

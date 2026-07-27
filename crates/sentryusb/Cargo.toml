@@ -25,6 +25,7 @@ sentryusb-ws = { path = "../ws", package = "sentryusb-ws" }
 sentryusb-api = { path = "../api", package = "sentryusb-api" }
 sentryusb-vehicle-profile = { path = "../vehicle_profile", package = "sentryusb-vehicle-profile" }
 sentryusb-setup = { path = "../setup", package = "sentryusb-setup" }
+sentryusb-config = { path = "../config", package = "sentryusb-config" }
 sentryusb-gadget = { path = "../usb_gadget", package = "sentryusb-gadget" }
 
 [[bin]]

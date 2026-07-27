@@ -576,13 +576,18 @@ function clean_cam_mount {
 # common cause of archive failures, and the periodic monitor only samples once a
 # minute, so by the time it logs the chip has already cooled.
 # Respects TEMPERATURE_UNIT (from dashusb.conf): "F" → Fahrenheit, else Celsius.
+# Re-reads the key live so a settings change doesn't need a reboot; only
+# this one key is parsed (never re-source the whole conf mid-flight).
 function soc_temperature () {
   local zone=/sys/class/thermal/thermal_zone0/temp
   [ -e "$zone" ] || return 0
   local raw
   raw=$(cat "$zone" 2>/dev/null) || return 0
   [ -n "$raw" ] || return 0
-  if [ "${TEMPERATURE_UNIT:-C}" = "F" ]; then
+  local unit
+  unit=$(sed -n "s/^export TEMPERATURE_UNIT=[\"']\?\([CFcf]\).*/\1/p" /root/dashusb.conf 2>/dev/null | tail -1)
+  unit=${unit:-${TEMPERATURE_UNIT:-C}}
+  if [ "${unit^^}" = "F" ]; then
     awk -v r="$raw" 'BEGIN { printf "%.1f°F", r/1000 * 9/5 + 32 }'
   else
     awk -v r="$raw" 'BEGIN { printf "%.1f°C", r/1000 }'

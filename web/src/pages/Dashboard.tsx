@@ -116,7 +116,7 @@ export default function Dashboard() {
   const [archiveProgress, setArchiveProgress] = useState<ProcessProgress | null>(null)
   // Units come from the shared store — coherent defaults and live-synced with
   // the Settings → Display & Units controls.
-  const { systemTempF: systemUseFahrenheit } = useUnits()
+  const { tempF: systemUseFahrenheit } = useUnits()
   const [rtcWarning, setRtcWarning] = useState<string | null>(null)
 
   const archiveHistoryRef = useRef<ProgressSample[]>([])

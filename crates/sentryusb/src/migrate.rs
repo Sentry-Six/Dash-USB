@@ -20,6 +20,11 @@ const MIGRATE_REPO: &str = "Sentry-Six/Dash-USB";
 const MIGRATE_BRANCH: &str = "main";
 
 pub async fn run_startup_migration() {
+    // Unconditional idempotent heals first — these must NOT sit behind
+    // the .migrated-<version> marker below (a heal added after a version
+    // was already marked would never run).
+    heal_temperature_unit_key();
+
     // Skip in dev mode (no version file, or explicit "dev")
     let current_version = match tokio::fs::read_to_string(VERSION_FILE).await {
         Ok(v) => v.trim().to_string(),
@@ -138,6 +143,28 @@ pub async fn run_startup_migration() {
         last_err.as_deref().unwrap_or("unknown")
     );
     // Don't write marker — retry on next boot.
+}
+
+/// Collapse the retired `SYSTEM_TEMPERATURE_UNIT` override into
+/// `TEMPERATURE_UNIT`. Dash USB has exactly one temperature source (the
+/// Pi CPU); the two-key split was Tesla-era residue that let the
+/// Settings sub-toggle and the alert monitor disagree across a reboot.
+/// The specific override wins over the general key — it was the newer,
+/// more deliberate choice wherever both were set. Idempotent: after the
+/// first pass the old key is commented out and this is a no-op.
+fn heal_temperature_unit_key() {
+    let path = sentryusb_config::find_config_path();
+    let Ok((mut active, _)) = sentryusb_config::parse_file(path) else {
+        return;
+    };
+    let Some(sys) = active.remove("SYSTEM_TEMPERATURE_UNIT") else {
+        return;
+    };
+    active.insert("TEMPERATURE_UNIT".to_string(), sys.to_uppercase());
+    match sentryusb_config::write_file(path, &active) {
+        Ok(()) => info!("[migrate] merged SYSTEM_TEMPERATURE_UNIT into TEMPERATURE_UNIT"),
+        Err(e) => tracing::warn!("[migrate] temperature-unit key heal failed: {}", e),
+    }
 }
 
 fn build_migration_script(tarball_url: &str) -> String {

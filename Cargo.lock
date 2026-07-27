@@ -1675,6 +1675,7 @@ dependencies = [
  "libc",
  "rust-embed",
  "sentryusb-api",
+ "sentryusb-config",
  "sentryusb-gadget",
  "sentryusb-setup",
  "sentryusb-shell",
