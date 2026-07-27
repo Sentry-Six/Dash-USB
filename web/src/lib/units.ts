@@ -72,7 +72,15 @@ async function writeKeys(updates: Record<string, string>, optimistic: Partial<Un
   set(optimistic)
   try {
     const res = await fetch("/api/setup/config")
-    const cfg = res.ok ? await res.json() : {}
+    // MUST abort if the read fails. The PUT is a full-config replace and the
+    // writer comments out every active key missing from the payload, so
+    // sending a map built from `{}` would disable archive credentials and
+    // everything else.
+    if (!res.ok) throw new Error("could not read current config")
+    const cfg = await res.json()
+    if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) {
+      throw new Error("unexpected config shape")
+    }
     for (const [k, v] of Object.entries(updates)) cfg[k] = { value: v, active: true }
     const flat: Record<string, string> = {}
     for (const [k, v] of Object.entries(cfg)) {
