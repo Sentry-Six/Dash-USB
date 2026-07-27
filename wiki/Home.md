@@ -28,7 +28,12 @@ Then open `http://dashusb.local` and the [Setup Wizard](Setup-Wizard-Guide) take
 | Tier | Boards | Notes |
 |------|--------|-------|
 | **Recommended** | Raspberry Pi 4B, Raspberry Pi 5 | USB 2.0 OTG — fastest archiving, best web UI responsiveness |
-| **Should work** | Raspberry Pi Zero 2 W, Raspberry Pi 3 (A+/B/B+) | USB 2.0 OTG — works, slower archive speeds |
+| **Should work** | Raspberry Pi Zero 2 W, Raspberry Pi 3 Model A+ | USB 2.0 OTG, slower archive speeds |
+
+> **The Pi 3 Model B and B+ will not work.** Their single USB channel runs through an
+> onboard hub chip that provides Ethernet and the four USB-A ports, which leaves the
+> micro-USB port power-only with no OTG support. The 3A+ omits that chip, so its
+> micro-USB port is wired straight to the SoC and can act as a USB gadget.
 
 Plus:
 - A **high-endurance MicroSD card, 256 GB or larger** (512 GB recommended —

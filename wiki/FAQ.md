@@ -47,7 +47,9 @@ To trigger manually, open the web UI and click the **Archive Sync** action at th
 
 ## Can I run it on hardware other than a Raspberry Pi?
 
-Recommended: Raspberry Pi 4B, Pi 5. Should work: Pi Zero 2 W, Pi 3 (A+/B/B+). Not supported: Pi Zero W and Pi 1 (armv6 — the installer will refuse).
+Recommended: Raspberry Pi 4B, Pi 5. Should work: Pi Zero 2 W, Pi 3 Model A+.
+
+Not supported: Pi Zero W and Pi 1 (armv6, the installer will refuse), and the **Pi 3 Model B and B+**. The 3B/3B+ send their single USB channel through an onboard hub chip that provides Ethernet and the USB-A ports, so the micro-USB port is power-only and cannot act as a USB gadget. The 3A+ has no such chip, so its micro-USB port works.
 
 Anything else is uncharted — community help on [Discord](https://discord.gg/9QZEzVwdnt) is your best bet.
 

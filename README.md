@@ -49,7 +49,12 @@ the virtual drive presents by default.
 | Tier | Boards | Notes |
 |------|--------|-------|
 | **Recommended** | Raspberry Pi 4B, Raspberry Pi 5 | USB 2.0 OTG — fastest archiving, smoothest UI |
-| **Should work** | Raspberry Pi Zero 2 W, Raspberry Pi 3 (A+/B/B+) | USB 2.0 OTG — slower archive speeds |
+| **Should work** | Raspberry Pi Zero 2 W, Raspberry Pi 3 Model A+ | USB 2.0 OTG, slower archive speeds |
+
+> The Pi 3 Model **B** and **B+** will not work. Their single USB channel is wired
+> through an onboard hub chip for Ethernet and the four USB-A ports, leaving the
+> micro-USB port power-only with no OTG. Only the 3A+, which omits that chip, can act
+> as a USB gadget.
 
 Plus a **256 GB+ high-endurance MicroSD card** (512 GB recommended — GM records
 ~5 GB per hour of driving, all of which Dash USB retains) and a **USB-C data cable**.
