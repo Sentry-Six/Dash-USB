@@ -42,7 +42,7 @@ const SpeedTestModal = lazy(() => import("@/components/settings/sections/SpeedTe
 const TABS = [
   "Device",
   "Car & Network",
-  "Notifications & Community",
+  "Notifications",
   "System",
 ] as const
 type TabName = (typeof TABS)[number]
@@ -269,7 +269,7 @@ export default function Settings() {
         {activeTab === "Car & Network" && (
           <NetworkTab status={status} />
         )}
-        {activeTab === "Notifications & Community" && <NotificationsTab />}
+        {activeTab === "Notifications" && <NotificationsTab />}
         {activeTab === "System" && (
           <SystemTab
             onOpenRawConfig={handleOpenRawConfig}

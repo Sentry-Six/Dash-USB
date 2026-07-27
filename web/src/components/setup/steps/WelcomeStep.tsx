@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils"
 const CONFIG_GROUPS: Record<string, { label: string; keys: string[] }> = {
   network: {
     label: "Network",
-    keys: ["DASHUSB_HOSTNAME", "AP_SSID", "AP_PASS", "AP_IP"],
+    keys: ["DASHUSB_HOSTNAME"],
   },
   storage: {
     label: "Storage",
@@ -160,9 +160,6 @@ function friendlyLabel(key: string): string {
     SSID: "WiFi SSID",
     WIFIPASS: "WiFi Password",
     DASHUSB_HOSTNAME: "Hostname",
-    AP_SSID: "AP SSID",
-    AP_PASS: "AP Password",
-    AP_IP: "AP IP Address",
     camsize: "Dashcam Size",
     musicsize: "Music Size",
     lightshowsize: "Light Show Size",

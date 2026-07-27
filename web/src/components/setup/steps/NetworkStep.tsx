@@ -1,4 +1,4 @@
-import { Radio, Wifi, Info } from "lucide-react"
+import { Info, Wifi } from "lucide-react"
 import type { StepProps } from "../SetupWizard"
 import { SecretInput } from "../SecretInput"
 import { cn } from "@/lib/utils"
@@ -54,8 +54,7 @@ function Field({
   )
 }
 
-export function NetworkStep({ data, onChange, onBatchChange }: StepProps) {
-  const apEnabled = !!data.AP_SSID
+export function NetworkStep({ data, onChange }: StepProps) {
 
   return (
     <div className="space-y-6">
@@ -98,95 +97,6 @@ export function NetworkStep({ data, onChange, onBatchChange }: StepProps) {
         />
       </div>
 
-      {/* Access Point */}
-      <div>
-        <div className="mb-3 flex items-center gap-2">
-          <Radio className="h-4 w-4 text-blue-400" />
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
-            WiFi Access Point
-          </h3>
-          <span className="text-xs text-slate-600">(optional)</span>
-        </div>
-        <p className="mb-3 text-xs text-slate-500">
-          Create a WiFi hotspot so you can access Dash USB on the road.
-        </p>
-
-        <label className="mb-3 flex cursor-pointer items-center gap-2">
-          <input
-            type="checkbox"
-            checked={apEnabled}
-            onChange={(e) => {
-              if (!e.target.checked) {
-                onBatchChange({ AP_SSID: "", AP_PASS: "", AP_IP: "" })
-              } else {
-                onChange("AP_SSID", "DASHUSB WIFI")
-              }
-            }}
-            className="h-4 w-4 rounded border-white/20 bg-white/5 accent-blue-500"
-          />
-          <span className="text-sm text-slate-300">
-            Enable WiFi Access Point
-          </span>
-        </label>
-
-        {apEnabled && (
-          <>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field
-                label="AP SSID"
-                field="AP_SSID"
-                placeholder="DASHUSB WIFI"
-                data={data}
-                onChange={onChange}
-              />
-              <Field
-                label="AP Password"
-                field="AP_PASS"
-                type="password"
-                placeholder="Min 8 characters"
-                data={data}
-                onChange={onChange}
-                hint="Must be at least 8 characters"
-                error={(data.AP_PASS ?? "").length < 8}
-              />
-              <Field
-                label="AP IP Address"
-                field="AP_IP"
-                placeholder="192.168.66.1"
-                data={data}
-                onChange={onChange}
-                hint="Optional, default: 192.168.66.1"
-              />
-            </div>
-
-            {/* Away Mode acknowledgement — informational only. The actual
-                geofence setup lives in Settings → Car & Network. */}
-            <div className="mt-3 rounded-lg border border-blue-500/20 bg-blue-500/5 p-3">
-              <div className="flex items-start gap-2.5">
-                <Info className="mt-0.5 h-4 w-4 shrink-0 text-blue-400" />
-                <div className="text-xs leading-relaxed text-slate-400">
-                  <p className="font-medium text-slate-200">Away Mode has two modes</p>
-                  <p className="mt-1">
-                    Configure it later in{" "}
-                    <span className="font-medium text-slate-300">Settings → Car &amp; Network</span>:
-                  </p>
-                  <ul className="mt-1 list-disc space-y-1 pl-4">
-                    <li>
-                      <span className="font-medium text-slate-300">Manual</span> — turn the hotspot
-                      on for a set time from the dashboard.
-                    </li>
-                    <li>
-                      <span className="font-medium text-slate-300">Automatic</span> — the hotspot
-                      turns on by itself when the car leaves your home area and off when it returns.
-                      This needs the Pi paired as a BLE key (BLE telemetry) for the car’s location.
-                    </li>
-                  </ul>
-                </div>
-              </div>
-            </div>
-          </>
-        )}
-      </div>
     </div>
   )
 }

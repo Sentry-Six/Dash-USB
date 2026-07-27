@@ -29,12 +29,6 @@ export interface StepProps {
   setupAlreadyFinished: boolean
 }
 
-function networkError(data: SetupFormData): string | null {
-  if (data.AP_SSID && (data.AP_PASS ?? "").length < 8)
-    return "WiFi Access Point password must be at least 8 characters."
-  return null
-}
-
 function storageError(data: SetupFormData): string | null {
   // CAM_SIZE = 0 silently disables the dashcam drive — which is the entire
   // point of this device — and downstream phases happily proceed against
@@ -124,7 +118,7 @@ function getStepError(stepIdx: number, data: SetupFormData): string | null {
   // security, advanced, review.
   switch (stepIdx) {
     // case 1 is the Privacy step — no validation (opt-in is independent of wizard apply)
-    case 2: return networkError(data)
+    // case 2 is the Network step — hostname only, nothing to validate
     case 3: return storageError(data)
     case 4: return archiveError(data)
     case 5: return notificationsError(data)

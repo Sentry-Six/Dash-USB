@@ -4,7 +4,7 @@ import type { StepProps } from "../SetupWizard"
 const sections = [
   {
     title: "Network",
-    fields: ["DASHUSB_HOSTNAME", "AP_SSID", "AP_PASS", "AP_IP"],
+    fields: ["DASHUSB_HOSTNAME"],
   },
   {
     title: "Storage",
