@@ -1,15 +1,11 @@
 //! User preferences (key-value store).
 //!
-//! Concurrency: the load→modify→save flow used by [`set_preference`] is
-//! racy without a lock — two concurrent PUTs would both read the same
-//! baseline, each insert their own key, and the second write would
-//! silently clobber the first. Go guarded this with `prefsMu.RWMutex`;
-//! we do the same here with a process-wide `Mutex<()>` held for the
-//! duration of the RMW.
+//! Concurrency: [`set_preference`] is a read-modify-write and MUST hold
+//! `PREFS_LOCK` for the whole sequence. Without it two concurrent PUTs read the
+//! same baseline and the second write silently clobbers the first.
 //!
-//! Durability: saves go through tmp+rename so a power cut mid-write
-//! can't leave the preferences file half-formed (parseable as empty,
-//! losing every stored flag).
+//! Durability: saves go through tmp+rename so a power cut mid-write can't leave
+//! the file half-formed, parseable as empty and losing every stored flag.
 
 use std::sync::Mutex;
 
@@ -20,22 +16,20 @@ use serde::Deserialize;
 
 use crate::router::AppState;
 
-/// Preferences store path (`/mutable` on the Pi; honors the
-/// `DASHUSB_MUTABLE_DIR` dev override for off-Pi runs).
+/// `/mutable` on the Pi; `DASHUSB_MUTABLE_DIR` overrides it for off-Pi runs.
 pub(crate) fn prefs_file() -> String {
     format!("{}/.dashusb_preferences.json", sentryusb_config::mutable_dir())
 }
-/// Legacy Go preferences path — read-only fallback so upgrades don't lose data.
+/// Legacy path, read-only fallback so upgrades don't lose existing prefs.
 fn legacy_prefs_file() -> String {
     format!("{}/dashusb-prefs.json", sentryusb_config::mutable_dir())
 }
 
-/// Serializes concurrent preference reads + writes. Held around the
-/// RMW in `set_preference` so interleaved PUTs can't lose updates.
+/// Serializes the read-modify-write in `set_preference` so interleaved PUTs
+/// can't lose updates.
 static PREFS_LOCK: Mutex<()> = Mutex::new(());
 
 pub(crate) fn load_prefs() -> serde_json::Map<String, serde_json::Value> {
-    // Primary path first, legacy path as fallback.
     if let Ok(d) = std::fs::read_to_string(prefs_file()) {
         if let Ok(v) = serde_json::from_str(&d) {
             return v;
@@ -48,18 +42,13 @@ pub(crate) fn load_prefs() -> serde_json::Map<String, serde_json::Value> {
 }
 
 pub(crate) fn save_prefs(prefs: &serde_json::Map<String, serde_json::Value>) {
-    // Atomic tmp+rename — a direct `fs::write` leaves the file in an
-    // intermediate zero-length state if the kernel panics mid-write,
-    // which on next boot would silently reset every toggle (away-mode
-    // notifications, update channel, etc.) to its default.
+    // tmp+rename: a direct `fs::write` leaves a zero-length file if the kernel
+    // panics mid-write, which silently resets every toggle (notification
+    // settings, update channel, analytics opt-in) to its default on next boot.
     //
-    // On a fresh first install the wizard saves prefs (e.g. the new
-    // community wraps/chimes flags) BEFORE the /mutable partition has
-    // been created and mounted — at that point the parent directory
-    // doesn't exist yet and the write fails with ENOENT, leaving a
-    // noisy warning in journalctl. Pre-create the parent so the write
-    // succeeds onto rootfs as a placeholder; once /mutable is mounted
-    // any subsequent save lands on the persistent partition.
+    // The first-install wizard saves prefs BEFORE the /mutable partition exists
+    // and is mounted, so pre-create the parent or the write fails with ENOENT.
+    // That placeholder lands on rootfs; later saves land on the real partition.
     let data = serde_json::to_string_pretty(prefs).unwrap_or_default();
     let prefs_path = prefs_file();
     if let Some(parent) = std::path::Path::new(&prefs_path).parent() {
@@ -81,7 +70,6 @@ pub struct PrefQuery {
     key: Option<String>,
 }
 
-/// GET /api/config/preference
 pub async fn get_preference(
     State(_s): State<AppState>,
     Query(params): Query<PrefQuery>,
@@ -95,7 +83,6 @@ pub async fn get_preference(
     }
 }
 
-/// PUT /api/config/preference
 pub async fn set_preference(
     State(_s): State<AppState>,
     body: String,
@@ -112,11 +99,9 @@ pub async fn set_preference(
     };
 
     {
-        // Hold the lock across the entire load→modify→save so two concurrent
-        // PUTs serialize rather than racing on the same baseline snapshot.
-        // Poisoned-guard recovery: treat `into_inner` as "lock was dropped
-        // while held" — safe because we always restore the file from a
-        // complete in-memory map on every save.
+        // Hold across the whole load, modify, save. Recovering from a poisoned
+        // guard is safe: every save rewrites the file from a complete
+        // in-memory map.
         let _guard = PREFS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let mut prefs = load_prefs();
         prefs.insert(req.key, req.value);

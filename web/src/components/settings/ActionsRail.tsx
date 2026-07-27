@@ -43,7 +43,7 @@ function ActionChip({
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Cancel any pending revert on unmount so we don't setState after teardown.
+  // Cancel a pending revert on unmount to avoid setState after teardown.
   useEffect(
     () => () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current)
@@ -67,7 +67,7 @@ function ActionChip({
     try {
       const result = await onClick()
       if (result === "confirm") {
-        // Two-step pattern — caller owns its own label change; stay quiet.
+        // Two-step pattern: the caller owns the label change, so stay quiet.
         setState("idle")
         return
       }

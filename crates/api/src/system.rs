@@ -8,18 +8,14 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use crate::router::AppState;
 
-/// POST /api/system/reboot
 pub async fn reboot(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
     tokio::spawn(async { let _ = sentryusb_shell::run("reboot", &[]).await; });
     crate::json_ok()
 }
 
-/// POST /api/system/shutdown
-///
-/// Power off the device. Spawned so the HTTP response can flush before
-/// the kernel starts tearing things down. Falls back through `poweroff`
-/// → `shutdown -h now` → `systemctl poweroff` since some minimal images
-/// only ship one of the three.
+/// Spawned so the HTTP response can flush before the kernel starts tearing
+/// things down. Falls back through `poweroff`, `shutdown -h now`, then
+/// `systemctl poweroff`, since some minimal images ship only one of the three.
 pub async fn shutdown(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
     tokio::spawn(async {
         if sentryusb_shell::run("poweroff", &[]).await.is_ok() {
@@ -33,14 +29,13 @@ pub async fn shutdown(State(_s): State<AppState>) -> (StatusCode, Json<serde_jso
     crate::json_ok()
 }
 
-/// POST /api/system/toggle-drives
 pub async fn toggle_drives(State(_s): State<AppState>, _body: String) -> (StatusCode, Json<serde_json::Value>) {
-    // A user toggle owns a full gadget cycle, so it takes the cross-process
-    // flock archiveloop wraps around its own cycles — otherwise it can race
-    // an archive sync or a stall-watchdog recovery and flip the gadget while
-    // cam_disk.bin is mounted on the host. gadget_enable/gadget_disable
-    // below stay lockless: archiveloop's shims call them while it already
-    // holds this flock.
+    // A user toggle owns a full gadget cycle, so it MUST take the cross-process
+    // flock archiveloop wraps around its own cycles. Without it a toggle races
+    // an archive sync or a stall-watchdog recovery and flips the gadget while
+    // cam_disk.bin is mounted on the host. gadget_enable/gadget_disable below
+    // stay lockless: archiveloop's shims call them while it already holds this
+    // flock.
     let result = tokio::task::spawn_blocking(|| -> Result<(), String> {
         let _cycle = sentryusb_gadget::cycle_lock::acquire(Duration::from_secs(30))
             .map_err(|e| format!("USB drives are busy ({}) — try again shortly", e))?;
@@ -66,14 +61,13 @@ pub async fn toggle_drives(State(_s): State<AppState>, _body: String) -> (Status
     }
 }
 
-/// POST /api/system/gadget-enable — idempotent set-to-active.
+/// Idempotent set-to-active, called from the `/root/bin/enable_gadget.sh` shim
+/// so archiveloop coordinates with this server instead of driving configfs in
+/// parallel.
 ///
-/// Called from the `/root/bin/enable_gadget.sh` shim so archiveloop coordinates
-/// with this server instead of driving configfs directly in parallel.
-///
-/// This handler (and gadget_disable below) must NOT take the gadget-cycle
-/// flock: archiveloop already holds it when the shim runs, so locking here
-/// would wedge the shim's curl until its --max-time kills the request.
+/// This handler and `gadget_disable` MUST NOT take the gadget-cycle flock.
+/// archiveloop already holds it when the shim curls back in, so locking here
+/// deadlocks: the shim's curl hangs until its --max-time kills the request.
 pub async fn gadget_enable(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
     if sentryusb_gadget::is_active() {
         return crate::json_ok();
@@ -91,7 +85,8 @@ pub async fn gadget_enable(State(_s): State<AppState>) -> (StatusCode, Json<serd
     }
 }
 
-/// POST /api/system/gadget-disable — idempotent set-to-inactive.
+/// Idempotent set-to-inactive. Subject to the same no-flock rule as
+/// [`gadget_enable`].
 pub async fn gadget_disable(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
     if !sentryusb_gadget::is_active() {
         return crate::json_ok();
@@ -109,49 +104,36 @@ pub async fn gadget_disable(State(_s): State<AppState>) -> (StatusCode, Json<ser
     }
 }
 
-/// POST /api/system/trigger-sync
+/// Force archiveloop to start a sync cycle now, whatever the connectivity
+/// check currently thinks. Two wait states are possible when the user clicks
+/// "Start Archive":
 ///
-/// Force archiveloop to start a sync cycle now, regardless of the
-/// connectivity check's current opinion. archiveloop has two distinct
-/// wait states the loop can be sitting in when the user clicks "Start
-/// Archive":
+///   1. `wait_for_archive_to_be_reachable`, the usual case after a fresh boot
+///      or after the car drove away from home WiFi. The loop polls
+///      archive-is-reachable.sh and consumes `/tmp/archive_is_reachable` as a
+///      forced positive.
+///   2. `wait_for_archive_to_be_unreachable`, the idle state once an archive
+///      finished. The loop consumes `/tmp/archive_is_unreachable` as a forced
+///      "drove away" and returns to state 1.
 ///
-///   1. `wait_for_archive_to_be_reachable` — usual case after a fresh
-///      boot or after the car drove away from the home WiFi. Loop
-///      polls archive-is-reachable.sh until it succeeds. Consumes
-///      `/tmp/archive_is_reachable` to fake a positive result and
-///      proceed to the archive step.
+/// Create the unreachable canary first, give archiveloop a moment to consume
+/// it, then create the reachable canary. That order covers state 1 directly
+/// and state 2 through the transition. Creating only the unreachable canary is
+/// a no-op in state 1, exactly the case a user hits when the NAS is briefly
+/// down or the reachability check is misconfigured.
 ///
-///   2. `wait_for_archive_to_be_unreachable` — idle steady state after
-///      archive completed; loop is waiting for the car to drive away
-///      so the next archive cycle can start fresh. Consumes
-///      `/tmp/archive_is_unreachable` to fake "user drove away" and
-///      proceed back to step 1.
-///
-/// The Go-era `force_sync.sh` only created the unreachable canary,
-/// which is correct for state (2) but a no-op for state (1) — the
-/// exact case a user hits when their NAS is briefly down or the
-/// reachability check is misconfigured. Create the unreachable canary
-/// first (covering state 2), wait a moment for archiveloop to
-/// consume it, then create the reachable canary (covering both: state
-/// 1 directly, or state 2 after archiveloop transitions out via the
-/// first canary). Either way the loop kicks off an archive cycle.
-///
-/// Travel Mode has a third idle state: the paced sleep between cycles
-/// (travel_mode_pace). It watches for and consumes the reachable
-/// canary too, cutting the sleep short so "Start Archive" works on
-/// the road as well.
+/// Travel Mode has a third idle state, the paced sleep between cycles
+/// (travel_mode_pace). It consumes the reachable canary too, cutting the sleep
+/// short so "Start Archive" works on the road.
 pub async fn trigger_sync(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
     tokio::spawn(async {
         let unreachable = std::path::Path::new("/tmp/archive_is_unreachable");
         let reachable = std::path::Path::new("/tmp/archive_is_reachable");
         // Step 1: kick a loop sitting in wait_for_unreachable.
         let _ = std::fs::File::create(unreachable);
-        // Wait up to ~5s for archiveloop to consume it. If it doesn't,
-        // the loop is already past that state (in wait_for_reachable),
-        // and a stale canary left lying around would otherwise fire on
-        // the next idle cycle and cause a phantom force-sync the user
-        // didn't ask for. Clean up either way.
+        // Wait up to ~5s for archiveloop to consume it. If it doesn't, the
+        // loop is already in wait_for_reachable, and a stale canary would fire
+        // on the next idle cycle as a phantom force-sync. Clean up either way.
         for _ in 0..10 {
             tokio::time::sleep(Duration::from_millis(500)).await;
             if !unreachable.exists() {
@@ -160,18 +142,15 @@ pub async fn trigger_sync(State(_s): State<AppState>) -> (StatusCode, Json<serde
         }
         let _ = std::fs::remove_file(unreachable);
         // Step 2: kick a loop sitting in wait_for_reachable. archiveloop
-        // consumes this and starts an archive cycle even if the real
-        // network probe is currently failing — exactly what a user
-        // means when they click "Start Archive Now".
+        // consumes this and starts a cycle even while the real network probe
+        // is failing, which is what "Start Archive Now" means to a user.
         let _ = std::fs::File::create(reachable);
     });
     crate::json_ok()
 }
 
-/// Remount the root filesystem read-write. These images keep `/`
-/// read-only to protect the SD card; a plain write to `/root` silently
-/// no-ops until this runs. Mirrors the remount the keygen / config /
-/// VIN-set paths in `ble.rs` already do before their writes.
+/// Remount the root filesystem read-write. These images keep `/` read-only to
+/// protect the SD card, so a write to `/root` silently no-ops until this runs.
 fn remount_root_rw() {
     if let Err(e) = std::process::Command::new("bash")
         .args(["-c", "/root/bin/remountfs_rw"])
@@ -181,23 +160,22 @@ fn remount_root_rw() {
     }
 }
 
-/// POST /api/system/ble-reset-pair
-///
-/// Recovery for a wedged phone↔Pi BLE pairing — the "Pairing rejected by
-/// DashUSB-XXXX" dead end (#324) where the phone has no Bluetooth-settings
-/// entry to forget and the only prior fix was SSH. Clears ONLY phone-side
-/// state so a fresh claim can succeed:
+/// Recovery for a wedged phone-to-Pi BLE pairing: the "Pairing rejected by
+/// DashUSB-XXXX" dead end (#324), where the phone has no Bluetooth-settings
+/// entry to forget. Clears ONLY phone-side state so a fresh claim can succeed:
 ///   - removes each phone GATT-client bond from BlueZ (`bluetoothctl remove`)
-///   - deletes the app PIN (`/root/.dashusb/ble-pin` + boot copy) → unclaimed
-///   - restarts ONLY `dashusb-ble.service` (the phone-facing GATT server)
+///   - deletes the app PIN (`/root/.dashusb/ble-pin` plus the boot copy),
+///     returning the device to unclaimed
+///   - restarts ONLY `dashusb-ble.service`, the phone-facing GATT server
 ///
-/// It NEVER touches the car or the sampler: the Tesla's BlueZ entry
-/// (advertised name `S<hex>C`, stored keyless — the vehicle uses app-layer
-/// crypto, not an LE bond) is preserved, and neither `bluetooth.service` nor
-/// the telemetry sampler is restarted, so keep-awake / archiving keep running.
-/// The app generates and pushes a fresh PIN during the subsequent re-claim.
+/// MUST NOT restart `bluetooth.service`, so archiving keeps running. The app
+/// pushes a fresh PIN on the re-claim.
+///
+/// The non-phone peer filter (see `is_tesla_peer`) is inherited from the
+/// upstream Tesla product. GM exposes no BLE interface, so no such peer
+/// exists here and the filter never matches. Harmless, but dead.
 pub async fn ble_reset_pair(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
-    // 1) Remove phone bonds, preserving the Tesla peer + keyless entries.
+    // 1) Remove phone bonds, preserving keyless entries.
     let removed = remove_phone_bonds().await;
 
     // 2) Clear the app PIN so the device returns to the unclaimed state and
@@ -212,8 +190,8 @@ pub async fn ble_reset_pair(State(_s): State<AppState>) -> (StatusCode, Json<ser
         }
     }
 
-    // 3) Restart ONLY the phone-facing GATT server. Never the sampler or
-    //    bluetooth.service — the Tesla session must stay up.
+    // 3) Restart ONLY the phone-facing GATT server, never
+    //    bluetooth.service.
     let restarted = sentryusb_shell::run_with_timeout(
         Duration::from_secs(20),
         "systemctl",
@@ -232,12 +210,12 @@ pub async fn ble_reset_pair(State(_s): State<AppState>) -> (StatusCode, Json<ser
 
 /// Remove every BlueZ phone-client bond, preserving the Tesla peer.
 ///
-/// The phone bonds carry an LTK/LinkKey that goes stale after a Pi rebuild
-/// or a phone reset — the desync behind #324. The Tesla advertises as
-/// `S<hex>C` and is stored keyless (vehicle BLE doesn't LE-bond), so we skip
-/// any peer whose name matches that shape OR that carries no bond key.
-/// `bluetoothctl remove` drops the bond from the live daemon and deletes the
-/// on-disk dir without restarting bluetoothd, so the car link is untouched.
+/// Phone bonds carry an LTK/LinkKey that goes stale after a Pi rebuild or a
+/// phone reset, the desync behind #324. The Tesla advertises as `S<hex>C` and
+/// is stored keyless (vehicle BLE doesn't LE-bond), so skip any peer whose name
+/// matches that shape OR that carries no bond key. `bluetoothctl remove` drops
+/// the bond from the live daemon and deletes the on-disk dir without restarting
+/// bluetoothd, leaving the car link untouched.
 async fn remove_phone_bonds() -> Vec<String> {
     let mut removed = Vec::new();
     let adapters = match std::fs::read_dir("/var/lib/bluetooth") {
@@ -269,8 +247,8 @@ async fn remove_phone_bonds() -> Vec<String> {
                 &["remove", &mac],
             )
             .await;
-            // If the daemon didn't know the bond, the dir survives the
-            // `remove` — delete it directly so a stale LTK can't linger.
+            // If the daemon didn't know the bond, the dir survives `remove`,
+            // so delete it directly and stop a stale LTK from lingering.
             let _ = std::fs::remove_dir_all(&ppath);
             removed.push(mac);
         }
@@ -278,7 +256,7 @@ async fn remove_phone_bonds() -> Vec<String> {
     removed
 }
 
-/// `XX:XX:XX:XX:XX:XX` — a BlueZ peer directory name.
+/// True for a BlueZ peer directory name, `XX:XX:XX:XX:XX:XX`.
 fn is_mac_dir(s: &str) -> bool {
     let parts: Vec<&str> = s.split(':').collect();
     parts.len() == 6
@@ -292,9 +270,9 @@ fn info_name(info: &str) -> Option<&str> {
     info.lines().find_map(|l| l.strip_prefix("Name=").map(str::trim))
 }
 
-/// True when the peer is a Tesla — advertised name `S<hex>C` (e.g.
-/// `Se04d38788e92e221C`). Used to protect the car's BlueZ entry from the
-/// phone-bond cleanup.
+/// True when the peer is a Tesla, advertised name `S<hex>C` (for example
+/// `Se04d38788e92e221C`). Protects the car's BlueZ entry from the phone-bond
+/// cleanup.
 fn is_tesla_peer(info: &str) -> bool {
     match info_name(info) {
         Some(name) => {
@@ -350,7 +328,6 @@ pub async fn speedtest(State(_s): State<AppState>) -> impl IntoResponse {
     )
 }
 
-/// GET /api/system/rtc-status
 pub async fn get_rtc_status(State(_s): State<AppState>) -> impl IntoResponse {
     let rtc_exists = std::path::Path::new("/dev/rtc0").exists();
     let mut rtc_time = String::new();
@@ -359,9 +336,9 @@ pub async fn get_rtc_status(State(_s): State<AppState>) -> impl IntoResponse {
             rtc_time = out.trim().to_string();
         }
     }
-    // RTC presence is a hardware fact that doesn't change at runtime.
-    // The Dashboard hits this on every load — let the browser short-
-    // circuit subsequent requests for 5 min and save a round trip.
+    // RTC presence is a hardware fact that can't change at runtime, and the
+    // Dashboard hits this on every load. Let the browser serve the next 5 min
+    // from cache.
     (
         StatusCode::OK,
         [(axum::http::header::CACHE_CONTROL, "private, max-age=300")],
@@ -372,23 +349,17 @@ pub async fn get_rtc_status(State(_s): State<AppState>) -> impl IntoResponse {
     )
 }
 
-/// GET /api/system/clock-status
+/// Whether the Pi's system clock can be trusted for timestamping samples and
+/// matching them to drives later. The BLE pair card shows a short "clock not
+/// synced" hint only when both hold:
+///   * The system clock looks bogus (year < 2025, so unset or a Jan-1-2000
+///     style fallback, and no NTP sync yet)
+///   * No RTC battery is installed, so the clock can't survive reboots
 ///
-/// Reports whether the Pi's system clock can be trusted for
-/// timestamping samples + matching them to drives later. Used by the
-/// BLE pair card to show a short "clock not synced" hint ONLY when
-/// all of:
-///   * The system clock looks bogus (year < 2025 = unset / Jan-1-2000
-///     fallback / etc.)
-///   * No RTC battery is installed (with RTC, clock survives reboots)
-///   * No NTP sync has happened yet
-///
-/// Note: the telemetry sampler can now self-correct the system clock
-/// from any successful BLE state-poll response (Tesla embeds a
-/// GPS-derived timestamp in every state reply). So even without RTC
-/// or WiFi, the clock comes good as soon as the car responds once.
-/// The warning is now informational ("we're waiting on the first
-/// reading") rather than blocking.
+/// The telemetry sampler self-corrects the system clock from any successful
+/// BLE state-poll response (Tesla embeds a GPS-derived timestamp in every state
+/// reply), so even without RTC or WiFi the clock comes good once the car
+/// answers. The warning is informational, not blocking.
 ///
 /// Response shape:
 /// ```json
@@ -396,7 +367,7 @@ pub async fn get_rtc_status(State(_s): State<AppState>) -> impl IntoResponse {
 ///   "synced": true,            // year >= 2025 OR systemd-timesyncd marker
 ///   "has_rtc": true,           // /dev/rtc0 exists
 ///   "ntp_synced": true,        // /run/systemd/timesync/synchronized exists
-///   "show_warning": false      // !synced && !has_rtc && !ntp_synced
+///   "show_warning": false      // !synced && !has_rtc
 /// }
 /// ```
 pub async fn get_clock_status(
@@ -413,9 +384,8 @@ pub async fn get_clock_status(
     let synced = ntp_synced || year_looks_recent;
     let has_rtc = std::path::Path::new("/dev/rtc0").exists();
 
-    // NTP sync state flips at most a handful of times per boot. A 10s
-    // cache cuts repeat polling without hiding state changes that
-    // matter to the BLE warning UI.
+    // NTP sync state flips at most a handful of times per boot, so a 10s cache
+    // cuts repeat polling without hiding changes the BLE warning UI needs.
     (
         StatusCode::OK,
         [(axum::http::header::CACHE_CONTROL, "private, max-age=10")],
@@ -423,21 +393,19 @@ pub async fn get_clock_status(
             "synced": synced,
             "has_rtc": has_rtc,
             "ntp_synced": ntp_synced,
-            // The single boolean the UI cares about — don't pester
-            // RTC users, only warn when clock is bad AND there's no
-            // hardware fallback.
+            // The only boolean the UI acts on. Warn solely when the clock is
+            // bad AND no hardware fallback exists, so RTC users see nothing.
             "show_warning": !synced && !has_rtc,
         })),
     )
 }
 
-/// GET /api/system/ssh-pubkey
 pub async fn get_ssh_pubkey(State(_s): State<AppState>) -> impl IntoResponse {
     let pub_key = std::fs::read_to_string("/root/.ssh/id_ed25519.pub")
         .or_else(|_| std::fs::read_to_string("/root/.ssh/id_rsa.pub"))
         .unwrap_or_default();
-    // The pubkey only changes when generate_ssh_key runs; cache an
-    // hour and let users explicitly reload when they regenerate.
+    // The pubkey only changes when generate_ssh_key runs, so cache an hour and
+    // let users reload explicitly after regenerating.
     (
         StatusCode::OK,
         [(axum::http::header::CACHE_CONTROL, "private, max-age=3600")],
@@ -445,12 +413,10 @@ pub async fn get_ssh_pubkey(State(_s): State<AppState>) -> impl IntoResponse {
     )
 }
 
-/// POST /api/system/ssh-keygen
 pub async fn generate_ssh_key(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
-    // Production images run with a read-only root, so writing to
-    // /root/.ssh fails (EROFS) without remounting first. remountfs_rw is
-    // the canonical helper; the mount fallback covers dev images where
-    // it isn't installed.
+    // Production images run a read-only root, so writing to /root/.ssh fails
+    // with EROFS unless remounted first. remountfs_rw is the canonical helper;
+    // the mount fallback covers dev images that lack it.
     let _ = sentryusb_shell::run(
         "bash",
         &["-c", "/root/bin/remountfs_rw 2>/dev/null || mount -o remount,rw / 2>/dev/null || true"],

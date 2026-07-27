@@ -1,8 +1,8 @@
-//! Embedded runtime scripts that get installed to /root/bin/.
+//! Embedded runtime shell scripts, installed to /root/bin/ by
+//! [`install_runtime_scripts`].
 //!
-//! These are small shell scripts needed at runtime (after setup). They'll
-//! eventually be ported to Rust subcommands, but for now they're installed
-//! as bash scripts to maintain compatibility.
+//! archiveloop, systemd units, and external scripts call these by fixed path
+//! and filename, so the names here must not change.
 
 use anyhow::Result;
 
@@ -67,8 +67,8 @@ const DISABLE_GADGET: &str = r#"#!/bin/bash -eu
 dashusb gadget disable "$@"
 "#;
 
-/// autofs map script for `/tmp/snapshots` — resolves snap-NNN names to the
-/// right disk image + fstype for on-demand read-only mounts.
+/// autofs map script for `/tmp/snapshots`: resolves snap-NNN names to the
+/// right disk image and fstype for on-demand read-only mounts.
 const AUTO_SENTRYUSB: &str = r#"#!/bin/dash
 
 diskimage="/backingfiles/snapshots/$1/snap.bin"
@@ -108,17 +108,11 @@ cat "$optfile"
 "#;
 
 
-// ── archiveloop + supporting bash scripts ──────────────────────────────────
-//
-// Pulled in via `include_str!` from the vendored `run/` tree at compile
-// time. Before this, the Rust setup runner only wrote out the small
-// helper scripts above and silently relied on the Go-era pi-gen image
-// having pre-installed `archiveloop`, `archive-clips.sh`, etc. Anyone
-// running `curl | bash install-pi.sh` on a clean Pi OS would end up
-// with a working binary, a perfectly-formatted /root/dashusb.conf,
-// systemd-archive enabled… and an empty /root/bin/ where the script
-// the service tries to exec is supposed to live. Service crashloops,
-// no archive ever runs.
+// archiveloop and its supporting bash scripts, pulled in with `include_str!`
+// from the vendored `run/` tree at compile time. Setup MUST write these out:
+// dashusb-archive.service execs /root/bin/archiveloop and nothing else
+// installs it on a clean Pi OS (`curl | bash install-pi.sh` does not run
+// pi-gen), so a missing file means a crashlooping service and no archive runs.
 
 const ARCHIVELOOP: &str = include_str!("../../../run/archiveloop");
 const SEND_LIVE_ACTIVITY: &str = include_str!("../../../run/send-live-activity");
@@ -126,10 +120,9 @@ const SEND_PUSH_MESSAGE: &str = include_str!("../../../run/send-push-message");
 const TEMPERATURE_MONITOR: &str = include_str!("../../../run/temperature_monitor");
 const WAITFORIDLE: &str = include_str!("../../../run/waitforidle");
 
-/// Install all runtime helper scripts to /root/bin/.
-///
-/// Only announces a phase if at least one script is missing or has changed —
-/// once installed, re-running setup is a no-op.
+/// Install all runtime helper scripts to /root/bin/. Announces a phase only
+/// when at least one script is missing or has changed, so a re-run after a
+/// successful install is a silent no-op.
 pub async fn install_runtime_scripts(emitter: &crate::SetupEmitter) -> Result<bool> {
     let _ = std::fs::create_dir_all("/root/bin");
 
@@ -144,12 +137,11 @@ pub async fn install_runtime_scripts(emitter: &crate::SetupEmitter) -> Result<bo
         ("enable_gadget.sh", ENABLE_GADGET),
         ("disable_gadget.sh", DISABLE_GADGET),
         ("auto.dashusb", AUTO_SENTRYUSB),
-        // Archive flow — these are the universal scripts that don't depend
-        // on which archive system the user picked. The per-system variants
-        // (archive-clips.sh, archive-is-reachable.sh, connect-archive.sh,
-        // disconnect-archive.sh, archive-clips.sh and friends —
-        // archive.sh) are installed by `archive::install_archive_scripts`
-        // based on ARCHIVE_SYSTEM, since each system has its own copy.
+        // Universal archive-flow scripts, independent of the chosen archive
+        // system. The per-system variants (archive-clips.sh,
+        // archive-is-reachable.sh, connect-archive.sh, disconnect-archive.sh)
+        // are installed by `archive::install_archive_scripts` based on
+        // ARCHIVE_SYSTEM, since each system ships its own copy.
         ("archiveloop", ARCHIVELOOP),
         ("send-live-activity", SEND_LIVE_ACTIVITY),
         ("send-push-message", SEND_PUSH_MESSAGE),
@@ -157,8 +149,8 @@ pub async fn install_runtime_scripts(emitter: &crate::SetupEmitter) -> Result<bo
         ("waitforidle", WAITFORIDLE),
     ];
 
-    // Skip the phase entirely if every script is already present and
-    // byte-for-byte identical to what we'd write.
+    // Skip the phase when every script is already present and byte-for-byte
+    // identical.
     let all_current = scripts.iter().all(|(name, content)| {
         let path = format!("/root/bin/{}", name);
         std::fs::read_to_string(&path)

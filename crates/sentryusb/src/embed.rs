@@ -8,16 +8,14 @@ use rust_embed::{Embed, EmbeddedFile};
 #[folder = "static/"]
 struct StaticFiles;
 
-/// Hand-rolled MIME table. The full `mime_guess` crate ships a
-/// thousands-entry generated database we don't need — we serve a
-/// closed set of extensions out of the embedded SPA bundle plus its
-/// pre-compressed siblings. Fallback is `application/octet-stream`,
-/// which is the same default `mime_guess::first_or_octet_stream()`
-/// would have returned.
+/// Hand-rolled MIME table: the embedded SPA bundle and its pre-compressed
+/// siblings are a closed set of extensions, so `mime_guess`'s thousands-entry
+/// database is not worth its size. Falls back to `application/octet-stream`,
+/// the same default `mime_guess::first_or_octet_stream()` gives.
 fn mime_for(path: &str) -> &'static str {
-    // For the pre-compressed siblings the MIME of the *original*
-    // resource is what we advertise; Content-Encoding handles the
-    // wrapping. `foo.js.br` → `application/javascript`.
+    // Advertise the MIME of the *original* resource for a pre-compressed
+    // sibling; Content-Encoding covers the wrapping. `foo.js.br` →
+    // `application/javascript`.
     let stem = path
         .strip_suffix(".br")
         .or_else(|| path.strip_suffix(".gz"))
@@ -43,26 +41,22 @@ fn mime_for(path: &str) -> &'static str {
     }
 }
 
-/// SPA fallback handler: serve static files or index.html for client-side
-/// routing. Sets caching headers so repeat page loads don't re-download the
-/// JS bundle from a car parked outside on flaky WiFi:
+/// SPA fallback: serve a static file, else index.html for client-side routing.
 ///
-///   /assets/* — Vite content-hashes these (e.g. `index-CThdLhPi.js`); the
-///   bytes are immutable, so cache them forever.
+/// Caching keeps repeat page loads off the network for a car parked outside on
+/// flaky WiFi. `/assets/*` is content-hashed by Vite (`index-CThdLhPi.js`) and
+/// so immutable: cache forever. index.html and other entry files get
+/// `no-cache`, so a soft reload picks up a new bundle after an OTA update
+/// without a hard refresh.
 ///
-///   index.html and other entry files — `no-cache` so a soft reload picks
-///   up a new bundle after an OTA update without a hard refresh.
+/// When `build.sh` produced `.br` / `.gz` siblings, the pre-compressed bytes
+/// are served directly, avoiding per-request compression CPU on the Pi Zero
+/// 2W. Clients that do not advertise br/gzip get the raw bytes.
 ///
-/// If `build.sh` produced `.br` / `.gz` siblings for the asset, we serve
-/// the pre-compressed bytes directly — no per-request compression CPU,
-/// which matters on the Pi Zero 2W. Browsers that don't advertise br/gzip
-/// support fall back to the raw bytes.
-///
-/// ETag is the first 16 bytes (hex) of the sha256 hash that rust-embed
-/// pre-computes at compile time, suffixed with the encoding so a client
-/// that downgrades from br→identity gets a fresh body instead of a stale
-/// 304. If the client's `If-None-Match` matches, return 304 — the asset
-/// isn't re-sent.
+/// The ETag is the first 16 bytes (hex) of the sha256 hash rust-embed computes
+/// at compile time, suffixed with the encoding so a client downgrading from br
+/// to identity gets a fresh body instead of a stale 304. A matching
+/// `If-None-Match` returns 304 without re-sending the asset.
 pub async fn spa_handler(uri: Uri, headers: HeaderMap) -> Response {
     let path = uri.path().trim_start_matches('/');
 

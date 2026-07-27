@@ -83,8 +83,8 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               key={item.to}
               to={item.to}
               end={item.to === "/"}
-              // Native tooltip so the icon-only collapsed rail is still
-              // usable — without it, collapsed nav items are unlabeled.
+              // Native tooltip: collapsed nav items are icon-only and
+              // otherwise unlabeled.
               title={collapsed ? item.label : undefined}
               aria-label={collapsed ? item.label : undefined}
               className={({ isActive }) =>
@@ -191,7 +191,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         </button>
       )}
 
-      {/* Collapse toggle — pinned to right edge, vertically centered */}
+      {/* Collapse toggle, pinned to the right edge and vertically centered */}
       <button
         onClick={onToggle}
         className="absolute right-0 top-1/2 z-40 -translate-y-1/2 translate-x-1/2 flex h-6 w-6 items-center justify-center rounded-full border border-white/10 bg-slate-900 text-slate-500 shadow-lg transition-colors hover:bg-slate-800 hover:text-slate-300"

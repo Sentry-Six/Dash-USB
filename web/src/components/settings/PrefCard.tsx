@@ -4,10 +4,10 @@ import type { Halo } from "@/components/ui/StatusTile"
 import { SectionErrorBoundary } from "@/components/ErrorBoundary"
 
 /**
- * Configures the "feature unavailable" overlay drawn over the card body when
- * `disabled` is set on a PrefCard. The header (icon + title + badge) keeps
- * rendering normally — only the body is blurred and inerted, so users can
- * still tell which card they're looking at.
+ * The "feature unavailable" overlay drawn over the card body when `disabled`
+ * is set on a PrefCard. The header (icon, title, badge) keeps rendering
+ * normally; only the body is blurred and inerted, so the card stays
+ * identifiable.
  */
 export interface DisabledConfig {
   /** Centered text explaining what the user needs to enable. */
@@ -28,11 +28,11 @@ interface PrefCardProps {
   footer?: ReactNode
   className?: string
   /**
-   * When set, the card body is rendered behind a blurred, non-interactive
-   * overlay with the supplied reason + optional CTA. Children stay mounted
-   * (no state loss on re-enable). The body wrapper carries the `inert`
-   * attribute, which removes it from the focus order and from assistive
-   * tech — `pointer-events: none` alone wouldn't block keyboard Tab.
+   * When set, the card body renders behind a blurred, non-interactive overlay
+   * carrying this reason and optional CTA. Children stay mounted (no state
+   * loss on re-enable). The body wrapper must use `inert`, not just
+   * `pointer-events: none`, which would leave it reachable by Tab and by
+   * assistive tech.
    */
   disabled?: DisabledConfig
   children: ReactNode
@@ -65,11 +65,9 @@ export function PrefCard({
       </div>
       {disabled ? (
         <div className="relative">
-          {/* Keep the real controls mounted (no state loss on re-enable)
-              but push them fully behind a frosted scrim so their text
-              can't bleed through and collide with the centered message —
-              the previous blur-only treatment left the body legible and
-              looked like a rendering glitch. */}
+          {/* Controls stay mounted (no state loss on re-enable) but sit fully
+              behind a frosted scrim. Blur alone left the body legible and its
+              text collided with the centered message. */}
           <div
             inert
             aria-hidden
@@ -136,9 +134,9 @@ function packWithin(heights: number[], cap: number, max: number): number[] | nul
 
 /**
  * Split items into at most `n` contiguous runs (one per column), minimising
- * the tallest column — the same balancing CSS multi-column performs. Binary
- * search on the smallest feasible column height. Padded with empty trailing
- * columns so the result always has `n` entries.
+ * the tallest column the way CSS multi-column balances. Binary search on the
+ * smallest feasible column height. Padded with empty trailing columns so the
+ * result always has `n` entries.
  */
 function balancedRuns(heights: number[], n: number): number[] {
   let lo = Math.max(0, ...heights)
@@ -159,29 +157,28 @@ function balancedRuns(heights: number[], n: number): number[] {
 }
 
 /**
- * Card wrapper used by every settings tab. Masonry that reproduces the CSS
+ * Card wrapper used by every settings tab. Masonry reproducing the CSS
  * multi-column layout it replaced:
- *  - cards keep a consistent ~`min`px width and never stretch to fill the
- *    row on wide screens (the old `auto-fit … 1fr` ballooned them),
- *  - tall cards next to short ones pack vertically instead of forcing a
- *    row-aligned "staircase" with big gaps (e.g. the System tab's backup
- *    list next to the short Export/Raw cards), and
+ *  - cards hold a ~`min`px width and never stretch to fill a wide row,
+ *  - tall cards next to short ones pack vertically instead of leaving a
+ *    row-aligned "staircase" of gaps (the System tab's backup list beside
+ *    the short Export/Raw cards),
  *  - cards fill in source order, top-to-bottom then left-to-right, height-
- *    balanced across the same column count multicol picks for
- *    `column-width: min` — so placement matches the old layout.
+ *    balanced across the column count multicol would pick for
+ *    `column-width: min`.
  *
- * Deliberately NOT CSS multi-column: multicol is a fragmentation context,
- * and WebKit / older Chromium (e.g. the Tesla in-car browser) mis-paint
- * fragmented boxes that combine `backdrop-filter`, `overflow: hidden` and
- * absolutely-positioned children — all of which PrefCard uses. Symptoms
- * were blank "ghost" cards and the disabled-state overlay floating
- * detached from its card chrome.
+ * Do NOT switch this to CSS multi-column. Multicol is a fragmentation
+ * context, and WebKit / older Chromium (the Tesla in-car browser) mis-paint
+ * fragmented boxes combining `backdrop-filter`, `overflow: hidden` and
+ * absolutely positioned children, all of which PrefCard uses. Symptoms were
+ * blank "ghost" cards and the disabled-state overlay floating detached from
+ * its card chrome.
  *
- * Layout is measured + absolutely positioned over the flattened DOM
- * children, so a section component that renders several cards in a
- * fragment (UpdateSection, PrivacyCards) contributes each card
- * individually — exactly how multicol treated them. Positions live in
- * inline styles, not React state, so cards never remount when they move.
+ * Layout is measured and absolutely positioned over the flattened DOM
+ * children, so a section that renders several cards in a fragment
+ * (UpdateSection, PrivacyCards) contributes each card individually.
+ * Positions live in inline styles, not React state, so cards never remount
+ * when they move.
  */
 export function PrefGrid({ children, min = 340 }: { children: ReactNode; min?: number }) {
   const ref = useRef<HTMLDivElement>(null)
@@ -204,9 +201,9 @@ export function PrefGrid({ children, min = 340 }: { children: ReactNode; min?: n
       const n = Math.max(1, Math.floor((width + GRID_GAP_PX) / (min + GRID_GAP_PX)))
       const colWidth = (width - (n - 1) * GRID_GAP_PX) / n
 
-      // Batch the width writes before the height reads — one reflow. The
-      // style-equality guards keep observer-triggered re-runs mutation-free
-      // so they can't loop.
+      // Width writes before height reads: one reflow. The style-equality
+      // guards keep observer-triggered re-runs mutation-free so they can't
+      // loop.
       for (const kid of kids) {
         const w = `${colWidth}px`
         if (kid.style.width !== w) kid.style.width = w
@@ -233,7 +230,7 @@ export function PrefGrid({ children, min = 340 }: { children: ReactNode; min?: n
       if (el.style.height !== h) el.style.height = h
     }
 
-    layout() // before first paint — no unpositioned flash
+    layout() // before first paint, so nothing flashes unpositioned
     ro.observe(el)
     const mo = new MutationObserver(layout) // a section mounting/unmounting a card
     mo.observe(el, { childList: true })
@@ -245,10 +242,10 @@ export function PrefGrid({ children, min = 340 }: { children: ReactNode; min?: n
 
   return (
     <div ref={ref} className="relative">
-      {/* Each section gets its own boundary so one crashing card degrades to
-          a fallback card instead of unmounting the whole app. Boundaries add
-          no DOM node, so the flattened-children measurement is unaffected;
-          a fallback renders as a single measurable card. */}
+      {/* One boundary per section, so a crashing card degrades to a fallback
+          card instead of unmounting the whole app. Boundaries add no DOM
+          node, so the flattened-children measurement is unaffected and a
+          fallback measures as a single card. */}
       {Children.map(children, (child) => (
         <SectionErrorBoundary>{child}</SectionErrorBoundary>
       ))}

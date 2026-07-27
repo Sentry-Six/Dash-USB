@@ -1,13 +1,11 @@
 //! Notification center: history and type settings.
 //!
-//! Notification center API:
-//! - History events carry id, unix-ts, type, title, message, providers,
-//!   per-provider results.
-//! - Newest-first ordering, max 500 entries.
-//! - Query params: `limit`, `offset`, `type` (filter).
-//! - Settings are stored in the user-preferences map with `notify_<type>` keys.
-//! - Read fallback: primary `/mutable/dashusb-notifications.json`, legacy
-//!   `/mutable/.notification_history.json` (older Rust port wrote there).
+//! - History events carry id, unix-ts, type, title, message, providers and
+//!   per-provider results. Newest first, capped at 500 entries.
+//! - Query params: `limit`, `offset`, and a `type` filter.
+//! - Settings live in the user-preferences map under `notify_<type>` keys.
+//! - Reads fall back from `/mutable/dashusb-notifications.json` to the legacy
+//!   `/mutable/.notification_history.json`.
 
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -58,8 +56,6 @@ fn save_history_locked(events: &[NotificationEvent]) -> std::io::Result<()> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     std::fs::write(HISTORY_PATH, data)
 }
-
-// --- Settings: toggle flags stored in preferences ---
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct NotificationSettings {
@@ -130,12 +126,10 @@ fn save_settings(s: &NotificationSettings) {
     crate::preferences::save_prefs(&prefs);
 }
 
-/// GET /api/notifications/settings
 pub async fn get_settings(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
     (StatusCode::OK, Json(serde_json::to_value(load_settings()).unwrap_or_default()))
 }
 
-/// PUT /api/notifications/settings
 pub async fn update_settings(
     State(_s): State<AppState>,
     body: String,
@@ -148,8 +142,6 @@ pub async fn update_settings(
     crate::json_ok()
 }
 
-// --- History ---
-
 #[derive(Deserialize)]
 pub struct HistoryQuery {
     #[serde(rename = "type")]
@@ -158,7 +150,6 @@ pub struct HistoryQuery {
     pub offset: Option<usize>,
 }
 
-/// GET /api/notifications/history
 pub async fn get_history(
     State(_s): State<AppState>,
     Query(q): Query<HistoryQuery>,
@@ -187,7 +178,6 @@ pub async fn get_history(
     })))
 }
 
-/// POST /api/notifications/history
 pub async fn append_history(
     State(_s): State<AppState>,
     body: String,
@@ -205,11 +195,9 @@ pub async fn append_history(
     }
 }
 
-/// Prepend `event` to the history file and save. Usable from other
-/// handlers without going through HTTP self-calls. Fills in `id` +
-/// `timestamp` if the caller left them zero/empty.
-///
-/// Returns the event as persisted (with any auto-filled fields).
+/// Prepend `event` to the history file, so other handlers can record without an
+/// HTTP self-call. Fills in `id` and `timestamp` when the caller leaves them
+/// zero or empty, and returns the event as persisted.
 pub(crate) fn record_event(
     mut event: NotificationEvent,
 ) -> std::io::Result<NotificationEvent> {
@@ -238,9 +226,8 @@ pub(crate) fn record_event(
     Ok(event)
 }
 
-/// Evaluate the notification-type gate for a given type.
-/// `None` or empty → always allowed (matches bash behavior of skipping
-/// the gate when no type is provided).
+/// The notification-type gate. `None` or an empty type is always allowed: no
+/// type means no gate to apply.
 pub(crate) fn is_type_enabled(notification_type: Option<&str>) -> bool {
     let Some(ntype) = notification_type else { return true };
     if ntype.is_empty() {
@@ -260,7 +247,6 @@ pub(crate) fn is_type_enabled(notification_type: Option<&str>) -> bool {
     }
 }
 
-/// DELETE /api/notifications/history
 pub async fn clear_history(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
     let _guard = HISTORY_LOCK.write().unwrap_or_else(|p| p.into_inner());
     if let Err(e) = save_history_locked(&[]) {
@@ -272,7 +258,6 @@ pub async fn clear_history(State(_s): State<AppState>) -> (StatusCode, Json<serd
     crate::json_ok()
 }
 
-/// DELETE /api/notifications/history/{id}
 pub async fn delete_history_item(
     State(_s): State<AppState>,
     Path(id): Path<String>,
@@ -298,11 +283,8 @@ pub struct CheckParams {
     pub notification_type: Option<String>,
 }
 
-/// GET /api/notifications/settings/check?type=archive_start
-///
-/// Go returns `{type, enabled}` reflecting the user's toggle state. We match
-/// that contract (the prior Rust impl returned `{configured}` based on config
-/// keys, which is a different question).
+/// Returns `{type, enabled}` for the user's toggle state. That is the toggle
+/// only, not whether any provider is actually configured.
 pub async fn check_notification_type(
     State(_s): State<AppState>,
     Query(params): Query<CheckParams>,
@@ -345,8 +327,8 @@ mod tests {
 
     #[test]
     fn settings_deserialize_defaults_storage_repair_on() {
-        // A PUT from an older UI won't include storage_repair — it must
-        // default to enabled rather than failing deserialization.
+        // A PUT from an older UI omits storage_repair, which must default to
+        // enabled rather than failing deserialization.
         let json = r#"{
             "archive_start": true, "archive_complete": true,
             "archive_error": true, "temperature": true,

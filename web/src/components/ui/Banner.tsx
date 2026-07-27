@@ -18,7 +18,7 @@ const TITLE_COLOR_BY_KIND: Record<BannerKind, string> = {
 }
 
 export interface BannerItem {
-  /** Stable key for the stack — pass the same value across renders. */
+  /** Stable key for the stack: pass the same value across renders. */
   id: string
   kind: BannerKind
   icon: ReactNode

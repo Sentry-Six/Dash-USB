@@ -31,8 +31,8 @@ build_scanrsp() {
 # Program legacy ADV_IND directly via HCI (bypasses BlueZ mgmt):
 #   disable → set adv data → set scan-rsp (name, zero-padded to 31) →
 #   adv params (100ms min/max ADV_IND connectable undirected, public addr, all 3 chans) → enable
-# The "0x00" after the intervals is the advertising-type byte — ADV_IND
-# (connectable). DO NOT change to ADV_SCAN_IND (0x02) — the chip will then
+# The "0x00" after the intervals is the advertising-type byte: ADV_IND
+# (connectable). DO NOT change to ADV_SCAN_IND (0x02); the chip will then
 # silently refuse incoming GATT connect requests, surfacing as the phone
 # logging "GATT 147 bond=BOND_NONE" 10s into the attempt.
 assert_raw_adv() {
@@ -56,7 +56,7 @@ connect_in_flight() {
 }
 
 # Run the advertising loop ONLY when executed directly (the systemd ExecStart),
-# never when sourced — otherwise testing build_scanrsp() would loop forever.
+# never when sourced, or testing build_scanrsp() would loop forever.
 if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
     return 0 2>/dev/null || exit 0
 fi

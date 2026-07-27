@@ -1,8 +1,7 @@
-//! Disk image creation — replaces `create-backingfiles.sh`.
+//! Disk image creation.
 //!
-//! Creates the FAT32 cam disk image
-//! drives in /backingfiles/. Wraps & License Plates live as folders on the
-//! cam drive — no dedicated partition.
+//! Creates the FAT32 cam disk image in /backingfiles/. Wraps and License
+//! Plates live as folders on the cam drive, not on a dedicated partition.
 
 use std::path::Path;
 use std::time::Duration;
@@ -14,7 +13,6 @@ use crate::SetupEmitter;
 
 const BACKINGFILES: &str = "/backingfiles";
 
-/// Disk image spec.
 struct DriveSpec {
     name: &'static str,
     config_key: &'static str,
@@ -24,9 +22,9 @@ const DRIVE_SPECS: &[DriveSpec] = &[
     DriveSpec { name: "cam", config_key: "CAM_SIZE" },
 ];
 
-/// One-time cleanup for installs that previously had a dedicated wraps disk.
-/// The 4 GB image is no longer used — Wraps & LicensePlate are now folders
-/// on the cam drive. Reclaim the space on the next setup re-run.
+/// One-time cleanup for installs that predate the move of Wraps and
+/// LicensePlate to folders on the cam drive. Reclaims the 4 GB the dedicated
+/// wraps image occupies, on the next setup re-run.
 fn purge_legacy_wraps_disk() {
     let _ = std::fs::remove_file(format!("{}/wraps_disk.bin", BACKINGFILES));
     let _ = std::fs::remove_file(format!("{}/wraps_disk.bin.opts", BACKINGFILES));
@@ -62,11 +60,11 @@ pub fn dehumanize(s: &str) -> Result<u64> {
 
 /// Get available space in KB on /backingfiles, minus a safety margin.
 async fn available_space_kb() -> Result<u64> {
-    // AVAILABLE space, not filesystem size — with snapshots living on
-    // the same filesystem, sizing against the total let a re-run pass
-    // the check and then fail at truncate once snapshots had grown.
-    // Images being recreated are deleted first, so their current
-    // allocation is credited back by the caller.
+    // AVAILABLE space, not filesystem size: snapshots live on the same
+    // filesystem, so sizing against the total lets a re-run pass the check
+    // and then fail at truncate once snapshots have grown. Images being
+    // recreated are deleted first, so the caller credits their current
+    // allocation back.
     let output = sentryusb_shell::run(
         "df", &["--output=avail", "--block-size=1K", &format!("{}/", BACKINGFILES)],
     ).await?;
@@ -75,16 +73,16 @@ async fn available_space_kb() -> Result<u64> {
     // Keep a reserve so image creation can never squeeze the fs to zero:
     // 10% capped between 2GB and 10GB.
     let ten_pct = avail / 10;
-    let min_pad = 2 * 1024 * 1024; // 2GB in KB
-    let max_pad = 10 * 1024 * 1024; // 10GB in KB
+    let min_pad = 2 * 1024 * 1024;
+    let max_pad = 10 * 1024 * 1024;
     let padding = ten_pct.max(min_pad).min(max_pad);
     Ok(avail.saturating_sub(padding))
 }
 
-/// Check if an existing image file matches the requested size (within
-/// 10MB) AND carries a FAT32 partition. A repurposed Tesla install can
-/// hold a same-sized exFAT image (`USE_EXFAT` era) that GM cannot read
-/// — size alone must not let it survive.
+/// True when an existing image file matches the requested size (within 10 MB)
+/// AND carries a FAT32 partition. A repurposed Tesla install can hold a
+/// same-sized exFAT image (`USE_EXFAT` era) that GM cannot read, so size alone
+/// must never let one survive.
 fn image_matches(file: &str, requested_kb: u64) -> bool {
     if requested_kb == 0 {
         return !Path::new(file).exists();
@@ -95,9 +93,9 @@ fn image_matches(file: &str, requested_kb: u64) -> bool {
         if diff >= 10240 {
             return false;
         }
-        // MBR partition type: 0x0c = FAT32 LBA (what we create);
-        // 0x07 = exFAT/NTFS (legacy USE_EXFAT images). Byte 450 is the
-        // type field of partition entry 1 (446 + 4).
+        // MBR partition type at byte 450 (446 + 4, the type field of
+        // partition entry 1): 0x0c = FAT32 LBA, the type setup creates;
+        // 0x07 = exFAT/NTFS from a legacy USE_EXFAT image.
         if let Ok(mut f) = std::fs::File::open(file) {
             use std::io::{Read, Seek, SeekFrom};
             let mut b = [0u8; 1];
@@ -133,23 +131,20 @@ async fn create_drive(
     sentryusb_shell::run("truncate", &["--size", &format!("{}K", size_kb), &filename]).await
         .context("truncate failed")?;
 
-    // Create partition table. FAT32 always — the GM head unit requires
-    // it, and the vehicle profile pins `filesystem = "fat32"`.
+    // FAT32 always: the GM head unit requires it and the vehicle profile pins
+    // `filesystem = "fat32"`.
     sentryusb_shell::run(
         "bash", &["-c", &format!("echo 'type=c' | sfdisk '{}'", filename)],
     ).await.context("sfdisk failed on disk image")?;
 
-    // Find partition offset
     let offset = get_partition_offset(&filename).await?;
 
-    // Set up loop device
     let loopdev = sentryusb_shell::run(
         "losetup", &["-f", "--show", "-o", &offset.to_string(), &filename],
     ).await.context("losetup failed")?.trim().to_string();
 
     let _ = sentryusb_shell::run("udevadm", &["settle", "--timeout=5"]).await;
 
-    // Format
     emitter.progress(&format!("Creating filesystem with label '{}'", label));
     let format_result =
         sentryusb_shell::run("mkfs.vfat", &[&loopdev, "-F", "32", "-n", label]).await;
@@ -187,7 +182,6 @@ async fn get_partition_offset(filename: &str) -> Result<u64> {
 /// Release all loop devices and unmount all drive image mount points.
 async fn release_all_images() {
     let _ = sentryusb_shell::run("bash", &["-c", "killall archiveloop 2>/dev/null"]).await;
-    // Use the usb_gadget crate to disable
     let _ = sentryusb_gadget::disable();
     // /mnt/wraps stays in the list to drain any leftover mount from a
     // pre-migration install before purge_legacy_wraps_disk runs.
@@ -199,7 +193,6 @@ async fn release_all_images() {
     ).await;
 }
 
-/// Ensure dosfstools is available.
 async fn ensure_vfat_tools(emitter: &SetupEmitter) -> Result<()> {
     if sentryusb_shell::run("which", &["mkfs.vfat"]).await.is_err() {
         crate::apt::apt_install(
@@ -211,14 +204,15 @@ async fn ensure_vfat_tools(emitter: &SetupEmitter) -> Result<()> {
     Ok(())
 }
 
-/// Create all disk images based on config settings. Returns true if any work was performed.
+/// Create all disk images from the config settings. Returns true if any work
+/// was performed.
 pub async fn create_disk_images(env: &SetupEnv, emitter: &SetupEmitter) -> Result<bool> {
     let profile = sentryusb_vehicle_profile::Profile::active();
     let min_kb = dehumanize(&profile.virtual_drive.min_size)?;
 
-    // Calculate requested sizes first (before any heavy work) so we can
-    // short-circuit when everything already matches. Size defaults, the
-    // volume label, and the size floor all come from the vehicle profile.
+    // Compute requested sizes before any heavy work so an all-match run can
+    // short-circuit. Size defaults, volume label, and size floor all come from
+    // the vehicle profile.
     let mut sizes: Vec<(String, String, u64, String)> = Vec::new();
     for spec in DRIVE_SPECS {
         let raw = env.get(spec.config_key, &profile.virtual_drive.default_size);
@@ -229,7 +223,7 @@ pub async fn create_disk_images(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
         };
         if size_kb < min_kb {
             bail!(
-                "CAM_SIZE {} is below the vehicle profile minimum {} — the                  car requires a drive of at least that size to record.",
+                "CAM_SIZE {} is below the vehicle profile minimum {}. The car requires a drive of at least that size to record.",
                 raw, profile.virtual_drive.min_size,
             );
         }
@@ -242,9 +236,8 @@ pub async fn create_disk_images(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
         ));
     }
 
-    // Reclaim the 4 GB the dedicated wraps disk used to occupy. Runs before
-    // the all-match early exit so a pre-migration install gets cleaned up
-    // even when the user hasn't changed any sizes.
+    // Runs before the all-match early exit so a pre-migration install is
+    // cleaned up even when no sizes changed.
     let legacy_wraps_path = format!("{}/wraps_disk.bin", BACKINGFILES);
     let legacy_wraps = Path::new(&legacy_wraps_path).exists();
     if legacy_wraps {
@@ -263,24 +256,23 @@ pub async fn create_disk_images(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
 
     ensure_vfat_tools(emitter).await?;
 
-    // Space check. teslausb auto-shrinks because it has no UI to ask
-    // the user; we have a UI, so we reject explicitly with a clear
-    // breakdown. The wizard pre-flight surfaces the same calculation
-    // before submit (see verify::verify_disk_space). Never auto-delete
-    // snapshots as a side effect of a settings change.
+    // Space check. Reject explicitly with a clear breakdown rather than
+    // auto-shrinking; the wizard pre-flight surfaces the same calculation
+    // before submit (see verify::verify_disk_space). Snapshots must NEVER be
+    // auto-deleted as a side effect of a settings change.
     //
-    // The image is SPARSE (truncate + mkfs.vfat): the car must SEE the
-    // full logical size, but on a pure-rolling profile (no persistent
-    // event tier) real allocation tops out near the rolling window, so
-    // requiring the full logical size physically free would wrongly
-    // reject e.g. a 128 GB card hosting a 64 GB virtual drive. Require
-    // instead: min(logical, max(half the logical size, 2x the rolling
-    // window for live + one COW generation)) + a snapshot reserve. The
-    // reserve stays OUTSIDE the cap — snapshots live next to the image
+    // The image is SPARSE (truncate + mkfs.vfat): the car must SEE the full
+    // logical size, but on a pure-rolling profile (no persistent event tier)
+    // real allocation tops out near the rolling window, so requiring the full
+    // logical size physically free would wrongly reject e.g. a 128 GB card
+    // hosting a 64 GB virtual drive. Require instead:
+    //   min(logical, max(0.5 * logical, 2 * rolling window for live plus one
+    //   COW generation)) + snapshot reserve
+    // The reserve stays OUTSIDE the min() cap: snapshots sit next to the image
     // on the same fs, so even a profile whose estimate hits the logical
     // ceiling still needs headroom beyond it. The 0.5x-logical floor is
-    // deliberate: it pads for per-segment size variance and future
-    // profile drift beyond the 2x-window estimate.
+    // deliberate, padding for per-segment size variance and future profile
+    // drift beyond the 2x-window estimate.
     let logical_requested: u64 = sizes.iter().map(|(_, _, sz, _)| sz).sum();
     let total_requested: u64 = if profile.features.event_folders {
         logical_requested
@@ -296,9 +288,9 @@ pub async fn create_disk_images(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
             .min((logical_requested / 2).max(rolling_kb.saturating_mul(2)))
             .saturating_add(SNAPSHOT_RESERVE_KB)
     };
-    // Credit back the allocation of images we're about to delete and
-    // recreate (du reports referenced KB; reflink-shared snapshot blocks
-    // stay allocated either way, so this only ever under-frees).
+    // Credit back the allocation of images about to be deleted and recreated.
+    // du reports referenced KB and reflink-shared snapshot blocks stay
+    // allocated either way, so this only ever under-frees.
     let mut reclaimable: u64 = 0;
     for (_, _, sz, filename) in &sizes {
         if Path::new(filename).exists() && !image_matches(filename, *sz) {
@@ -326,10 +318,8 @@ pub async fn create_disk_images(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
         );
     }
 
-    // Release everything that might be using the images
     release_all_images().await;
 
-    // Create/update each drive
     let cam_changed = !image_matches(&sizes[0].3, sizes[0].2);
     for (name, label, size_kb, filename) in &sizes {
         if image_matches(filename, *size_kb) {
@@ -339,13 +329,12 @@ pub async fn create_disk_images(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
         create_drive(name, label, *size_kb, emitter).await?;
     }
 
-    // Clean up stale /mutable/Recordings symlinks when cam drive was
-    // changed/removed — those symlinks point into the old cam_disk and
-    // are dangling after the recreate. Snapshots are intentionally NOT
-    // touched: they live independently on backingfiles and represent
-    // the user's archived footage history. Wiping them on a CAM_SIZE
-    // change is the same "I changed a setting, why did I lose data"
-    // failure mode the partition wipe used to cause.
+    // Clean up stale /mutable/Recordings symlinks when the cam drive changed
+    // or was removed: they point into the old cam_disk and dangle after the
+    // recreate. Snapshots are intentionally NOT touched. They live
+    // independently on backingfiles and hold the user's archived footage, so
+    // wiping them on a CAM_SIZE change would be the same "I changed a setting,
+    // why did I lose data" failure mode as a partition wipe.
     if sizes[0].2 == 0 || cam_changed {
         if Path::new("/mutable/Recordings").is_dir() {
             let _ = std::fs::remove_dir_all("/mutable/Recordings/Continuous");

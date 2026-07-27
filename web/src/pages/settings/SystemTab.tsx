@@ -24,21 +24,16 @@ interface Props {
 }
 
 /**
- * Settings → System. Consolidates what used to be three sparse, low-traffic
- * tabs — Backups, About, and Privacy — into one admin/maintenance surface:
- *
- *   - Config Backup / Export / Raw Config   (was: Backups tab)
- *   - Setup Wizard + Resources              (was: About tab)
- *   - Analytics opt-in + disclosure         (was: Privacy tab)
+ * Settings > System: the admin and maintenance surface. Config backup,
+ * export and raw config; the setup wizard and resources; the analytics
+ * opt-in and its disclosure.
  */
 export function SystemTab({ onOpenRawConfig, onOpenWizard, version, hostname }: Props) {
-  // Export the device's full configuration as a bash-sourceable .conf file.
-  // Active settings become `export KEY='value'` lines; defaults become
-  // `# export KEY='value'`. Rusty-only Web-UI preferences (the JSON kv-store
-  // at /mutable/.dashusb_preferences.json) are appended as `# preference:`
-  // comment lines for export completeness without polluting the bash
-  // namespace if the file is ever sourced. Single quotes inside values are
-  // escaped via the standard '\'' trick so the file stays valid bash.
+  // Writes a bash-sourceable .conf: active settings as `export KEY='value'`,
+  // defaults commented out. Web UI preferences (the JSON kv-store at
+  // /mutable/.dashusb_preferences.json) are appended as `# preference:` lines
+  // so sourcing the file cannot pollute the bash namespace. Single quotes in
+  // values use the '\'' escape so the file stays valid bash.
   async function exportConfig(): Promise<void> {
     try {
       const [configRes, prefsRes] = await Promise.all([
@@ -107,10 +102,9 @@ export function SystemTab({ onOpenRawConfig, onOpenWizard, version, hostname }: 
 
   return (
     <PrefGrid min={300}>
-      {/* --- Config Backup + Configuration, grouped into one masonry column
-          so the Configuration card sits directly UNDER Config Backup. The
-          height-balanced grid won't reliably stack two separate siblings,
-          so we wrap them in a single column unit. --- */}
+      {/* Config Backup and Configuration share one masonry column so the
+          Configuration card sits directly under Config Backup. The
+          height-balanced grid will not reliably stack two separate siblings. */}
       <div className="flex flex-col gap-2.5">
         <ConfigBackupSection />
         <PrefCard
@@ -142,10 +136,8 @@ export function SystemTab({ onOpenRawConfig, onOpenWizard, version, hostname }: 
         </PrefCard>
       </div>
 
-      {/* --- Storage repair (external-SSD XFS recovery) --- */}
       <StorageRepairCard />
 
-      {/* --- Setup Wizard + Resources (was: About) --- */}
       <PrefCard
         icon={<Wand2 className="h-3.5 w-3.5" />}
         halo="accent"
@@ -183,17 +175,16 @@ export function SystemTab({ onOpenRawConfig, onOpenWizard, version, hostname }: 
         </div>
       </PrefCard>
 
-      {/* --- Privacy (was: Privacy tab) --- */}
       <PrivacyCards />
     </PrefGrid>
   )
 }
 
 /**
- * Settings → System → Privacy. Lets users review the disclosure and flip
- * the analytics opt-in at any time. This is the Art. 21 right-to-object
- * mechanism required for legitimate-interest processing — automated means,
- * no email needed.
+ * Settings > System > Privacy. Reviewing the disclosure and flipping the
+ * analytics opt-in must stay available at any time: this is the GDPR Art. 21
+ * right-to-object mechanism for legitimate-interest processing, by automated
+ * means and with no email required.
  */
 function PrivacyCards() {
   const [choice, setChoice] = useState<boolean | null>(null)

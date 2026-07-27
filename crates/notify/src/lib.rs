@@ -1,7 +1,6 @@
-//! Native notification providers for DashUSB.
-//!
-//! Replaces the bash `send-push-message` script with direct HTTP calls,
-//! eliminating subprocess overhead and Python/curl dependencies.
+//! Notification providers, one module per service. Settings come from
+//! dashusb.conf; [`send_to_all_with_context`] fans every enabled provider
+//! out concurrently over one shared HTTP client.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -20,16 +19,13 @@ pub mod sns;
 pub mod telegram;
 pub mod webhook;
 
-/// Trait for notification providers.
 #[async_trait]
 pub trait NotificationProvider: Send + Sync {
-    /// Send a notification with the given title and message.
     async fn send(&self, title: &str, message: &str) -> Result<()>;
-    /// Provider name for logging/display.
     fn name(&self) -> &str;
 }
 
-/// Configuration for all notification providers, read from dashusb.conf.
+/// Provider settings, loaded from dashusb.conf.
 pub struct NotifyConfig {
     pub pushover_enabled: bool,
     pub pushover_app_key: String,
@@ -77,9 +73,9 @@ pub struct NotifyConfig {
     pub sns_enabled: bool,
     pub sns_topic_arn: String,
     pub sns_region: String,
-    // Passed to the SNS signer because systemd starts the server without
-    // sourcing dashusb.conf — env-only AWS credential lookups never
-    // resolve on a normal install (see sns.rs).
+    // Passed to the SNS signer explicitly: systemd starts the server
+    // without sourcing dashusb.conf, so env-only AWS credential lookups
+    // never resolve on a normal install (see sns.rs).
     pub sns_access_key: String,
     pub sns_secret_key: String,
 
@@ -89,7 +85,6 @@ pub struct NotifyConfig {
 }
 
 impl NotifyConfig {
-    /// Load notification config from dashusb.conf.
     pub fn from_config() -> Self {
         let config_path = sentryusb_config::find_config_path();
         let (active, _) = sentryusb_config::parse_file(config_path)
@@ -104,10 +99,9 @@ impl NotifyConfig {
 
         let mobile_push_enabled = is_true("MOBILE_PUSH_ENABLED");
 
-        // MOBILE_PUSH_DEVICE_ID and MOBILE_PUSH_SECRET are intentionally NOT
-        // stored in dashusb.conf — they live in the credentials JSON managed
-        // by the server. envsetup.sh reads them from that file;
-        // we do the same here when the conf values are absent.
+        // MOBILE_PUSH_DEVICE_ID and MOBILE_PUSH_SECRET are deliberately not
+        // stored in dashusb.conf; they live in the server-managed
+        // credentials JSON. Fall back to it when the conf values are absent.
         let (mobile_push_device_id, mobile_push_secret) = {
             let from_conf = (get("MOBILE_PUSH_DEVICE_ID"), get("MOBILE_PUSH_SECRET"));
             if !from_conf.0.is_empty() && !from_conf.1.is_empty() {
@@ -175,8 +169,7 @@ impl NotifyConfig {
     }
 }
 
-/// Read device_id and device_secret from the credentials JSON file.
-/// Mirrors envsetup.sh's fallback for mobile push credentials.
+/// Same credentials file and keys envsetup.sh reads; the two must stay in sync.
 fn read_mobile_credentials_from_json() -> Option<(String, String)> {
     const CREDS_PATH: &str = "/root/.dashusb/notification-credentials.json";
     let data = std::fs::read_to_string(CREDS_PATH).ok()?;
@@ -189,39 +182,33 @@ fn read_mobile_credentials_from_json() -> Option<(String, String)> {
     Some((id, secret))
 }
 
-/// Request-level context for a single notification dispatch. Only
-/// mobile push (Sentry Connect) currently consumes the extras — the
-/// other channels are title + message only.
+/// Per-dispatch context. Only mobile push (Sentry Connect) reads the
+/// extras; every other channel uses title + message.
 #[derive(Debug, Clone, Default)]
 pub struct NotifyRequest<'a> {
     pub title: &'a str,
     pub message: &'a str,
-    /// `start` / `finish` — matches the bash `$3` positional arg. Drives
-    /// the live_activity branch on mobile push.
+    /// `start` or `finish`. Drives the live_activity branch on mobile push.
     pub type_hint: Option<&'a str>,
-    /// Notification category (`archive_start`, `temperature`, `drives`,
-    /// …). Echoed to the mobile push server for categorization and used
-    /// for the gate check upstream.
+    /// Category (`archive_start`, `temperature`, `drives`). Echoed to the
+    /// push server and used for the gate check upstream.
     pub notification_type: Option<&'a str>,
-    /// Total clip count for the pending archive run — enables the
+    /// Total clip count for the pending archive run. Enables the
     /// live_activity payload on `archive_start`.
     pub archive_total_count: Option<u32>,
 }
 
-/// Process-wide shared client for outbound notification dispatches.
-/// Built once on first send; reused for the lifetime of the process so
-/// we don't repeatedly stand up a fresh TLS pool + DNS cache + idle
-/// connection pool per sentry event.
+/// Shared outbound client, built once on first send and reused for the
+/// life of the process. Rebuilding it would stand up a fresh TLS pool,
+/// DNS cache and idle connection pool per sentry event.
 static NOTIFY_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
 
 fn notify_client() -> &'static reqwest::Client {
     NOTIFY_CLIENT.get_or_init(|| {
-        // Panic-on-error rather than fall back to `Client::default()`: the
-        // default builder discards our 30s/10s timeouts, so a TLS init
-        // failure would silently produce a no-timeout client that can
-        // hang a tokio worker indefinitely on a misconfigured push
-        // endpoint. Failing loudly at first send surfaces the real
-        // problem instead of pretending notifications still work.
+        // Panic rather than fall back to `Client::default()`: the default
+        // builder discards the timeouts below, so a TLS init failure would
+        // yield a no-timeout client that hangs a tokio worker indefinitely
+        // on a misconfigured push endpoint.
         reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .connect_timeout(std::time::Duration::from_secs(10))
@@ -230,10 +217,8 @@ fn notify_client() -> &'static reqwest::Client {
     })
 }
 
-/// Context-aware dispatch — preferred entry point for runtime
-/// notifications. Passes the extra context through to providers that
-/// can use it (currently just Sentry Connect); others ignore the extras
-/// and use title + message.
+/// Preferred entry point for runtime notifications. The extra context
+/// reaches only Sentry Connect; other providers get title + message.
 pub async fn send_to_all_with_context(
     config: &NotifyConfig,
     req: &NotifyRequest<'_>,
@@ -245,13 +230,11 @@ pub async fn send_to_all_with_context(
     let title = req.title;
     let message = req.message;
 
-    // Fan the providers out CONCURRENTLY. Each send is an independent
-    // HTTP call with its own 30s timeout; dispatching sequentially made
-    // total latency the SUM of every enabled channel — a time-sensitive
-    // Sentry alert's mobile push could sit behind a slow or unreachable
-    // Discord/Gotify endpoint for up to 30s per channel. Concurrent
-    // dispatch makes it the MAX instead, with per-provider results (and
-    // ordering) unchanged for callers.
+    // Dispatch concurrently so total latency is the slowest channel, not
+    // the sum: each send is an independent HTTP call with its own 30s
+    // timeout, and a slow or unreachable Discord/Gotify endpoint must not
+    // delay a time-sensitive mobile push. Per-provider results and their
+    // ordering are unchanged for callers.
     let mut sends: Vec<(&'static str, String, BoxFuture<'_, Result<()>>)> = Vec::new();
 
     if config.pushover_enabled {

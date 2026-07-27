@@ -89,13 +89,11 @@ export function SetupProgress({ complete, phase = "running" }: SetupProgressProp
   const prevLenRef = useRef(0)
   const lastChangeRef = useRef(0) // seeded on mount below (render must stay pure)
 
-  // Poll setup log as a fallback / catch-up mechanism only. Real-time log
-  // lines arrive via the `setup_progress` WebSocket event in the next
-  // effect — polling alone used to be the only source, which meant the
-  // UI could be up to 3 seconds behind reality and the Pi would reboot
-  // before the "Rebooting..." line ever showed up. The poll still
-  // matters for (a) seeding on mount, (b) catching up after the server
-  // disappears during a reboot.
+  // Fallback and catch-up only. Live log lines arrive over the
+  // `setup_progress` WebSocket event in the next effect; polling alone
+  // lags up to 3s, long enough to miss the "Rebooting..." line entirely.
+  // The poll still seeds on mount and catches up after a reboot drops the
+  // server.
   useEffect(() => {
     if (complete) return
     let cancelled = false
@@ -107,7 +105,7 @@ export function SetupProgress({ complete, phase = "running" }: SetupProgressProp
         if (cancelled) return
         setLogLines(text.split("\n").filter(Boolean))
       } catch {
-        // server unreachable during reboot — expected
+        // Server unreachable during reboot: expected.
       }
     }
     poll()
@@ -115,9 +113,9 @@ export function SetupProgress({ complete, phase = "running" }: SetupProgressProp
     return () => { cancelled = true; clearInterval(id) }
   }, [complete])
 
-  // Seed the phase list from the server's persisted ledger, then subscribe
-  // to `setup_phase` WebSocket events for live updates. Polling the ledger
-  // periodically covers the gap when the server is down during a reboot.
+  // Seed the phase list from the server's persisted ledger, then take live
+  // updates from `setup_phase` WebSocket events. Re-polling the ledger
+  // covers the window where a reboot takes the server down.
   useEffect(() => {
     if (complete) return
 
@@ -138,7 +136,7 @@ export function SetupProgress({ complete, phase = "running" }: SetupProgressProp
           return [...fetched, ...extras]
         })
       } catch {
-        // server unreachable — expected during reboot
+        // Server unreachable during reboot: expected.
       }
     }
 
@@ -166,12 +164,10 @@ export function SetupProgress({ complete, phase = "running" }: SetupProgressProp
                 return [...prev, { id, label }]
               })
             } else if (msg.type === "setup_progress") {
-              // Live log append — the backend broadcasts this for every
-              // `emitter.progress()` call, so lines land here well before
-              // the 2s HTTP poll would pick them up. The next poll will
-              // authoritative-rewrite the whole list, which papers over
-              // any transient duplicate if the line is already in our
-              // array from a previous poll.
+              // Live log append. The backend broadcasts one of these per
+              // `emitter.progress()` call, ahead of the 2s HTTP poll. The
+              // next poll rewrites the whole list authoritatively, so a
+              // transient duplicate here corrects itself.
               const text: string = msg.data?.message ?? ""
               if (!text) return
               setLogLines((prev) => {
@@ -238,7 +234,7 @@ export function SetupProgress({ complete, phase = "running" }: SetupProgressProp
 
   return (
     <div className="w-full space-y-5">
-      {/* Current activity heading — centered above the two columns */}
+      {/* Current activity heading, centered above the two columns */}
       <div className="flex items-center justify-center gap-2.5 text-center">
         {isDone ? (
           <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-500/20">
@@ -259,7 +255,7 @@ export function SetupProgress({ complete, phase = "running" }: SetupProgressProp
         </div>
       </div>
 
-      {/* Stale warning — full width above both columns */}
+      {/* Stale warning, full width above both columns */}
       {stale && !isDone && (
         <div className="flex items-start gap-2 rounded-xl border border-yellow-500/20 bg-yellow-500/5 px-3 py-2.5">
           <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-yellow-400" />
@@ -275,7 +271,7 @@ export function SetupProgress({ complete, phase = "running" }: SetupProgressProp
           setup log scroll independently so neither overflows the viewport
           when there are 20+ phases / hundreds of log lines. */}
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 lg:items-start">
-        {/* Phase list — left column */}
+        {/* Phase list (left column) */}
         {phases.length > 0 && (
           <div className="overflow-hidden rounded-xl border border-white/8 bg-white/[0.02]">
             <div className="border-b border-white/5 px-3.5 py-2 text-xs font-medium text-slate-500">
@@ -322,7 +318,7 @@ export function SetupProgress({ complete, phase = "running" }: SetupProgressProp
           </div>
         )}
 
-        {/* Setup log — right column */}
+        {/* Setup log (right column) */}
         <div className="overflow-hidden rounded-xl border border-white/8 bg-black/30">
           <div className="flex items-center gap-2 border-b border-white/5 px-3 py-2">
             <Terminal className="h-3.5 w-3.5 text-slate-500" />

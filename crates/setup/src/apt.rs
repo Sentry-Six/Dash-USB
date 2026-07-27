@@ -1,25 +1,19 @@
 //! `apt-get install` with one-shot retry on failure.
 //!
-//! The Debian mirrors behind `deb.debian.org` (Fastly CDN) regularly
-//! serve a transient mismatch between the `Packages` index a Pi just
-//! fetched via `apt-get update` and the pool it's now trying to fetch
-//! `.deb` files from: different POPs / backend mirrors at different
-//! sync states, plus the fact that aged Pi OS images carry baked-in
-//! lists pointing at versions Debian has since superseded and pruned.
-//! Either case shows up to the user as `404 Not Found` on a perfectly
-//! well-formed URL.
+//! The mirrors behind `deb.debian.org` (Fastly CDN) regularly serve a
+//! `Packages` index and a pool that are at different sync states, and aged Pi
+//! OS images carry baked-in lists pointing at versions Debian has since
+//! pruned. Both surface as `404 Not Found` on a well-formed URL.
 //!
-//! Every `apt-get install` in this crate should go through
-//! [`apt_install`] so a single 404 doesn't abort the whole setup.
+//! Every `apt-get install` in this crate must go through [`apt_install`] so a
+//! single 404 doesn't abort the whole setup.
 
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-/// Run `apt-get install -y <packages>` with a one-shot retry. On the
-/// first failure, refresh the package index and try once more. The
-/// progress callback receives a single line announcing the retry; on
-/// success it isn't called at all.
+/// Run `apt-get install -y <packages>`, refreshing the package index and
+/// retrying once on failure. `progress` is called only when a retry happens.
 pub async fn apt_install(
     progress: impl Fn(&str),
     packages: &[&str],

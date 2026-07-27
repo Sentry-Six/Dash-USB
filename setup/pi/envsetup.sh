@@ -47,7 +47,7 @@ function read_setup_variables {
   fi
   if [ -e $setup_file ]
   then
-    # "shellcheck" doesn't realize setup_file is effectively a constant
+    # setup_file is effectively a constant, which shellcheck can't see.
     # shellcheck disable=SC1090
     safesource $setup_file
   else
@@ -97,7 +97,7 @@ function read_setup_variables {
     fi
   done
 
-  # set defaults for things not set in the config
+  # Defaults for anything the config didn't set.
   REPO=${REPO:-Sentry-Six}
   REPO_NAME=${REPO_NAME:-Dash-USB}
   SNAPSHOTS_ENABLED=${SNAPSHOTS_ENABLED:-true}
@@ -131,9 +131,9 @@ function read_setup_variables {
 
 read_setup_variables
 
-# Load mobile push notification credentials from the JSON file managed by the
-# Go server.  These are NOT stored in dashusb.conf — the JSON file is the
-# single source of truth so we avoid conf-write race conditions.
+# Mobile push credentials are deliberately NOT stored in dashusb.conf. The
+# daemon-managed JSON file below is the single source of truth, which keeps
+# concurrent conf writes from racing.
 NOTIFICATION_CREDENTIALS_JSON="/root/.dashusb/notification-credentials.json"
 if [ "${MOBILE_PUSH_ENABLED:-false}" = "true" ] && [ -f "$NOTIFICATION_CREDENTIALS_JSON" ]; then
   MOBILE_PUSH_DEVICE_ID=$(sed -n 's/.*"device_id" *: *"\([^"]*\)".*/\1/p' "$NOTIFICATION_CREDENTIALS_JSON")
@@ -218,9 +218,9 @@ else
   export PICONFIG_PATH=/dev/null
 fi
 
-# losetup sometimes fails because of a mismatch between kernel and user land
+# losetup can fail on a kernel/userland mismatch
 # (https://lore.kernel.org/lkml/8bed44f2-273c-856e-0018-69f127ea4258@linux.ibm.com/)
-# but even when it fails like that, testing shows the loop device gets created anyway
+# yet still create the loop device, so recheck before reporting failure.
 function losetup_find_show {
   local lastarg="${@:$#}"
   local loop=$(losetup -n -O NAME -j "$lastarg")
@@ -230,16 +230,14 @@ function losetup_find_show {
   fi
   if [ -n "$loop" ]
   then
-    # losetup failed, and there was already a previous loop device for the
-    # given file.
-    # Rather than trying to determine if a new loop device was created, just return
-    # an error.
+    # losetup failed and the file already had a loop device, so a new one
+    # can't be identified. Report failure rather than guess.
     return 1
   fi
   local newloop=$(losetup -n -O NAME -j "$lastarg")
   if [ -z "$newloop" ]
   then
-    # losetup truly failed and didn't even create a loop device
+    # losetup truly failed: no loop device was created
     return 1
   fi
   echo "$newloop"

@@ -9,7 +9,6 @@ function log_progress () {
   echo "create-backingfiles-partition: $1"
 }
 
-# install XFS tools if needed
 if ! hash mkfs.xfs
 then
   apt-get -y install xfsprogs
@@ -35,7 +34,7 @@ MUTABLE_MOUNTPOINT="${2:-none}"
 function update_fstab {
   if grep -q "LABEL=backingfiles" /etc/fstab
   then
-    # Ensure existing entries have nofail (upgrades from older setups)
+    # nofail on the existing entry: without it a missing drive hangs boot.
     if ! grep "LABEL=backingfiles" /etc/fstab | grep -q "nofail"
     then
       log_progress "Adding nofail to existing backingfiles fstab entry"
@@ -60,28 +59,26 @@ function update_fstab {
   fi
 }
 
-# Will check for USB Drive before running sd card
+# An external data drive takes precedence over the SD card.
 if [ -n "$DATA_DRIVE" ]
 then
   log_progress "DATA_DRIVE is set to $DATA_DRIVE"
   PARTITION_PREFIX=$(partition_prefix_for "$DATA_DRIVE")
   P1="${DATA_DRIVE}${PARTITION_PREFIX}1"
   P2="${DATA_DRIVE}${PARTITION_PREFIX}2"
-  # Reuse existing partitions if they already have the correct labels —
-  # a config-only wizard re-run (ARCHIVE_SERVER, etc.) must not wipe data
-  # just because blkid was momentarily slow or the FS was remounting.
-  # Stale TeslaCam data is cleaned separately by setup-dashusb; fstab is
-  # rewritten unconditionally below whether we keep or wipe partitions.
+  # Reuse existing partitions when the labels already match. A config-only
+  # wizard re-run (ARCHIVE_SERVER, etc.) must NEVER wipe data just because
+  # blkid was momentarily slow or the FS was remounting. fstab is rewritten
+  # below either way, keep or wipe.
   if [ /dev/disk/by-label/backingfiles -ef "$P2" ] && \
      [ /dev/disk/by-label/mutable -ef "$P1" ]
   then
     log_progress "Existing backingfiles (xfs) and mutable (ext4) partitions found on $DATA_DRIVE. Keeping them."
     # Quiesce anything holding the partitions open so the next mount finds
-    # them clean. On the keep-existing path: no xfs_repair, no mkfs — never
-    # reformat. Mount handles XFS log replay safely (it can be slow on
-    # 1TB+ drives, but that's a UX issue, not a data one); if the log is
-    # genuinely broken the mount fails loudly and the user can run
-    # xfs_repair manually.
+    # them clean. On this keep-existing path there must be NO mkfs and NO
+    # xfs_repair; never reformat. Mount replays the XFS log safely (slow on
+    # 1TB+ drives, but that is a UX cost, not a data one), and a genuinely
+    # broken log fails the mount loudly so the user can run xfs_repair.
     killall archiveloop 2>/dev/null || true
     /root/bin/disable_gadget.sh 2>/dev/null || true
     for loop in $(losetup -a 2>/dev/null | grep -E '/backingfiles/|/mnt/' | cut -d: -f1); do
@@ -101,8 +98,8 @@ then
     killall archiveloop 2>/dev/null || true
     /root/bin/disable_gadget.sh 2>/dev/null || true
     # Detach loop devices backed by files on the data drive partitions.
-    # Old TeslaUSB/DashUSB backing file images (cam_disk.bin etc.) stay
-    # loop-mounted and block unmount/wipefs if not detached first.
+    # Pre-existing backing images (cam_disk.bin and friends) stay
+    # loop-mounted and block unmount/wipefs until they are detached.
     for loop in $(losetup -a 2>/dev/null | grep -E '/backingfiles/|/mnt/' | cut -d: -f1); do
       umount "$loop" 2>/dev/null || true
       losetup -d "$loop" 2>/dev/null || true
@@ -114,8 +111,8 @@ then
     for part in "${P1}" "${P2}"; do
       umount "$part" 2>/dev/null || true
     done
-    # Give the kernel time to release device handles, especially on
-    # large drives previously used by TeslaUSB with many open files.
+    # Give the kernel time to release device handles, which takes longer on
+    # large drives that had many open files.
     sleep 3
 
     log_progress "WARNING !!! This will delete EVERYTHING in $DATA_DRIVE."
@@ -128,7 +125,6 @@ then
     log_progress "Backing files and mutable partitions created."
 
     log_progress "Formatting new partitions..."
-    # Force creation of filesystems even if previous filesystem appears to exist
     log_progress "Formatting mutable partition (ext4) on $P1..."
     mkfs.ext4 -F -L mutable "$P1"
     log_progress "Formatting backingfiles partition (xfs) on $P2..."
@@ -164,22 +160,21 @@ else
   readonly BACKINGFILES_DEVICE="${BOOT_DEVICE_PARTITION_PREFIX}$((LAST_PART_NUM + 1))"
 fi
 
-# If the backingfiles partition follows the root partition, is type xfs,
-# and is in turn followed by the mutable partition, type ext4, then return early.
+# Correct layout already on disk (backingfiles then mutable): keep it. xfs
+# needs no work; an ext4 backingfiles gets converted below.
 if [ /dev/disk/by-label/backingfiles -ef "${BACKINGFILES_DEVICE}" ] && \
     [ /dev/disk/by-label/mutable -ef "${MUTABLE_DEVICE}" ] && \
     blkid "${MUTABLE_DEVICE}" | grep -q 'TYPE="ext4"'
 then
   if blkid "${BACKINGFILES_DEVICE}" | grep -q 'TYPE="xfs"'
   then
-    # assume these were either created previously by the setup scripts,
-    # or manually by the user, and that they're big enough
+    # Created by an earlier setup run or by the user; assume big enough.
     log_progress "using existing backingfiles and mutable partitions"
     update_fstab
     return &> /dev/null || exit 0
   elif blkid "${BACKINGFILES_DEVICE}" | grep -q 'TYPE="ext4"'
   then
-    # special case: convert existing backingfiles from ext4 to xfs
+    # Convert an existing ext4 backingfiles partition to xfs (reflink).
     log_progress "reformatting existing backingfiles as xfs"
     killall archiveloop || true
     /root/bin/disable_gadget.sh || true
@@ -201,7 +196,6 @@ then
     fi
     mkfs.xfs -f -K -m reflink=1 -L backingfiles "${BACKINGFILES_DEVICE}"
 
-    # update /etc/fstab
     sed -i 's/LABEL=backingfiles .*/LABEL=backingfiles \/backingfiles xfs auto,rw,noatime 0 2/' /etc/fstab
     mount /backingfiles
     log_progress "backingfiles converted to xfs and mounted"
@@ -221,21 +215,20 @@ log_progress "Checking existing partitions..."
 
 DISK_SECTORS=$(blockdev --getsz "${BOOT_DISK}")
 LAST_DISK_SECTOR=$((DISK_SECTORS - 1))
-# mutable partition is 300MB at the end of the disk, calculate its start sector
+# mutable takes the last 300MB of the disk
 FIRST_MUTABLE_SECTOR=$((LAST_DISK_SECTOR-614400+1))
-# backingfiles partition sits between the last and mutable partition, calculate its start sector and size
+# backingfiles fills the gap between the last existing partition and mutable
 LAST_PART_SECTOR=$(sfdisk -o End -q -l "${BOOT_DISK}" | tail +2 | sort -n | tail -1)
 FIRST_BACKINGFILES_SECTOR=$((LAST_PART_SECTOR + 1))
-# round up to 1MB boundary because the DashUSB Buster prebuilt as well as older Armbian
-# images might have an odd root partition size
+# Round up to a 1MB boundary: some prebuilt and older Armbian images have an
+# odd root partition size.
 FIRST_BACKINGFILES_SECTOR=$(((FIRST_BACKINGFILES_SECTOR + 2047) / 2048 * 2048))
 BACKINGFILES_NUM_SECTORS=$((FIRST_MUTABLE_SECTOR - FIRST_BACKINGFILES_SECTOR))
 
-# As a rule of thumb, one gigabyte of /backingfiles space can hold about 36
-# recording files. We need enough inodes in /mutable to create symlinks to
-# the recordings. Leaving enough headroom to account for short recordings,
-# directories, duplication of sentry files in recentclips, etc, this works
-# out to about 1 inode for every 20000 sectors in /backingfiles.
+# /mutable needs one inode per symlink to a recording. One gigabyte of
+# /backingfiles holds roughly 36 recording files; with headroom for short
+# recordings and directories that works out to about 1 inode per 20000
+# sectors of /backingfiles.
 NUM_MUTABLE_INODES=$((BACKINGFILES_NUM_SECTORS / 20000))
 
 ORIGINAL_DISK_IDENTIFIER=$( fdisk -l "${BOOT_DISK}" | grep -e "^Disk identifier" | sed "s/Disk identifier: 0x//" )
@@ -249,7 +242,7 @@ echo "$FIRST_MUTABLE_SECTOR," | sfdisk --force --no-reread "${BOOT_DISK}" -N $((
 partprobe "${BOOT_DISK}" 2>/dev/null || true
 udevadm settle --timeout=10 2>/dev/null || sleep 2
 
-# manually adding the partitions to the kernel's view of things is sometimes needed
+# partprobe doesn't always take; add the partitions to the kernel's view.
 if [ ! -e "${BACKINGFILES_DEVICE}" ] || [ ! -e "${MUTABLE_DEVICE}" ]
 then
   partx --add --nr $((LAST_PART_NUM + 1)):$((LAST_PART_NUM + 2)) "${BOOT_DISK}"
@@ -271,7 +264,6 @@ then
 fi
 
 log_progress "Formatting new partitions..."
-# Force creation of filesystems even if previous filesystem appears to exist
 log_progress "Formatting backingfiles partition (xfs) on ${BACKINGFILES_DEVICE}..."
 mkfs.xfs -f -K -m reflink=1 -L backingfiles "${BACKINGFILES_DEVICE}"
 log_progress "Formatting mutable partition (ext4) on ${MUTABLE_DEVICE}..."

@@ -10,7 +10,7 @@ touch "${ROOTFS_DIR}/boot/ssh"
 # handled by the DashUSB iOS app via BLE, so Raspberry Pi Imager
 # customization is not needed. Stripping the firstboot init= parameter
 # prevents the Bookworm initramfs from auto-expanding the root partition
-# to fill the entire disk — the setup script needs that free space for
+# to fill the entire disk. The setup script needs that free space for
 # backingfiles and mutable partitions.
 rm -f "${ROOTFS_DIR}/boot/firmware/firstrun.sh"
 rm -f "${ROOTFS_DIR}/boot/firmware/userconf.txt"
@@ -45,7 +45,7 @@ echo "dtoverlay=dwc2" >> "${ROOTFS_DIR}/boot/firmware/config.txt"
 # dashusb-current at every service start. On armv7 images there's
 # a single variant, but the same picker handles both cases.
 #
-# armv6 (armel) is no longer supported — the original Pi Zero W and Pi 1
+# armv6 (armel) is no longer supported. The original Pi Zero W and Pi 1
 # don't have the headroom to run the daemon; image builds for those
 # boards aren't produced anymore.
 REPO="Sentry-Six/Dash-USB"
@@ -57,10 +57,10 @@ esac
 
 for sfx in $SUFFIXES; do
     DEST="${ROOTFS_DIR}/opt/dashusb/dashusb-${sfx}"
-    # Three input paths, preferred order — env override > injected file >
+    # Three input paths, preferred order: env override > injected file >
     # release download. The env override is only meaningful in CI, where
     # the build script can point at a freshly-cross-compiled binary by
-    # setting DASHUSB_BINARY_LINUX_ARM64_A72 (etc.) — uppercase, dashes
+    # setting DASHUSB_BINARY_LINUX_ARM64_A72 (etc.): uppercase, dashes
     # to underscores.
     env_var="DASHUSB_BINARY_$(echo "$sfx" | tr 'a-z-' 'A-Z_')"
     env_val="${!env_var:-}"
@@ -72,7 +72,7 @@ for sfx in $SUFFIXES; do
         # Back-compat: build-image.sh's pre-multi-binary path drops a single
         # binary as files/dashusb-binary. Use it for the first suffix; the
         # other variants will be missing (the picker's fallback chain handles
-        # this — the daemon still runs, just without the per-CPU optimization).
+        # this; the daemon still runs, just without the per-CPU optimization).
         cp "files/dashusb-binary" "${DEST}"
     else
         URL="https://github.com/${REPO}/releases/latest/download/dashusb-${sfx}"
@@ -141,7 +141,7 @@ else
         -o "${BLE_SERVICE}" 2>/dev/null || echo "WARNING: Could not fetch BLE service file"
 fi
 
-# The daemon the unit executes, and its dbus policy — without these the
+# The daemon the unit executes, and its dbus policy. Without these the
 # enabled service just crash-loops and phone provisioning is dead on a
 # fresh image (no Ethernet fallback on a Zero 2 W).
 mkdir -p "${ROOTFS_DIR}/root/bin" "${ROOTFS_DIR}/etc/dbus-1/system.d"
@@ -152,7 +152,7 @@ for src_dir in files ../../server/ble; do
     [ -f "${src_dir}/com.dashusb.ble.conf" ] && install -m 644 "${src_dir}/com.dashusb.ble.conf" "${ROOTFS_DIR}/etc/dbus-1/system.d/com.dashusb.ble.conf" && break
 done
 
-# envsetup.sh — archiveloop sources /root/bin/envsetup.sh unconditionally;
+# envsetup.sh: archiveloop sources /root/bin/envsetup.sh unconditionally;
 # the Rust setup installs it on wizard runs, but the image must carry it
 # so the archive service can start before/without a re-run.
 if [ -f "../../setup/pi/envsetup.sh" ]; then
@@ -203,7 +203,7 @@ apt-get update -qq
 apt-get install -y dos2unix parted fdisk sudo curl python3-dbus python3-gi
 
 # Remove unwanted packages, disable unwanted services, and disable swap
-# nginx conflicts with DashUSB on port 80 — remove it to prevent fallback splash page
+# nginx conflicts with DashUSB on port 80; remove it to prevent a fallback splash page
 apt-get remove -y --purge nginx nginx-common nginx-full 2>/dev/null || true
 apt-get remove -y --purge triggerhappy userconf-pi dphys-swapfile firmware-libertas firmware-realtek firmware-atheros mkvtoolnix 2>/dev/null || true
 apt-get -y autoremove

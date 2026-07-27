@@ -1,11 +1,10 @@
 import { useSyncExternalStore } from "react"
 
-// Shared unit preference, backed by /api/setup/config. One key —
-// TEMPERATURE_UNIT — governs every Pi CPU temperature the product
-// shows: the dashboard System tile, temperature-alert notifications,
-// health checks, and log entries. (There is exactly one temperature
-// source on GM; the old SYSTEM_TEMPERATURE_UNIT split was Tesla-era
-// residue and is migrated away at daemon startup.)
+// Shared unit preference backed by /api/setup/config. The single
+// TEMPERATURE_UNIT key governs every Pi CPU temperature shown: dashboard
+// System tile, temperature-alert notifications, health checks, log
+// entries. SYSTEM_TEMPERATURE_UNIT is a legacy key, migrated away at
+// daemon startup.
 export type UnitState = {
   tempF: boolean // TEMPERATURE_UNIT === "F"
   loaded: boolean
@@ -53,9 +52,9 @@ async function load() {
   }
 }
 
-// Refetch each time the first consumer (re)mounts so navigating back to
-// Settings picks up out-of-band edits (raw-config editor, setup wizard),
-// while staying live-synced between mounted consumers in between.
+// Refetch whenever the first consumer (re)mounts, so returning to Settings
+// picks up out-of-band edits (raw-config editor, setup wizard). Mounted
+// consumers stay live-synced with each other in between.
 function subscribe(cb: () => void): () => void {
   const wasEmpty = listeners.size === 0
   listeners.add(cb)
@@ -65,10 +64,9 @@ function subscribe(cb: () => void): () => void {
   }
 }
 
-// Read-modify-write the whole config with `updates` applied, then reflect
-// them locally. Optimistic: state flips immediately, but reverts to the
-// prior snapshot if the save fails so the UI never shows a value that
-// didn't persist.
+// Read-modify-write the whole config with `updates` applied. Optimistic:
+// state flips immediately and reverts to the prior snapshot if the save
+// fails, so the UI never shows a value that didn't persist.
 async function writeKeys(updates: Record<string, string>, optimistic: Partial<UnitState>) {
   const prev = state
   set(optimistic)

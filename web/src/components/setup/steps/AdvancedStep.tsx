@@ -20,11 +20,10 @@ function Field({ label, field, type = "text", placeholder, data, onChange, hint 
 
 const TIMEZONES = [
   "auto",
-  // US: prefer the canonical IANA names below — newer Pi OS / Debian
-  // releases ship a minimal tzdata that drops the legacy `US/*` aliases,
-  // which would make `timedatectl set-timezone` fail. Our backend
-  // normalizes US/Eastern → America/New_York etc. for older saved
-  // configs, but new installs should pick the canonical name directly.
+  // List canonical IANA names only: newer Pi OS / Debian releases ship a
+  // minimal tzdata without the legacy `US/*` aliases, so `timedatectl
+  // set-timezone` fails on them. The backend still normalizes US/Eastern to
+  // America/New_York for older saved configs.
   // Americas
   "America/Adak", "America/Anchorage", "America/Anguilla", "America/Antigua", "America/Araguaina",
   "America/Argentina/Buenos_Aires", "America/Argentina/Catamarca", "America/Argentina/Cordoba",
@@ -165,13 +164,11 @@ function TempInput({
     return useFahrenheit ? ((celsius * 9 / 5) + 32).toFixed(1) : celsius.toFixed(1)
   }
 
-  // What the user is actually typing. Keeping this in local state is the fix:
-  // previously the input's value was re-derived from the stored °C on every
-  // render, so each keystroke (which writes a converted °C back to the store)
-  // immediately re-rendered the field to that converted value — typing "7" in
-  // °F stored -13.9 °C and the box jumped to "-13.9", making it impossible to
-  // type a temperature. Now the box shows exactly what's typed; we only push
-  // the converted °C to the store, and re-derive the text on a unit switch.
+  // Hold the typed text in local state. Deriving the input value from the
+  // stored °C on every render made the field uneditable: each keystroke wrote
+  // a converted °C back to the store, which re-rendered the box to that value
+  // (typing "7" in °F stored -13.9 °C and the box jumped to "-13.9"). Push
+  // only the converted °C to the store; re-derive the text on a unit switch.
   const [text, setText] = useState<string>(() => toDisplay(data[field] ?? ""))
   const lastUnit = useRef(useFahrenheit)
   useEffect(() => {
@@ -193,11 +190,11 @@ function TempInput({
           inputMode="decimal"
           value={text}
           onChange={(e) => {
-            // Allow digits, a single decimal point, and a leading minus.
+            // Strip anything that isn't a digit, dot or minus.
             const v = e.target.value.replace(/[^0-9.-]/g, "")
             setText(v)
-            // Partial inputs ("", "-", ".") aren't a number yet — clear the
-            // stored value but keep the in-progress text on screen.
+            // Partial input isn't a number yet: clear the stored value but
+            // leave the in-progress text on screen.
             if (v === "" || v === "-" || v === "." || v === "-.") {
               onChange(field, "")
               return
@@ -222,8 +219,8 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
   const [tzSearch, setTzSearch] = useState("")
   const [isPi5, setIsPi5] = useState(false)
   const useFahrenheit = data.TEMPERATURE_UNIT === "F"
-  // Master measurement-unit selector reflects the temperature choice (the
-  // per-unit controls below can still diverge into a mixed set).
+  // The master selector reflects the temperature choice; the per-unit controls
+  // below can still diverge into a mixed set.
   const isMetric = !useFahrenheit
 
   useEffect(() => {
@@ -259,12 +256,10 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
         <select
           value={data.TIME_ZONE ?? "auto"}
           onChange={(e) => onChange("TIME_ZONE", e.target.value)}
-          // Native <select> swallows the change event when the user clicks
-          // an option whose value already matches `value` — so after the
-          // search filter narrows the list, clicking the first result was
-          // a no-op when it happened to match the current selection.
-          // Re-fire on every option click so the selection commits even
-          // if the value didn't change.
+          // A native <select> fires no change event when the clicked option
+          // already matches `value`, so once the search filter narrows the
+          // list, clicking the first result can be a no-op. Re-commit the
+          // selection on every option click.
           onClick={(e) => {
             const target = e.target as HTMLOptionElement
             if (target.tagName === "OPTION" && target.value) {
@@ -299,9 +294,9 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
         </div>
       </div>
 
-      {/* Measurement unit — master selector. Sets temperature, distance and
-          tire-pressure units together; the per-unit controls below (and the
-          dashboard's Display & Units) stay in sync via the same config keys. */}
+      {/* Master selector: sets temperature, distance and tire-pressure units
+          together. The per-unit controls below and the dashboard's Display &
+          Units stay in sync through the same config keys. */}
       <div>
         <div className="mb-3 flex items-center gap-2">
           <Ruler className="h-4 w-4 text-blue-400" />
@@ -326,8 +321,7 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
         </p>
       </div>
 
-      {/* Temperature monitoring — unit follows the Measurement Unit selector
-          above (TEMPERATURE_UNIT); thresholds render in that unit. */}
+      {/* Thresholds render in the unit picked above (TEMPERATURE_UNIT). */}
       <div>
         <div className="mb-3 flex items-center gap-2">
           <Thermometer className="h-4 w-4 text-blue-400" />

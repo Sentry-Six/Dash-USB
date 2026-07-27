@@ -1,15 +1,10 @@
 //! Recordings web mount wiring.
 //!
-//! Wires the bind mount of /mutable/Recordings at /var/www/html/Recordings,
-//! which is where the Axum server's ServeDir route reads from. Prior
-//! versions of this phase configured a cttseraser FUSE mount to strip
-//! the `ctts` atom from MP4 files for browsers that couldn't parse it;
-//! modern browsers handle the atom natively, so the FUSE layer was
-//! replaced with a kernel-level bind mount for correctness, throughput,
-//! and reliability. The cttseraser binary and helper are no longer
-//! shipped — this module detects and removes any legacy `mount.ctts#`
-//! fstab entry on first run after upgrade, so installs that came up
-//! pre-bind-mount still migrate cleanly.
+//! Bind-mounts /mutable/Recordings at /var/www/html/Recordings, where the Axum
+//! server's ServeDir route reads from. The cttseraser FUSE layer this replaced
+//! is no longer shipped, so a legacy `mount.ctts#` fstab entry is detected and
+//! removed on the first run after upgrade and pre-bind-mount installs migrate
+//! cleanly.
 
 use std::time::Duration;
 
@@ -23,8 +18,8 @@ const FSTAB_BIND_LINE: &str =
     "/mutable/Recordings /var/www/html/Recordings none bind,nofail,x-systemd.requires=/mutable 0 0";
 
 pub async fn configure_web_mount(emitter: &SetupEmitter) -> Result<bool> {
-    // Idempotency check — if the canonical bind entry is already present
-    // and no legacy cttseraser entry remains, nothing to do.
+    // Idempotency: nothing to do once the canonical bind entry is present and
+    // no legacy cttseraser entry remains.
     let fstab = std::fs::read_to_string("/etc/fstab").unwrap_or_default();
     let fstab_has_bind = fstab.lines().any(|l| {
         !l.trim_start().starts_with('#')
@@ -51,7 +46,7 @@ pub async fn configure_web_mount(emitter: &SetupEmitter) -> Result<bool> {
         Duration::from_secs(300),
     ).await.context("failed to install networking runtime packages")?;
 
-    // Nginx fight — DashUSB owns port 80.
+    // DashUSB owns port 80, so nginx must be stopped and disabled.
     if sentryusb_shell::run("systemctl", &["is-active", "--quiet", "nginx"]).await.is_ok() {
         let _ = sentryusb_shell::run("systemctl", &["stop", "nginx"]).await;
     }
@@ -59,7 +54,6 @@ pub async fn configure_web_mount(emitter: &SetupEmitter) -> Result<bool> {
         let _ = sentryusb_shell::run("systemctl", &["disable", "nginx"]).await;
     }
 
-    // Source + target dirs.
     std::fs::create_dir_all("/mutable/Recordings")?;
     std::fs::create_dir_all("/var/www/html/Recordings")?;
 
@@ -77,8 +71,7 @@ pub async fn configure_web_mount(emitter: &SetupEmitter) -> Result<bool> {
         &["start", "var-www-html-Recordings.mount"],
     ).await;
 
-    // (Samba reads from /mutable/Recordings directly, so no FUSE
-    // allow_other configuration is required for it.)
+    // Samba reads /mutable/Recordings directly and needs nothing here.
 
     emitter.progress("done configuring web");
     Ok(true)

@@ -1,24 +1,13 @@
 //! Snapshot management API.
 //!
-//! Snapshots are XFS reflink-backed point-in-time copies of cam_disk
-//! that the runtime archiveloop creates on a schedule (default every
-//! 58 minutes). They live at `/backingfiles/snapshots/snap-<id>/snap.bin`
-//! and consume space on the backingfiles partition.
+//! Snapshots are XFS reflink-backed point-in-time copies of cam_disk that
+//! archiveloop takes on a schedule (default every 58 minutes), living at
+//! `/backingfiles/snapshots/snap-<id>/snap.bin`. The runtime's
+//! `manage_free_space.sh` prunes them automatically; these endpoints are the
+//! user's explicit route to inspect and reclaim that space.
 //!
-//! Until the wizard's setup re-run was made data-safe, snapshots were
-//! auto-deleted by the runtime's `manage_free_space.sh` and silently
-//! wiped by the disk-image setup phase whenever CAM_SIZE changed. With
-//! that behavior fixed, users need an explicit way to inspect and
-//! delete snapshots when they want to free space (e.g. before growing
-//! a drive image past available capacity). This module provides:
-//!
-//!   * `GET    /api/snapshots`               — list with size/timestamp
-//!   * `DELETE /api/snapshots/:id`           — delete one snapshot
-//!   * `GET    /api/backingfiles/free-space` — total/used/avail in KB
-//!
-//! The actual delete shells out to `/root/bin/release_snapshot.sh`
-//! (already on disk, used by the runtime free-space manager) so we
-//! don't reimplement the careful umount + symlink cleanup it performs.
+//! Deletes shell out to `/root/bin/release_snapshot.sh`, which the free-space
+//! manager also uses, rather than reimplementing its umount and symlink cleanup.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -29,23 +18,18 @@ use crate::router::AppState;
 const SNAPSHOTS_DIR: &str = "/backingfiles/snapshots";
 const RELEASE_SNAPSHOT_SCRIPT: &str = "/root/bin/release_snapshot.sh";
 
-/// One snapshot entry in the listing response.
 #[derive(serde::Serialize)]
 struct SnapshotEntry {
-    /// `snap-<id>` directory name. Used as the path parameter for delete.
+    /// `snap-<id>` directory name, also the path parameter for delete.
     id: String,
-    /// Bytes consumed by the snapshot directory (recursive).
+    /// Apparent size from `du`. Not reflink-aware, so an upper bound only.
     size_bytes: u64,
-    /// Unix epoch seconds — directory mtime. Used by the UI to render a
-    /// human-friendly date and to sort.
+    /// Directory mtime in Unix epoch seconds. The UI sorts and formats on it.
     created_unix: i64,
 }
 
-/// GET /api/snapshots
-///
-/// Returns the list of snapshot directories under `/backingfiles/snapshots/`.
-/// Sorted oldest-first so callers can default to that ordering — the
-/// user typically wants to delete the oldest to free space.
+/// Snapshot directories under `/backingfiles/snapshots/`, oldest first: the
+/// user is normally deleting the oldest to free space.
 pub async fn list_snapshots(
     State(_s): State<AppState>,
 ) -> (StatusCode, Json<serde_json::Value>) {
@@ -54,7 +38,7 @@ pub async fn list_snapshots(
     let dir = match std::fs::read_dir(SNAPSHOTS_DIR) {
         Ok(d) => d,
         Err(_) => {
-            // Directory missing entirely is fine — no snapshots yet.
+            // A missing directory just means no snapshots have been taken.
             return (StatusCode::OK, Json(serde_json::json!({
                 "snapshots": entries,
             })));
@@ -71,9 +55,8 @@ pub async fn list_snapshots(
             continue;
         }
 
-        // mtime as the "created" timestamp — matches what
-        // manage_free_space.sh sorts by (alphabetic snap-<id>) closely
-        // enough for UI purposes, and is what users actually see.
+        // mtime stands in for creation time. manage_free_space.sh instead
+        // sorts by alphabetic snap-<id>, close enough to agree for the UI.
         let created_unix = entry
             .metadata()
             .and_then(|m| m.modified())
@@ -82,14 +65,12 @@ pub async fn list_snapshots(
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
-        // Per-snapshot apparent allocated bytes (st_blocks * 512). This
-        // is NOT reflink-aware: each snap.bin is `cp --reflink=always` of
-        // cam_disk.bin, so every snap.bin's `st_blocks` is the full
-        // cam_disk block count even though those extents are shared with
-        // the live image and the other snapshots. Treat this as an upper
-        // bound, not "what you'd reclaim by deleting just this snapshot."
-        // The aggregate `total_allocated_bytes` below uses df-based math
-        // to recover the reflink-exclusive footprint.
+        // Apparent allocated bytes (st_blocks * 512), NOT reflink-aware: each
+        // snap.bin is a `cp --reflink=always` of cam_disk.bin, so its st_blocks
+        // reports the full cam_disk block count even though those extents are
+        // shared with the live image and the other snapshots. Upper bound only,
+        // not "what deleting this one snapshot reclaims". The aggregate
+        // `total_allocated_bytes` below recovers the true exclusive footprint.
         let du_out = sentryusb_shell::run(
             "du", &["-sB1", &path.to_string_lossy()],
         ).await.unwrap_or_default();
@@ -106,27 +87,19 @@ pub async fn list_snapshots(
         });
     }
 
-    // Oldest first by mtime. UI may re-sort, but this default matches
-    // what users actually want (delete the oldest to free space).
     entries.sort_by_key(|e| e.created_unix);
 
-    // Reflink-aware aggregate: bytes that would be freed if every snapshot
-    // were deleted. `du` is NOT reflink-aware — it dedupes hard links by
-    // inode, but each snap.bin is a separate inode whose extents are shared
-    // with cam_disk.bin via `cp --reflink=always`. Each snap.bin's
-    // `st_blocks` therefore reports the full cam_disk.bin block count, and
-    // `du -sB1 /backingfiles/snapshots` (even as a single tree walk) sums
-    // those per-file counts — producing N × cam_disk_size, far larger than
-    // the partition.
+    // Bytes that deleting every snapshot would free. `du` cannot answer this:
+    // it dedupes hard links by inode, but each snap.bin is a separate inode
+    // sharing extents with cam_disk.bin, so summing per-file st_blocks yields
+    // N * cam_disk_size, far larger than the partition itself.
     //
-    // Compute the true reflink-exclusive footprint as:
-    //     df_used(/backingfiles)  −  du(--exclude=snapshots /backingfiles/)
-    // i.e. partition-level used bytes (which counts each allocated extent
-    // once, regardless of how many files reference it) minus the apparent
-    // footprint of non-snapshot content. Deleting all snapshots leaves only
-    // the non-snapshot files (chiefly cam_disk.bin), whose blocks XFS
-    // retains, so `df` settles to that du value afterwards — the difference
-    // is what the snapshots collectively hold exclusively.
+    // The reflink-exclusive footprint is instead:
+    //     df_used(/backingfiles) - du(--exclude=snapshots /backingfiles/)
+    // Partition-level used bytes count each allocated extent once however many
+    // files reference it. Deleting all snapshots leaves only the non-snapshot
+    // files (chiefly cam_disk.bin), whose blocks XFS retains, so `df` settles
+    // to that du value and the difference is what the snapshots hold alone.
     let total_allocated_bytes: u64 = if entries.is_empty() {
         0
     } else {
@@ -158,12 +131,9 @@ pub async fn list_snapshots(
     })))
 }
 
-/// DELETE /api/snapshots/:id
-///
-/// Calls `release_snapshot.sh` to umount the snap.bin loop image and
-/// remove the directory + dangling /mutable/Recordings symlinks. The
-/// id must be a `snap-*` name; reject anything else to prevent
-/// arbitrary path traversal.
+/// Calls `release_snapshot.sh` to umount the snap.bin loop image and remove the
+/// directory along with dangling /mutable/Recordings symlinks. The id MUST be a
+/// `snap-*` name with no separators; anything else is path traversal.
 pub async fn delete_snapshot(
     State(_s): State<AppState>,
     Path(id): Path<String>,
@@ -180,16 +150,13 @@ pub async fn delete_snapshot(
         return crate::json_error(StatusCode::NOT_FOUND, "Snapshot not found");
     }
 
-    // Prefer the on-disk script so we share the runtime's careful
-    // umount + symlink cleanup logic. Fall back to a plain rm only if
-    // the script is missing (possible on a partially-installed system).
+    // Prefer the on-disk script to share the runtime's umount and symlink
+    // cleanup. Plain rm is a fallback for partially-installed systems only.
     //
-    // Pass the bare `id`, NOT the full path: the Rust-installed
-    // `release_snapshot.sh` is a thin shim that forwards "$@" to
-    // `dashusb snapshot release`, which expects a `snap-NNNNNN` name.
-    // The id is already validated above, and `release_snapshot` now also
-    // accepts a full path, so this is robust across both the thin-wrapper
-    // and full-script installs.
+    // Pass the bare `id`, NOT the full path: `release_snapshot.sh` is a thin
+    // shim forwarding "$@" to `dashusb snapshot release`, which expects a
+    // `snap-NNNNNN` name. It also accepts a full path, so the bare id works
+    // against both the shim and full-script installs.
     let script_exists = std::path::Path::new(RELEASE_SNAPSHOT_SCRIPT).exists();
     let result = if script_exists {
         sentryusb_shell::run(RELEASE_SNAPSHOT_SCRIPT, &[id.as_str()]).await
@@ -206,11 +173,8 @@ pub async fn delete_snapshot(
     }
 }
 
-/// GET /api/backingfiles/free-space
-///
-/// Returns total/used/available bytes for the backingfiles partition.
-/// Used by the snapshot management UI's space gauge and by the wizard
-/// pre-flight to render context alongside any size-rejection error.
+/// Total, used and available bytes for the backingfiles partition. Feeds the
+/// snapshot UI's space gauge and the wizard pre-flight's size-rejection error.
 pub async fn get_free_space(
     State(_s): State<AppState>,
 ) -> (StatusCode, Json<serde_json::Value>) {

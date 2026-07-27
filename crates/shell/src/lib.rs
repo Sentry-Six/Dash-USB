@@ -4,21 +4,19 @@ use anyhow::{bail, Result};
 use tokio::process::Command;
 use tracing::debug;
 
-/// Default command timeout.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Executes a command and returns its stdout output with a 30-second timeout.
 pub async fn run(name: &str, args: &[&str]) -> Result<String> {
     run_with_timeout(DEFAULT_TIMEOUT, name, args).await
 }
 
-/// Executes a command with a custom timeout and returns its stdout output.
+/// Returns stdout; a non-zero exit becomes an error carrying cleaned stderr.
 pub async fn run_with_timeout(timeout: Duration, name: &str, args: &[&str]) -> Result<String> {
     debug!(cmd = name, ?args, "executing command");
 
-    // kill_on_drop: when the timeout below fires it drops this future;
-    // without the flag the child would keep running detached (a hung
-    // `cp --reflink` or fsck could linger forever holding its loop device).
+    // kill_on_drop: the timeout drops this future, and without the flag the
+    // child keeps running detached (a hung `cp --reflink` or fsck could hold
+    // its loop device forever).
     let result = tokio::time::timeout(timeout, async {
         Command::new(name)
             .args(args)
@@ -46,12 +44,11 @@ pub async fn run_with_timeout(timeout: Duration, name: &str, args: &[&str]) -> R
     }
 }
 
-/// Strips noisy tool output (e.g. curl progress) from an error message.
+/// Drops curl progress-meter lines and collapses blank runs.
 pub fn clean_stderr(msg: &str) -> String {
     let mut result = String::with_capacity(msg.len());
     for line in msg.lines() {
         let trimmed = line.trim();
-        // Skip curl progress meter lines
         if trimmed.starts_with("% Total") || is_curl_progress_line(trimmed) {
             continue;
         }
@@ -60,16 +57,14 @@ pub fn clean_stderr(msg: &str) -> String {
         }
         result.push_str(line);
     }
-    // Collapse multiple blank lines
     while result.contains("\n\n\n") {
         result = result.replace("\n\n\n", "\n\n");
     }
     result.trim().to_string()
 }
 
-/// Checks if a line looks like a curl progress meter data line.
 fn is_curl_progress_line(line: &str) -> bool {
-    // Curl progress lines are like: "  0  1234    0  0    0     0      0      0 --:--:-- --:--:-- --:--:--     0"
+    // Example: "  0  1234    0  0    0     0      0      0 --:--:-- --:--:-- --:--:--     0"
     let parts: Vec<&str> = line.split_whitespace().collect();
     parts.len() >= 6 && parts.iter().take(6).all(|p| p.parse::<u64>().is_ok() || *p == "0")
 }

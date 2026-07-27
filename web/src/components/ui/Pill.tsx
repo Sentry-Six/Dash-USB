@@ -17,7 +17,7 @@ export function Pill({
   )
 }
 
-/** Animated dot for live indicators. Inherits colour from parent. */
+/** Inherits its colour from the parent. */
 export function LiveDot() {
   return <span className="dot-live" />
 }

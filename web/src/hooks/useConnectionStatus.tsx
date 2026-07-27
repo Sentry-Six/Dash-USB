@@ -23,10 +23,9 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   const httpOk = useRef(true)
   const httpFailCount = useRef(0)
 
-  // HTTP is the primary connectivity signal. WebSocket connections cycle
-  // naturally (server timeouts, keepalive, etc.) and don't indicate a real
-  // connectivity problem. Only show "reconnecting"/"disconnected" when
-  // HTTP polls actually fail.
+  // HTTP is the primary connectivity signal. WebSockets cycle on their own
+  // (server timeouts, keepalive) without meaning anything is wrong, so
+  // "reconnecting" and "disconnected" only follow failing HTTP polls.
   function evaluate() {
     if (httpOk.current) {
       if (disconnectTimer.current) {
@@ -36,10 +35,10 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       httpFailCount.current = 0
       setState("connected")
     } else if (httpFailCount.current >= 3) {
-      // Multiple HTTP failures — truly disconnected
+      // Repeated HTTP failures mean it is genuinely gone.
       setState("disconnected")
     } else {
-      // First HTTP failure — show reconnecting, give it time
+      // First HTTP failure: show reconnecting and give it time.
       setState("reconnecting")
     }
   }
@@ -49,7 +48,6 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     wsClient.connect()
   }, [])
 
-  // HTTP heartbeat poll — primary connectivity signal
   useEffect(() => {
     let mounted = true
 
@@ -85,7 +83,6 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   function retry() {
     wsClient.reconnect()
     setState("reconnecting")
-    // Immediate HTTP check
     fetch("/api/status")
       .then((res) => {
         httpOk.current = res.ok

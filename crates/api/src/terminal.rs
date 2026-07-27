@@ -76,7 +76,6 @@ struct ClientMsg {
     rows: Option<u16>,
 }
 
-/// GET /api/terminal — PTY over WebSocket
 pub async fn handle_terminal(
     ws: WebSocketUpgrade,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -110,7 +109,6 @@ async fn handle_terminal_ws(socket: WebSocket, addr: SocketAddr) {
         return;
     }
 
-    // Step 1: wait for auth
     let auth_raw = match receiver.next().await {
         Some(Ok(Message::Text(t))) => t,
         _ => {
@@ -138,7 +136,6 @@ async fn handle_terminal_ws(socket: WebSocket, addr: SocketAddr) {
         return;
     }
 
-    // Step 2: validate credentials
     if !validate_credentials(&username, &password).await {
         record_failure(&ip);
         warn!("[terminal] Failed auth for user {:?} from {}", username, ip);
@@ -150,7 +147,6 @@ async fn handle_terminal_ws(socket: WebSocket, addr: SocketAddr) {
 
     let _ = sender.send(send_msg_text("auth_ok", "")).await;
 
-    // Step 3: spawn PTY
     let pty_system = native_pty_system();
     let pair = match pty_system.openpty(PtySize {
         rows: 24,
@@ -190,8 +186,8 @@ async fn handle_terminal_ws(socket: WebSocket, addr: SocketAddr) {
         }
     };
 
-    // Drop the slave fd from the parent so that closing the master hangs up the
-    // session (portable_pty drops it when we drop pair.slave).
+    // Drop the parent's copy of the slave fd, so closing the master later
+    // hangs up the session.
     drop(pair.slave);
 
     info!("[terminal] session started for {} from {}", username, ip);
@@ -233,7 +229,6 @@ async fn handle_terminal_ws(socket: WebSocket, addr: SocketAddr) {
         }
     });
 
-    // Forward PTY -> WebSocket
     let send_task = tokio::spawn(async move {
         while let Some(chunk) = out_rx.recv().await {
             let text = String::from_utf8_lossy(&chunk).into_owned();
@@ -247,7 +242,6 @@ async fn handle_terminal_ws(socket: WebSocket, addr: SocketAddr) {
             .await;
     });
 
-    // WebSocket -> PTY + resize
     let master_for_recv = master.clone();
     let recv_task = tokio::spawn(async move {
         while let Some(Ok(msg)) = receiver.next().await {
@@ -279,8 +273,8 @@ async fn handle_terminal_ws(socket: WebSocket, addr: SocketAddr) {
                             }
                         }
                         "ping" => {
-                            // Pong is handled by the WS send task via output channel;
-                            // no-op here matches the Go server's heartbeat semantics.
+                            // No-op: a client ping only proves the socket is
+                            // alive, nothing is sent back.
                         }
                         _ => {}
                     }
@@ -291,9 +285,9 @@ async fn handle_terminal_ws(socket: WebSocket, addr: SocketAddr) {
         }
     });
 
-    // When either side finishes (client disconnect, PTY EOF), tear down:
-    //  - kill child (sends SIGHUP via PTY teardown)
-    //  - drop master (closes PTY, wakes blocking reader)
+    // Once either side finishes (client disconnect, PTY EOF), kill the child
+    // (SIGHUP via PTY teardown) and drop the master to wake the blocking
+    // reader.
     tokio::select! {
         _ = send_task => {}
         _ = recv_task => {}
@@ -301,7 +295,7 @@ async fn handle_terminal_ws(socket: WebSocket, addr: SocketAddr) {
 
     let _ = child.kill();
     let _ = child.wait();
-    // Drop master explicitly to unblock the reader thread if it's still alive.
+    // Explicit drop unblocks the reader thread if it's still alive.
     drop(master);
     let _ = read_handle.await;
 
@@ -331,8 +325,9 @@ async fn validate_credentials(username: &str, password: &str) -> bool {
     use tokio::io::AsyncWriteExt;
     use tokio::process::Command;
 
-    // Reject shell-metacharacter bait in username; `su` will reject anyway but
-    // fail fast and keep logs clean.
+    // Reject whitespace and ':' (the /etc/shadow field separator) so a crafted
+    // username can't confuse the lookup. `su` would reject it too, but failing
+    // here is faster and keeps the logs clean.
     if username.is_empty() || username.contains(|c: char| c.is_whitespace() || c == ':') {
         return false;
     }

@@ -1,6 +1,5 @@
-//! Block device listing. Returns removable/external block devices suitable
-//! for use as DATA_DRIVE. Critical: the OS drive is always excluded so the
-//! user cannot accidentally wipe the boot/root disk.
+//! Removable/external block devices suitable for use as DATA_DRIVE. The OS
+//! drive MUST stay excluded so the user cannot wipe the boot/root disk.
 
 use std::collections::HashSet;
 
@@ -19,7 +18,6 @@ struct BlockDev {
     model: String,
 }
 
-/// GET /api/system/block-devices
 pub async fn list_block_devices(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
     let devices = enumerate_candidate_devices().await;
     (StatusCode::OK, Json(serde_json::to_value(&devices).unwrap_or_else(|_| serde_json::json!([]))))
@@ -80,8 +78,8 @@ async fn enumerate_candidate_devices() -> Vec<BlockDev> {
     out
 }
 
-/// Build the set of /sys/block device names whose drives host system mount
-/// points. Always excludes `mmcblk0` (the onboard SD slot).
+/// /sys/block names whose drives host system mount points. Always includes
+/// `mmcblk0` (the onboard SD slot).
 fn excluded_devices() -> HashSet<String> {
     let mut excluded: HashSet<String> = HashSet::new();
     excluded.insert("mmcblk0".to_string());
@@ -135,7 +133,6 @@ fn excluded_devices() -> HashSet<String> {
                 excluded.insert(trimmed);
             }
         }
-        // Also exclude the partition device name itself.
         excluded.insert(dev.to_string());
     }
 

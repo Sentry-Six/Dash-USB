@@ -9,8 +9,8 @@ function log_progress () {
   echo "configure-rtc: $1"
 }
 
-# Write system time → RTC via /dev/rtc0 ioctl (hwclock is not available on minimal images,
-# and /sys/class/rtc/rtc0/since_epoch is read-only on rpi-rtc)
+# Write system time to the RTC through the /dev/rtc0 ioctl: hwclock is absent
+# on minimal images and /sys/class/rtc/rtc0/since_epoch is read-only on rpi-rtc.
 rtc_sync_systohc() {
   if [ ! -e /dev/rtc0 ]; then
     log_progress "Warning: /dev/rtc0 not found"
@@ -29,7 +29,6 @@ with open('/dev/rtc0', 'wb') as f:
   }
 }
 
-# Read RTC → set system time via /dev/rtc0 ioctl
 rtc_sync_hctosys() {
   if [ ! -e /dev/rtc0 ]; then
     return 1
@@ -44,7 +43,7 @@ t = time.struct_time((vals[5]+1900, vals[4]+1, vals[3], vals[2], vals[1], vals[0
 print(int(calendar.timegm(t)))
 " 2>/dev/null)
   if [ -n "$epoch" ] && [ "$epoch" -gt 1704067200 ]; then
-    # Only set if RTC has a sane date (after 2024-01-01)
+    # Only trust an RTC date after 2024-01-01.
     date -u -s "@$epoch" > /dev/null
   fi
 }
@@ -61,17 +60,15 @@ fi
 if [ "$RTC_BATTERY_ENABLED" = "true" ]; then
   log_progress "Enabling RTC battery support"
 
-  # Disable fake-hwclock
   if systemctl is-enabled fake-hwclock.service 2>/dev/null | grep -q enabled; then
     log_progress "Disabling fake-hwclock"
     systemctl stop fake-hwclock.service || true
     systemctl disable fake-hwclock.service || true
   fi
 
-  # Create RTC sync service using /dev/rtc0 ioctl
-  # This service ONLY handles boot-time RTC→system sync.
-  # Periodic system→RTC sync is handled by archiveloop's timesyncloop,
-  # because the Pi never gracefully shuts down (car just loses power).
+  # This service handles the boot-time RTC-to-system sync ONLY. The periodic
+  # system-to-RTC sync belongs to archiveloop's timesyncloop, because the Pi
+  # never shuts down gracefully: the car just cuts power.
   log_progress "Creating dashusb-hwclock.service"
   cat > /lib/systemd/system/dashusb-hwclock.service << 'UNIT'
 [Unit]
@@ -104,7 +101,6 @@ UNIT
   systemctl daemon-reload
   systemctl enable dashusb-hwclock.service
 
-  # Sync current system time to RTC
   rtc_sync_systohc
 
   # Trickle charging for rechargeable batteries (ML-2020, ML-2032, LIR2032)
@@ -126,7 +122,6 @@ UNIT
 else
   log_progress "RTC battery support disabled, ensuring fake-hwclock is active"
 
-  # Remove hwclock service if it exists
   if [ -e /lib/systemd/system/dashusb-hwclock.service ]; then
     systemctl stop dashusb-hwclock.service 2>/dev/null || true
     systemctl disable dashusb-hwclock.service 2>/dev/null || true
@@ -134,13 +129,11 @@ else
     systemctl daemon-reload
   fi
 
-  # Remove trickle charging if it was enabled
   if grep -q "^dtparam=rtc_bbat_vchg" /boot/firmware/config.txt 2>/dev/null; then
     log_progress "Removing RTC trickle charging"
     sed -i '/^dtparam=rtc_bbat_vchg/d' /boot/firmware/config.txt
   fi
 
-  # Re-enable fake-hwclock
   if systemctl is-enabled fake-hwclock.service 2>/dev/null | grep -q disabled; then
     log_progress "Re-enabling fake-hwclock"
     systemctl enable fake-hwclock.service || true

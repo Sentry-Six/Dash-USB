@@ -3,7 +3,7 @@ import { Shield, Upload, FileText, CheckCircle, X, ChevronDown, ChevronUp, Rotat
 import type { StepProps } from "../SetupWizard"
 import { cn } from "@/lib/utils"
 
-/** Known config keys grouped by wizard step for display */
+/** Known config keys grouped by wizard step, for the import summary. */
 const CONFIG_GROUPS: Record<string, { label: string; keys: string[] }> = {
   network: {
     label: "Network",
@@ -56,14 +56,12 @@ const CONFIG_GROUPS: Record<string, { label: string; keys: string[] }> = {
   },
 }
 
-/** Map legacy lowercase config keys to their current canonical names.
- *  Mirrors `migrate_legacy_config_keys` in crates/setup/src/env.rs so the
- *  wizard inputs (which read CAM_SIZE, ARCHIVE_SERVER, etc.) actually
- *  populate from teslausb-era .conf files that still use camsize,
- *  archiveserver, etc. Without this, uploading an old config silently
- *  drops every legacy key into an unread keyspace and the user sees
- *  blank inputs despite a successful "Imported N keys" toast.
- *  New-name wins: if both old and new are present, keep the new value.
+/** Map legacy lowercase config keys to canonical names. Must stay in sync with
+ *  `migrate_legacy_config_keys` in crates/setup/src/env.rs: wizard inputs read
+ *  CAM_SIZE, ARCHIVE_SERVER, etc., so without this an imported teslausb-era
+ *  .conf drops every legacy key into an unread keyspace and the user sees blank
+ *  inputs despite an "Imported N keys" toast.
+ *  New name wins when both old and new are present.
  */
 const LEGACY_KEY_MAP: Record<string, string> = {
   archiveserver: "ARCHIVE_SERVER",
@@ -125,7 +123,6 @@ function parseConfFile(text: string): Record<string, string> {
     if (match) {
       const key = match[1]
       let val = match[2].trim()
-      // Unquote
       if (val.length >= 2) {
         if ((val.startsWith("'") && val.endsWith("'")) || (val.startsWith('"') && val.endsWith('"'))) {
           val = val.slice(1, -1)
@@ -139,7 +136,6 @@ function parseConfFile(text: string): Record<string, string> {
   return migrateLegacyKeys(result)
 }
 
-/** Mask sensitive values for display */
 function maskValue(key: string, value: string): string {
   const sensitiveKeys = [
     "WIFIPASS", "AP_PASS", "sharepassword", "WEB_PASSWORD",
@@ -154,7 +150,6 @@ function maskValue(key: string, value: string): string {
   return value
 }
 
-/** Get a friendly display label for a config key */
 function friendlyLabel(key: string): string {
   const labels: Record<string, string> = {
     SSID: "WiFi SSID",
@@ -193,7 +188,6 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
 
   const backupFileInputRef = useRef<HTMLInputElement>(null)
 
-  // Restore from backup state
   const [showRestore, setShowRestore] = useState(false)
   const [backups, setBackups] = useState<BackupEntry[]>([])
   const [loadingBackups, setLoadingBackups] = useState(false)
@@ -214,7 +208,6 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
         setFileName(file.name)
         setRestoreSource(null)
         onBatchChange(parsed)
-        // Expand all groups that have keys
         const groups = new Set<string>()
         for (const [groupId, group] of Object.entries(CONFIG_GROUPS)) {
           if (group.keys.some((k) => k in parsed)) {
@@ -254,7 +247,6 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
     })
   }
 
-  // Load available backups when restore panel is opened
   useEffect(() => {
     if (!showRestore) return
     setLoadingBackups(true)
@@ -270,16 +262,13 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
       })
   }, [showRestore])
 
-  // Handle restoring from a backup
   async function handleRestore(backup: BackupEntry) {
     setRestoringDate(backup.date)
     try {
-      // Fetch the full backup data
       const backupRes = await fetch(`/api/system/backup/${backup.date}`)
       if (!backupRes.ok) throw new Error("Failed to fetch backup")
       const backupData = await backupRes.json()
 
-      // Send to restore endpoint
       const restoreRes = await fetch("/api/system/restore", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -288,17 +277,15 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
       if (!restoreRes.ok) throw new Error("Restore failed")
       const result = await restoreRes.json()
 
-      // Parse the config to populate wizard fields
       const parsed = result.config as Record<string, string>
       setImported(parsed)
       setFileName(null)
       setRestoreSource(backup.date)
       setShowRestore(false)
-      // Signal to SetupWizard that this is a restore — update the destructive
-      // change baseline so drive size comparisons use the backup values.
+      // _restore_baseline moves SetupWizard's destructive-change baseline onto
+      // the backup values, so drive-size comparisons run against them.
       onBatchChange({ ...parsed, _restore_baseline: "true" })
 
-      // Expand all groups that have keys
       const groups = new Set<string>()
       for (const [groupId, group] of Object.entries(CONFIG_GROUPS)) {
         if (group.keys.some((k) => k in parsed)) {
@@ -307,18 +294,17 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
       }
       setExpandedGroups(groups)
     } catch {
-      // error handled silently, user sees button reset
+      // No error UI: the button resetting is the only signal.
     } finally {
       setRestoringDate(null)
     }
   }
 
-  // Handle uploading a backup JSON file from the user's local machine.
-  // Needed during first-run on a fresh image: the archive isn't mounted
-  // yet (its credentials live inside the backup), so /api/system/backups
-  // returns an empty list and the user has no way to pick a backup. POST
-  // the file straight to /api/system/restore — the backend writes config,
-  // SSH keys, rclone config, BLE keys, and notification creds back.
+  // Upload path for first run on a fresh image: the archive isn't mounted yet
+  // (its credentials live inside the backup), so /api/system/backups returns an
+  // empty list and there is nothing to pick. POST the file straight to
+  // /api/system/restore, which writes back config, SSH keys, rclone config, BLE
+  // keys and notification credentials.
   async function handleBackupFileUpload(file: File) {
     if (!file.name.endsWith(".json")) {
       setUploadError("Please select a .json backup file")
@@ -372,7 +358,6 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
     }
   }
 
-  // Categorize imported keys
   const groupedEntries: { groupId: string; label: string; entries: [string, string][] }[] = []
   const ungroupedEntries: [string, string][] = []
 

@@ -5,15 +5,13 @@ use axum::response::{Html, IntoResponse};
 
 use crate::router::AppState;
 
-/// GET /api/memory — JSON memory stats
 pub async fn memory_stats(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
     let mut stats = serde_json::Map::new();
 
-    // Read RSS from /proc/self/statm on Linux
     if let Ok(statm) = std::fs::read_to_string("/proc/self/statm") {
         let parts: Vec<&str> = statm.split_whitespace().collect();
         if parts.len() >= 2 {
-            let page_size = 4096u64; // typical page size
+            let page_size = 4096u64;
             if let Ok(pages) = parts[1].parse::<u64>() {
                 stats.insert("rss_mb".into(), serde_json::json!((pages * page_size) as f64 / 1024.0 / 1024.0));
             }
@@ -26,7 +24,6 @@ pub async fn memory_stats(State(_s): State<AppState>) -> (StatusCode, Json<serde
     (StatusCode::OK, Json(serde_json::Value::Object(stats)))
 }
 
-/// GET /memory — HTML memory debug page
 pub async fn memory_page(State(_s): State<AppState>) -> impl IntoResponse {
     Html(r#"<!DOCTYPE html>
 <html><head><title>DashUSB Memory</title>

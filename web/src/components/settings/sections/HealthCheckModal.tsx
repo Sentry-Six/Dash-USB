@@ -44,9 +44,8 @@ export function HealthCheckModal({ onClose }: { onClose: () => void }) {
     }
   }
 
-  // Kick off the first check on mount. Using useEffect so we don't trigger
-  // side-effects during render (previous version called runCheck() inline,
-  // which silently looped and produced a blank modal when the fetch failed).
+  // The first check must run from an effect, not inline during render: an
+  // inline call re-fires on every render and loops into a blank modal.
   useEffect(() => {
     void runCheck()
   }, [])

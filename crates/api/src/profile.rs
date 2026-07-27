@@ -1,6 +1,6 @@
-//! GET /api/profile — the active vehicle profile, as the web UI needs
-//! it: camera set + playback grid for the Viewer, filename pattern for
-//! client-side grouping, and the timing facts the dashboard surfaces.
+//! Active vehicle profile as the web UI needs it: camera set and playback grid
+//! for the Viewer, filename pattern for client-side grouping, and the timing
+//! facts the dashboard surfaces.
 
 use axum::http::StatusCode;
 use axum::Json;

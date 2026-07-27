@@ -1,6 +1,5 @@
-//! Log file viewer.
-//!
-//! Returns raw `text/plain` content (the frontend parses the text directly).
+//! Log file viewer. Responses are raw `text/plain`; the frontend parses the
+//! text itself, so never wrap it in JSON.
 
 use axum::extract::{Path, State};
 use axum::http::{StatusCode, header};
@@ -9,7 +8,6 @@ use std::io::{Read, Seek, SeekFrom};
 
 use crate::router::AppState;
 
-/// Known log files and their paths.
 fn log_path(name: &str) -> Option<&'static str> {
     match name {
         "archiveloop" => Some("/mutable/archiveloop.log"),
@@ -25,13 +23,10 @@ fn log_path(name: &str) -> Option<&'static str> {
     }
 }
 
-/// Max bytes to return — prevents OOM on 512 MB Pi devices where syslog/kern
-/// can grow to 50–200 MB without rotation.
+/// Cap on bytes returned. Prevents OOM on 512 MB Pi devices, where unrotated
+/// syslog/kern can reach 200 MB.
 const MAX_TAIL_BYTES: u64 = 512 * 1024;
 
-/// GET /api/logs/{name}
-///
-/// Returns the tail of the log file as `text/plain`, matching the Go original.
 pub async fn get_log(
     State(_s): State<AppState>,
     Path(name): Path<String>,
@@ -40,8 +35,8 @@ pub async fn get_log(
         return (StatusCode::BAD_REQUEST, "invalid log name").into_response();
     }
 
-    // Tail-reading a log seeks + reads up to 512 KB off the SD card — keep
-    // it off the reactor so a slow read can't stall the WebSocket heartbeat.
+    // Reads up to 512 KB off the SD card: keep it off the reactor so a slow
+    // read can't stall the WebSocket heartbeat.
     tokio::task::spawn_blocking(move || read_log_tail(name))
         .await
         .unwrap_or_else(|_| {
@@ -58,9 +53,9 @@ fn read_log_tail(name: String) -> Response {
 
     let mut file = match std::fs::File::open(&path) {
         Ok(f) => f,
-        // Known logs may legitimately be absent (e.g. archiveloop.log when no
-        // NAS is configured yet) — return empty 200 so the UI shows "no log
-        // output" instead of a scary console 404. Unknown names still 404.
+        // Known logs may legitimately be absent (archiveloop.log before a NAS
+        // is configured), so return an empty 200 and let the UI show "no log
+        // output". Unknown names still 404.
         Err(_) if known => {
             return (
                 StatusCode::OK,
@@ -76,8 +71,8 @@ fn read_log_tail(name: String) -> Response {
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Cannot stat log file").into_response(),
     };
 
-    // If the file is larger than the cap, seek to the last MAX_TAIL_BYTES and
-    // skip the first partial line so output starts at a clean boundary.
+    // After seeking, discard the first partial line so output starts on a
+    // line boundary.
     if meta.len() > MAX_TAIL_BYTES {
         let _ = file.seek(SeekFrom::End(-(MAX_TAIL_BYTES as i64)));
         let mut one = [0u8; 1];

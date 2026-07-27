@@ -45,12 +45,12 @@ pub async fn manage_free_space(reserve_bytes: Option<u64>) -> Result<()> {
         return Ok(());
     }
 
-    // Oldest first, but NEVER the newest COMPLETED snapshot: it holds
-    // the only captured copy of the most recent footage (the live drive
-    // rolls over), and make_snapshot's TOC diff needs a predecessor.
-    // "Completed" means snap.bin + its committed .toc both exist — an
-    // abandoned dir (crash mid-make) protects nothing and IS releasable
-    // even when it sorts newest.
+    // Oldest first, but NEVER the newest COMPLETED snapshot: it holds the
+    // only captured copy of the most recent footage (the live drive rolls
+    // over), and make_snapshot's TOC diff needs a predecessor. "Completed"
+    // requires both snap.bin and its committed .toc; a dir abandoned by a
+    // crash mid-make protects nothing and stays releasable even when it
+    // sorts newest.
     let keep = snapshots.iter().rev().find(|s| snapshot_is_completed(s));
     let releasable: Vec<&String> = snapshots
         .iter()
@@ -66,7 +66,7 @@ pub async fn manage_free_space(reserve_bytes: Option<u64>) -> Result<()> {
 
     let mut free_now = free;
     for snap in releasable {
-        // Already holding the mgmt lock — use the unlocked release.
+        // The mgmt lock is already held here, so use the unlocked release.
         if let Err(e) = super::snapshot::release_snapshot_unlocked(snap).await {
             warn!("Failed to release {}: {}", snap, e);
             continue;

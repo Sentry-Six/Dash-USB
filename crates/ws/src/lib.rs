@@ -5,7 +5,6 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
-/// A broadcast message sent to all connected WebSocket clients.
 #[derive(Debug, Clone, Serialize)]
 pub struct Message {
     #[serde(rename = "type")]
@@ -13,10 +12,6 @@ pub struct Message {
     pub data: serde_json::Value,
 }
 
-/// WebSocket hub for broadcasting messages to all connected clients.
-///
-/// Uses `tokio::sync::broadcast` internally — clients subscribe and receive
-/// messages without the Go-style register/unregister channel dance.
 #[derive(Clone)]
 pub struct Hub {
     tx: broadcast::Sender<Vec<u8>>,
@@ -24,7 +19,6 @@ pub struct Hub {
 }
 
 impl Hub {
-    /// Creates a new Hub with a 256-message broadcast buffer.
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(256);
         Hub {
@@ -33,13 +27,8 @@ impl Hub {
         }
     }
 
-    /// Broadcasts a typed message to all connected clients.
     pub fn broadcast(&self, msg_type: &str, data: impl Serialize) {
-        // Skip the JSON serialize work entirely when nobody is listening.
-        // `receiver_count` is the live count of `broadcast::Receiver` handles
-        // owned by connected WS clients; it's the same source of truth the
-        // `tx.send` below would use to decide deliverability, just observed
-        // ahead of the encoding pass.
+        // Skip the serialize work when nobody is subscribed.
         if self.tx.receiver_count() == 0 {
             return;
         }
@@ -60,12 +49,10 @@ impl Hub {
                 return;
             }
         };
-        // Ignore send errors (no receivers = nobody to send to)
         let _ = self.tx.send(bytes);
     }
 
-    /// Subscribe to receive broadcast messages. Returns a receiver that yields
-    /// serialized JSON bytes for each broadcast.
+    /// Yields the serialized JSON bytes of each broadcast.
     pub fn subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
         self.client_count.fetch_add(1, Ordering::Relaxed);
         let count = self.client_count.load(Ordering::Relaxed);
@@ -73,7 +60,6 @@ impl Hub {
         self.tx.subscribe()
     }
 
-    /// Called when a client disconnects to track the count.
     pub fn client_disconnected(&self) {
         let prev = self.client_count.fetch_sub(1, Ordering::Relaxed);
         debug!("WebSocket client disconnected ({} total)", prev - 1);

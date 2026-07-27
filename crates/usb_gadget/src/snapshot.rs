@@ -1,15 +1,15 @@
-//! Snapshot management — reflink-backed copy-on-write captures of the
-//! cam disk image, plus the bookkeeping that makes those captures
-//! browseable from the web UI, the phone app, and `/mutable/Recordings/`.
+//! Reflink-backed copy-on-write captures of the cam disk image, plus the
+//! bookkeeping that makes them browseable from the web UI and
+//! `/mutable/Recordings/`.
 //!
-//! Flow per snapshot: `cp --reflink` the live image, optional fsck,
-//! read-only mount through autofs, TOC-diff against the previous
-//! snapshot (identical ⇒ discarded), then walk the vehicle profile's
-//! recording root and drop one symlink per matching clip under
-//! `/mutable/Recordings/Continuous/<YYYY-MM-DD>/` — that link tree is
-//! what archiveloop archives and the Viewer plays. The car firmware
-//! rolling-deletes footage on the live drive (2 h on GM); snapshots
-//! taken inside that window are how footage outlives it.
+//! Per snapshot: `cp --reflink` the live image, optional fsck, read-only
+//! mount through autofs, TOC-diff against the previous snapshot (identical
+//! means discard), then one symlink per clip matching the vehicle profile
+//! under `/mutable/Recordings/Continuous/<YYYY-MM-DD>/`. That link tree is
+//! what archiveloop archives and the Viewer plays.
+//!
+//! The car rolling-deletes footage on the live drive (2 h on GM). Snapshots
+//! taken inside that window are the only reason footage outlives it.
 
 use std::path::Path;
 use std::time::Duration;
@@ -23,18 +23,9 @@ const REBUILD_FLAG: &str = "/mutable/.rebuild_snapshot_symlinks";
 
 const RECORDINGS: &str = "/mutable/Recordings";
 
-/// Create a snapshot of the cam disk plus the symlink/TOC bookkeeping
-/// the archive loop and the web Viewer need.
-///
-/// `skip_fsck` corresponds to the `nofsck` arg the bash wrapper used to
-/// pass after a reboot to avoid running fsck twice in quick succession.
-///
-/// Returns `Some(name)` on a fresh snapshot, `None` when the new snapshot
-/// is byte-equivalent to the previous one (in which case we delete the
-/// reflink to avoid accumulating identical copies).
-/// Serializes snapshot creation, release, and free-space pruning —
-/// deleting a snapshot mid-`make_snapshot` (or two pruners racing)
-/// corrupts the TOC-diff chain.
+/// Serializes snapshot creation, release, and free-space pruning. Deleting
+/// a snapshot mid-`make_snapshot`, or two pruners racing, corrupts the
+/// TOC-diff chain.
 const SNAPSHOT_MGMT_LOCK: &str = "/tmp/dashusb_snapshot_mgmt.lock";
 
 /// Take the snapshot-management flock. Blocking; released on drop.
@@ -45,6 +36,15 @@ pub(crate) fn acquire_mgmt_lock() -> std::io::Result<super::cycle_lock::CycleGua
     )
 }
 
+/// Create a snapshot of the cam disk plus the symlink and TOC bookkeeping
+/// the archive loop and the Viewer need.
+///
+/// `skip_fsck` skips the fsck pass; archiveloop sets it after a reboot so
+/// fsck does not run twice in quick succession.
+///
+/// Returns `Some(name)` for a fresh snapshot, or `None` when the capture is
+/// byte-equivalent to the previous one, in which case the reflink is
+/// deleted rather than accumulating identical copies.
 pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
     let _mgmt = acquire_mgmt_lock()?;
     let _ = std::fs::create_dir_all(SNAPSHOTS_DIR);
@@ -53,9 +53,8 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
         bail!("cam disk image not found at {}", CAM_DISK);
     }
 
-    // ── pick the next snap-NNNNNN slot ────────────────────────────────
-    // If the previous snapshot has no `.toc` it was abandoned mid-flight
-    // — wipe it and reuse the slot.
+    // No `.toc` on the previous snapshot means it was abandoned
+    // mid-flight: wipe it and reuse the slot.
     let (snap_num, prev_toc) = pick_next_snapshot_slot()?;
     let snap_name = format!("snap-{:06}", snap_num);
     let snap_dir = format!("{}/{}", SNAPSHOTS_DIR, snap_name);
@@ -66,9 +65,8 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
     std::fs::create_dir_all(&snap_dir)?;
     info!("Taking snapshot of cam disk in {}", snap_dir);
 
-    // ── reflink copy (bash line 313) ──────────────────────────────────
-    // `--reflink=auto` so non-XFS backingfiles (rare — setup wizard XFS
-    // verify usually catches this) still works at the cost of a full copy.
+    // `--reflink=auto` keeps non-XFS backing stores working at the cost of
+    // a full copy. The setup wizard's XFS check usually catches those first.
     // Low I/O priority: the copy runs while the car may be writing dashcam
     // footage to the same disk through the gadget; at default priority it
     // can stall those writes past the car's SCSI timeout. Best-effort lowest
@@ -85,24 +83,21 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
         bail!("cp --reflink failed: {}", e);
     }
 
-    // ── optional fsck on the loop-mounted partition (bash 281-289) ────
+    // Optional fsck on the loop-mounted partition.
     if !skip_fsck {
         if let Err(e) = fsck_snapshot(&snap_file).await {
             warn!("fsck on {} failed (non-fatal): {}", snap_file, e);
         }
     }
 
-    // ── wait for autofs (bash 301-305) ────────────────────────────────
-    // Symlinks we're about to create resolve through /tmp/snapshots/...
-    // which is the autofs mount root. autofs needs to be active before
-    // we touch the path or `find` below would just see an empty dir.
+    // Symlinks resolve through /tmp/snapshots/..., the autofs mount root.
+    // autofs must be active first or `find` below sees an empty dir.
     wait_for_autofs().await;
 
     info!("Took snapshot {}", snap_name);
 
-    // ── generate TOC for the freshly mounted snapshot (bash 309) ──────
-    // Touch the autofs path first so the disk image is mounted before
-    // `find` traverses it.
+    // Touch the autofs path first so the image is mounted before `find`
+    // traverses it.
     let _ = sentryusb_shell::run("ls", &[&format!("{}/", snap_mnt)]).await;
 
     let toc_path = format!("{}.toc", snap_file);
@@ -111,10 +106,8 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
         warn!("toc generation failed for {}: {}", snap_mnt, e);
     }
 
-    // ── diff against previous snapshot's TOC (bash 310-311) ───────────
-    // If nothing new is in this snapshot vs. the prior one, this is a
-    // duplicate — release it and return None so callers don't think
-    // they got a fresh snapshot.
+    // Nothing new versus the prior TOC means this is a duplicate: release
+    // it and return None so callers don't think they got a fresh snapshot.
     let is_new = match prev_toc.as_ref() {
         Some(prev) => toc_has_additions(prev, &toc_path_tmp).unwrap_or(true),
         None => true,
@@ -129,31 +122,28 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
     }
 
     // The car firmware rolling-deletes footage on the live drive.
-    // Deletions are never mirrored into the snapshot link trees —
-    // preserving footage past the car's window is the whole product.
+    // Deletions are NEVER mirrored into the snapshot link trees.
+    // Preserving footage past the car's window is the whole product.
 
-    // ── Pre-create the <snapdir>/mnt symlink (bash 317) ───────────────
-    // make_links_for_snapshot links each clip with a target like
-    // <snapdir>/mnt/<recording root>/...  ; if the symlink doesn't exist yet
-    // those per-clip symlinks resolve to nothing until autofs gets
-    // poked, which is fragile. Create it explicitly.
+    // Pre-create <snapdir>/mnt. Per-clip symlinks target
+    // <snapdir>/mnt/<recording root>/..., and without it they resolve to
+    // nothing until autofs is poked.
     if !Path::new(&snap_mnt_link).exists() {
         #[cfg(unix)]
         let _ = std::os::unix::fs::symlink(&snap_mnt, &snap_mnt_link);
     }
 
-    // ── build /mutable/Recordings/... symlinks ────────────────────────
-    // Previous snapshot's TOC feeds the newest-per-camera stability
-    // check (see make_links_in).
+    // Previous snapshot's TOC feeds the newest-per-camera stability check
+    // (see make_links_in).
     let prev_sizes = prev_toc.as_deref().map(parse_toc_sizes);
     if let Err(e) = make_links_for_snapshot(&snap_mnt, &snap_mnt_link, prev_sizes.as_ref()) {
         warn!("make_links_for_snapshot failed: {}", e);
     }
 
-    // ── commit the TOC (bash 319) ─────────────────────────────────────
+    // Commit the TOC.
     let _ = std::fs::rename(&toc_path_tmp, &toc_path);
 
-    // ── rebuild-all if the flag file is present (bash 336-339) ────────
+    // Rebuild all link trees when the flag file is present.
     if Path::new(REBUILD_FLAG).exists() {
         if let Err(e) = rebuild_all_snapshot_links() {
             warn!("rebuild_all_snapshot_links: {}", e);
@@ -170,8 +160,8 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
 /// full path under the snapshots dir (`/backingfiles/snapshots/snap-000001`,
 /// e.g. the WebUI delete handler and `make_snapshot.sh`'s discard path). We
 /// take the final path component so every form works. Taking the basename
-/// also neutralizes any `..` traversal in the input — only the last
-/// component is ever used, then appended to `SNAPSHOTS_DIR`.
+/// also neutralizes `..` traversal: only the last component is ever used,
+/// then appended to `SNAPSHOTS_DIR`.
 fn normalize_snap_name(input: &str) -> Option<String> {
     let name = Path::new(input).file_name()?.to_str()?;
     if name.starts_with("snap-") && !name.contains("..") {
@@ -188,8 +178,8 @@ pub async fn release_snapshot(snap_name: &str) -> Result<()> {
     release_snapshot_unlocked(snap_name).await
 }
 
-/// [`release_snapshot`] body without the management lock — for callers
-/// that already hold it (the space manager); flock is per-fd, so
+/// [`release_snapshot`] body without the management lock, for callers that
+/// already hold it (the space manager). flock is per-fd, so
 /// re-acquiring from the same process would deadlock against ourselves.
 pub(crate) async fn release_snapshot_unlocked(snap_name: &str) -> Result<()> {
     let name = match normalize_snap_name(snap_name) {
@@ -260,13 +250,10 @@ pub fn list_snapshots() -> Vec<String> {
     snaps
 }
 
-// ─────────────────────────────────────────────────────────────────────
 // Helpers
-// ─────────────────────────────────────────────────────────────────────
 
 /// Find the next free `snap-NNNNNN` slot. If the previous snapshot
-/// looks abandoned (no `.toc` file, snap.bin missing), reuse its
-/// number — bash matches this behaviour around line 295-300.
+/// looks abandoned (no `.toc` file, snap.bin missing), reuse its number.
 ///
 /// Returns `(snap_num, Option<previous_toc_path>)`. The previous TOC
 /// is `None` on a brand-new install (no completed snapshots yet).
@@ -311,8 +298,8 @@ fn pick_next_snapshot_slot() -> Result<(u32, Option<String>)> {
 }
 
 /// fsck the snapshot's filesystem partition via a temporary loop device.
-/// Mirrors bash lines 281-289. Failures are logged but non-fatal —
-/// `archive-clips` will still run; we'd rather lose strict verification
+/// Failures are logged but non-fatal: `archive-clips` still runs. Losing
+/// strict verification beats
 /// of one snapshot than abort the whole archive cycle.
 async fn fsck_snapshot(snap_file: &str) -> Result<()> {
     let loop_dev = losetup_find_show(snap_file).await?;
@@ -406,9 +393,8 @@ fn parse_toc_sizes(toc_path: &str) -> std::collections::HashMap<String, u64> {
 }
 
 /// Returns true if `new_toc` has any line that isn't in `old_toc`.
-/// Mirrors the bash `diff old new | grep -qe '^>'` check at line 310.
 /// Lines are `<size> <path>`, compared whole: a clip that merely grew
-/// (same name, new size — e.g. it was still being written during the
+/// (same name, new size, e.g. still being written during the
 /// previous snapshot) must count as new, otherwise the fuller copy gets
 /// discarded as a duplicate.
 fn toc_has_additions(old_toc: &str, new_toc: &str) -> Result<bool> {
@@ -425,7 +411,7 @@ fn toc_has_additions(old_toc: &str, new_toc: &str) -> Result<bool> {
 /// pointing into the snapshot mount, per the active vehicle profile.
 ///
 /// `cur_mnt` is `/tmp/snapshots/snap-NNNNNN` (autofs path used during
-/// the scan). `final_mnt` is `<snapdir>/mnt` — the symlink to the autofs
+/// the scan). `final_mnt` is `<snapdir>/mnt`, the symlink to the autofs
 /// path. Per-clip symlinks are retargeted onto `final_mnt` so they keep
 /// working even if the autofs path is unmounted later.
 fn make_links_for_snapshot(
@@ -441,13 +427,13 @@ fn make_links_for_snapshot(
 ///
 /// Guard against archiving a segment the car is still writing (which
 /// would poison the dedup ledger with a permanently truncated offsite
-/// copy): per camera, every clip EXCEPT the newest links immediately —
-/// the existence of a successor proves the predecessor closed, with no
+/// copy): per camera, every clip EXCEPT the newest links immediately.
+/// A successor proves the predecessor closed, with no
 /// dependence on any clock. The newest clip per camera links only when
 /// its size is unchanged versus the previous snapshot's TOC (snapshots
 /// are ≥ the segment length apart by default, so equal size means
 /// closed). First snapshot (no previous TOC) holds the newest back one
-/// cycle — the snapshot itself still preserves the bytes.
+/// cycle; the snapshot itself still preserves the bytes.
 fn make_links_in(
     recordings: &Path,
     profile: &sentryusb_vehicle_profile::Profile,
@@ -512,8 +498,8 @@ fn make_links_in(
     Ok(())
 }
 
-/// Recursive collection walk (bounded depth — today's GM layout is
-/// flat, but a firmware that starts date-bucketing must not break
+/// Recursive collection walk, depth-bounded. Today's GM layout is flat,
+/// but a firmware that starts date-bucketing must not break
 /// capture). Collects every file whose name matches the profile's clip
 /// pattern; linking decisions happen in [`make_links_in`].
 fn collect_clips_under(
@@ -693,7 +679,7 @@ mod tests {
     #[test]
     fn normalize_rejects_traversal() {
         // basename takes only the final component, so traversal can't
-        // escape SNAPSHOTS_DIR — the final segment isn't a `snap-` name.
+        // escape SNAPSHOTS_DIR: the final segment isn't a `snap-` name.
         assert_eq!(normalize_snap_name("snap-1/../../etc/passwd"), None);
         assert_eq!(normalize_snap_name("/etc/../snap-1/.."), None);
     }

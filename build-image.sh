@@ -9,15 +9,14 @@
 #
 # Usage:
 #   ./build-image.sh                         # 64-bit image (Pi 3/4/5/Zero 2)
-#   ./build-image.sh --32bit                 # 32-bit image (armhf — Pi 3 with 32-bit Pi OS)
+#   ./build-image.sh --32bit                 # 32-bit image (armhf, Pi 3 on 32-bit Pi OS)
 #   ./build-image.sh /path/to/binary         # 64-bit with local binary
 #   ./build-image.sh --32bit /path/to/binary # 32-bit with local binary
 #
-# Note: the original armv6 Pi Zero W / Pi 1 are no longer supported; DashUSB
-# requires Pi Zero 2 W or newer.
+# The armv6 Pi Zero W and Pi 1 are not supported; DashUSB requires a Pi Zero
+# 2 W or newer.
 #
-# Output:
-#   deploy/dashusb-*.img.gz — ready to flash with Raspberry Pi Imager
+# Output: deploy/dashusb-*.img.gz, ready to flash with Raspberry Pi Imager.
 #
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -51,22 +50,20 @@ done
 
 if $BUILD_32BIT; then
     ARCH_LABEL="32-bit (armhf — Pi 3 with 32-bit Pi OS)"
-    # 32-bit: single binary; SUFFIXES list has one entry to keep the
-    # loop logic below uniform with the 64-bit path.
+    # One binary, but SUFFIXES stays a list so the loops below are identical
+    # to the 64-bit path.
     SUFFIXES=("linux-armv7")
     CPUS=("cortex-a7")
     RUST_TARGET="armv7-unknown-linux-gnueabihf"
-    # Tesla vehicle-command is Go; cross-compile targets map independently
-    # from our Rust targets. GOARM=7 matches the Rust target (cortex-a7);
-    # the upstream armv6 tarball stays compatible for any board, but Go's
-    # GOARM=7 produces faster code on the targets we still support.
+    # GO_ARCH and GO_ARM are not read anywhere in this script; nothing here
+    # builds a Go component.
     GO_ARCH="arm"
     GO_ARM="7"
     CONFIG_FILE="pi-gen-config-32bit"
 else
     ARCH_LABEL="64-bit (arm64 — Pi 3/4/5/Zero 2)"
-    # 64-bit: three per-CPU-tuned variants. The runtime picker selects
-    # the right one at every service start.
+    # Three per-CPU-tuned variants; the runtime picker selects one at every
+    # service start.
     SUFFIXES=("linux-arm64-a53" "linux-arm64-a72" "linux-arm64-a76")
     CPUS=("cortex-a53" "cortex-a72" "cortex-a76")
     RUST_TARGET="aarch64-unknown-linux-gnu"
@@ -77,20 +74,18 @@ fi
 
 info "Building $ARCH_LABEL image"
 
-# Check prerequisites
 command -v docker &>/dev/null || error "Docker is required. Install it first."
 
 # ── Step 1: Get the DashUSB binary variants ──
 #
-# Populates three parallel arrays:
-#   VARIANT_PATHS[i]   — local path to the dashusb binary for SUFFIXES[i]
-# These get injected into pi-gen's stage_dashusb/files/ in Step 4.
+# VARIANT_PATHS[i] is the local path to the dashusb binary for SUFFIXES[i].
+# Step 4 injects them into pi-gen's stage_dashusb/files/.
 VARIANT_PATHS=()
 
 if [ -n "$LOCAL_BINARY" ]; then
-    # Local-binary mode: one binary on the CLI, stage it under all variants.
-    # The picker fallback chain handles boards that would prefer a more
-    # specific variant — they just fall back to whatever's actually there.
+    # One binary from the CLI, staged under every variant. A board that would
+    # prefer a more specific variant falls back through the picker's chain to
+    # whatever is actually present.
     info "Using local binary: $LOCAL_BINARY (staged under all ${#SUFFIXES[@]} variant slot(s))"
     for sfx in "${SUFFIXES[@]}"; do
         VARIANT_PATHS+=("$LOCAL_BINARY")
@@ -106,9 +101,9 @@ elif command -v cross &>/dev/null && command -v node &>/dev/null; then
         cp -r dist/. "$SCRIPT_DIR/crates/sentryusb/static/"
     )
     # Cross-compile once per CPU variant. RUSTFLAGS overrides the
-    # per-target-cpu setting in .cargo/config.toml; the target/ subdir
-    # used by cargo is keyed only by triple, so we move the output to a
-    # per-CPU stash to avoid clobbering between iterations.
+    # per-target-cpu setting in .cargo/config.toml. cargo keys its target/
+    # subdir on the triple alone, so each build's output moves to a per-CPU
+    # stash before the next iteration clobbers it.
     for i in "${!SUFFIXES[@]}"; do
         sfx="${SUFFIXES[$i]}"
         cpu="${CPUS[$i]}"
@@ -116,10 +111,11 @@ elif command -v cross &>/dev/null && command -v node &>/dev/null; then
         (
             cd "$SCRIPT_DIR"
             cargo clean --release --target "$RUST_TARGET" -p sentryusb 2>/dev/null || true
-            # a53/a72 (BCM2710/2711) lack the ARMv8 crypto extension; LLVM's
-            # CPU defs assume it, and RustCrypto skips runtime detection when
-            # the feature is compile-time on — baked-in AES/SHA SIGILLs on
-            # those boards. Mirror build.yml: strip crypto except on a76.
+            # a53/a72 (BCM2710/2711) lack the ARMv8 crypto extension, but
+            # LLVM's CPU defs assume it, and RustCrypto skips runtime
+            # detection when the feature is compile-time on: baked-in AES/SHA
+            # instructions SIGILL on those boards. Mirror build.yml and strip
+            # crypto everywhere except a76.
             case "$cpu" in
                 cortex-a76) FEATURES="" ;;
                 *)          FEATURES=" -C target-feature=-aes,-sha2" ;;
@@ -144,7 +140,7 @@ else
     ok "Downloaded ${#SUFFIXES[@]} variant(s)"
 fi
 
-# Sanity: at least one main dashusb binary must exist.
+# Every staged variant must exist before the image build starts.
 for p in "${VARIANT_PATHS[@]}"; do
     [ -f "$p" ] || error "Missing dashusb variant at $p"
 done
@@ -174,7 +170,7 @@ for i in "${!SUFFIXES[@]}"; do
     info "  → staged dashusb-${sfx}"
 done
 
-# Picker script: the runtime selector that decides which variant runs.
+# The picker chooses which variant runs at each service start.
 cp "$SCRIPT_DIR/pi-gen-sources/00-dashusb-tweaks/files/dashusb-pick-binary" \
     "$STAGE_FILES/dashusb-pick-binary"
 chmod +x "$STAGE_FILES/dashusb-pick-binary"
@@ -187,7 +183,7 @@ cp "$SCRIPT_DIR/server/ble/dashusb-ble.service" "$WORK_DIR/stage_dashusb/00-dash
 cp "$SCRIPT_DIR/server/ble/com.dashusb.ble.conf" "$WORK_DIR/stage_dashusb/00-dashusb-tweaks/files/com.dashusb.ble.conf" 2>/dev/null \
     || cp "$SCRIPT_DIR/../Sentry-USB/server/ble/com.dashusb.ble.conf" "$WORK_DIR/stage_dashusb/00-dashusb-tweaks/files/com.dashusb.ble.conf"
 
-# Trixie apt indices are much larger; increase export image margin
+# Trixie's apt indices are much larger, so raise the export image margin.
 if [[ "$OSTYPE" == darwin* ]]; then
     sed -i '' 's/200 \* 1024 \* 1024/800 * 1024 * 1024/' "$WORK_DIR/export-image/prerun.sh"
 else
@@ -221,5 +217,4 @@ echo ""
 echo "  After first boot, open http://dashusb.local in your browser."
 echo ""
 
-# Cleanup
 rm -rf "$WORK_DIR"

@@ -1,8 +1,8 @@
-//! Archive system configuration — replaces `configure.sh`.
+//! Archive system configuration.
 //!
 //! Sets up the archive backend (cifs, nfs, rsync, rclone, or none) by
-//! verifying credentials, installing dependencies, and writing the
-//! archive loop service.
+//! verifying credentials, installing dependencies, and writing the archive
+//! loop service.
 
 use std::time::Duration;
 
@@ -12,7 +12,6 @@ use crate::env::SetupEnv;
 use crate::error::ConfigError;
 use crate::SetupEmitter;
 
-/// Supported archive backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArchiveSystem {
     Cifs,
@@ -35,7 +34,8 @@ impl ArchiveSystem {
     }
 }
 
-/// Validate that required config variables are present for the chosen archive system.
+/// Missing keys are ConfigError, not transient: they fail identically on
+/// retry, so the boot-loop auto-resume must halt rather than spin.
 fn validate_archive_config(env: &SetupEnv, system: ArchiveSystem) -> Result<()> {
     let require = |key: &str| -> Result<()> {
         if env.config.get(key).map_or(true, |v| v.is_empty()) {
@@ -72,14 +72,13 @@ fn validate_archive_config(env: &SetupEnv, system: ArchiveSystem) -> Result<()> 
     Ok(())
 }
 
-/// Pre-populate root's known_hosts with the rsync server's SSH host key
-/// so the non-interactive archiveloop SSH-via-rsync calls succeed. Without
-/// this, the very first sync fails with "Host key verification failed."
-/// because OpenSSH refuses to add unknown hosts in batch mode, and the
-/// user has no way to accept it interactively (the call runs as root
-/// inside a systemd service, not in their shell). Idempotent: ssh-keyscan
-/// returns the same line on every run; we deduplicate against the
-/// existing known_hosts before appending.
+/// Pre-populate root's known_hosts with the rsync server's SSH host key so the
+/// non-interactive archiveloop SSH-via-rsync calls succeed. Without it the
+/// first sync fails with "Host key verification failed": OpenSSH refuses to
+/// add unknown hosts in batch mode, and the call runs as root inside a systemd
+/// service where the user cannot accept the key interactively. Idempotent:
+/// scanned lines are deduplicated against the existing known_hosts before
+/// appending.
 async fn trust_rsync_host_key(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> {
     let server = match env.config.get("RSYNC_SERVER") {
         Some(s) if !s.trim().is_empty() => s.trim().to_string(),
@@ -97,10 +96,9 @@ async fn trust_rsync_host_key(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
     ).await {
         Ok(s) => s,
         Err(e) => {
-            // Don't fail the whole setup if the server is currently
-            // unreachable — the archive cycle will report a clearer
-            // error later, and the user can re-run setup once the
-            // server is online.
+            // An unreachable server must not fail the whole setup: the
+            // archive cycle reports a clearer error later, and the user can
+            // re-run setup once the server is online.
             emitter.progress(&format!(
                 "ssh-keyscan {} failed: {}. Music sync may need a manual ssh-keyscan later.",
                 server, e
@@ -141,8 +139,8 @@ async fn trust_rsync_host_key(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
     Ok(())
 }
 
-/// Ensure a tool is installed (binary probe, not dpkg — see
-/// install_required_packages for why). Silent when already present.
+/// Install a tool if its binary is missing. Probes for the binary rather than
+/// the dpkg package; see install_required_packages for why.
 async fn ensure_tool(binary: &str, package: &str, emitter: &SetupEmitter) -> Result<()> {
     if sentryusb_shell::run("which", &[binary]).await.is_ok() {
         return Ok(());
@@ -162,7 +160,7 @@ pub async fn configure_archive(env: &SetupEnv, emitter: &SetupEmitter) -> Result
 
     validate_archive_config(env, archive_system)?;
 
-    // Idempotency: rsync installed, archive service already installed, already enabled.
+    // Idempotency: rsync present, archive service installed and enabled.
     let rsync_ok = sentryusb_shell::run("which", &["rsync"]).await.is_ok();
     let service_path = std::path::Path::new("/lib/systemd/system/dashusb-archive.service");
     let service_enabled = sentryusb_shell::run(
@@ -177,20 +175,18 @@ pub async fn configure_archive(env: &SetupEnv, emitter: &SetupEmitter) -> Result
     emitter.progress(&format!("Configuring archive system: {:?}", archive_system));
 
     ensure_tool("rsync", "rsync", emitter).await?;
-    // rclone talks to the remote itself — the wizard offers it, so make
-    // sure the binary actually exists before archiveloop needs it.
+    // rclone talks to the remote itself, so the binary must exist before
+    // archiveloop needs it.
     if archive_system == ArchiveSystem::Rclone {
         ensure_tool("rclone", "rclone", emitter).await?;
     }
 
-    // Port of run/nfs_archive/verify-and-configure-archive.sh::configure_archive
-    // and its cifs_archive counterpart. The bash flow always wrote an
-    // `/etc/fstab` entry for mount-based archive backends; without it
-    // `connect-archive.sh` (which calls `mount /mnt/archive` from fstab)
-    // fails all 10 retries every archive cycle, and clips never leave
-    // the Pi. `noauto` keeps the mount on-demand so boot doesn't hang
-    // waiting for a NAS that's usually offline except when parked at
-    // home. rsync/rclone paths don't need this — they talk directly.
+    // Mount-based backends MUST get an `/etc/fstab` entry: `connect-archive.sh`
+    // runs `mount /mnt/archive` from fstab, and without the entry it fails all
+    // 10 retries every archive cycle and clips never leave the Pi. `noauto`
+    // keeps the mount on-demand so boot doesn't hang waiting for a NAS that is
+    // usually offline except when parked at home. rsync and rclone talk to the
+    // remote directly and need no entry.
     match archive_system {
         ArchiveSystem::Nfs => configure_nfs_mount(env, emitter).await?,
         ArchiveSystem::Cifs => configure_cifs_mount(env, emitter).await?,
@@ -198,14 +194,11 @@ pub async fn configure_archive(env: &SetupEnv, emitter: &SetupEmitter) -> Result
         _ => {}
     }
 
-    // Drop the per-archive-system bash helpers (archive-clips.sh,
-    // archive-is-reachable.sh, etc.) into /root/bin/. archiveloop reads
-    // these by fixed name regardless of which system is active, so we
-    // pick the right variant based on ARCHIVE_SYSTEM. Without this,
-    // archiveloop hits "command not found" on every cycle and clips
-    // never leave the Pi — the Go-era pi-gen image used to bake these
-    // in at build time, but `curl | bash install-pi.sh` doesn't run
-    // pi-gen, so the responsibility moved to the Rust setup runner.
+    // Setup MUST drop the per-archive-system bash helpers into /root/bin/:
+    // archiveloop calls them by fixed name whatever the active system, and
+    // nothing else installs them (`curl | bash install-pi.sh` does not run
+    // pi-gen). Without them archiveloop hits "command not found" every cycle
+    // and clips never leave the Pi.
     install_archive_scripts(archive_system, emitter)?;
 
     crate::system::install_archive_service()?;
@@ -216,14 +209,12 @@ pub async fn configure_archive(env: &SetupEnv, emitter: &SetupEmitter) -> Result
     Ok(true)
 }
 
-// ── Per-archive-system bash helper scripts ────────────────────────────────
-//
-// Each archive backend has its own copies of these helpers under
-// `run/<system>_archive/`. They share filenames; archiveloop calls them by
-// fixed name (e.g. `/root/bin/archive-is-reachable.sh`). At setup time we
-// drop the matching variant into `/root/bin/` based on ARCHIVE_SYSTEM. A
-// follow-up wizard run with a different system swaps the files cleanly
-// because we always write the full set.
+// Each archive backend keeps its own copies of these helpers under
+// `run/<system>_archive/`. The filenames are shared because archiveloop calls
+// them by fixed name (e.g. `/root/bin/archive-is-reachable.sh`), so setup
+// drops the variant matching ARCHIVE_SYSTEM into `/root/bin/`. Writing the
+// full set every time is what lets a later run with a different system swap
+// the files cleanly.
 
 const CIFS_ARCHIVE_CLIPS: &str = include_str!("../../../run/cifs_archive/archive-clips.sh");
 const CIFS_ARCHIVE_IS_REACHABLE: &str = include_str!("../../../run/cifs_archive/archive-is-reachable.sh");
@@ -251,8 +242,8 @@ const NONE_CONNECT_ARCHIVE: &str = include_str!("../../../run/none_archive/conne
 const NONE_DISCONNECT_ARCHIVE: &str = include_str!("../../../run/none_archive/disconnect-archive.sh");
 
 /// Drop the per-archive-system bash helpers into /root/bin/ with mode 0755.
-/// Idempotent — overwriting existing files is fine, and a stale entry from
-/// a prior run with a different ARCHIVE_SYSTEM gets cleanly replaced.
+/// Idempotent: overwriting is fine, and a stale file from a prior run with a
+/// different ARCHIVE_SYSTEM is cleanly replaced.
 fn install_archive_scripts(system: ArchiveSystem, emitter: &SetupEmitter) -> Result<()> {
     let _ = std::fs::create_dir_all("/root/bin");
 
@@ -304,8 +295,8 @@ fn install_archive_scripts(system: ArchiveSystem, emitter: &SetupEmitter) -> Res
     Ok(())
 }
 
-/// Ensure the named package is installed (idempotent, skips if already
-/// there). Used by the on-demand archive-helper installs.
+/// Install the named package unless dpkg already reports it. Used by the
+/// on-demand archive-helper installs.
 async fn ensure_pkg(pkg: &str, emitter: &SetupEmitter) -> Result<()> {
     if sentryusb_shell::run("dpkg", &["-s", pkg]).await.is_ok() {
         return Ok(());
@@ -328,9 +319,8 @@ async fn ensure_pkg(pkg: &str, emitter: &SetupEmitter) -> Result<()> {
 /// from `/etc/fstab` and append `new_line`. Keeps the file's other
 /// entries (root, /boot, /mutable, cam_disk, tmpfs, etc.) intact.
 fn replace_fstab_entry(fstype: &str, mount_point: &str, new_line: &str) -> Result<()> {
-    // Root was remounted read-write at the start of the setup runner,
-    // but belt-and-suspenders re-remount here so a user who invokes the
-    // archive phase standalone doesn't hit an EROFS.
+    // The setup runner already remounted root read-write; repeat it here so
+    // invoking the archive phase standalone cannot hit EROFS.
     let _ = std::process::Command::new("mount")
         .args(["/", "-o", "remount,rw"])
         .output();
@@ -339,9 +329,9 @@ fn replace_fstab_entry(fstype: &str, mount_point: &str, new_line: &str) -> Resul
     let mut lines: Vec<String> = existing
         .lines()
         .filter(|l| {
-            // Match " nfs " / " cifs " as a whole field and the exact
-            // mount point. Avoids clobbering an unrelated entry that
-            // happens to mention the same substring.
+            // Match the fstype as a whole field plus the exact mount point,
+            // so an unrelated entry merely mentioning the same substring is
+            // not clobbered.
             let fields: Vec<&str> = l.split_whitespace().collect();
             !(fields.len() >= 3 && fields[1] == mount_point && fields[2] == fstype)
         })
@@ -366,9 +356,9 @@ async fn configure_nfs_mount(env: &SetupEnv, emitter: &SetupEmitter) -> Result<(
     ensure_pkg("nfs-common", emitter).await?;
     std::fs::create_dir_all("/mnt/archive").context("mkdir /mnt/archive")?;
 
-    // vers=3 + proto=tcp matches the bash flow. Broader NAS compat
-    // (UniFi Drive, Synology DSM 7, TrueNAS) than defaulting to v4.2,
-    // and `nolock` avoids NLM lock-server dependencies we don't need.
+    // vers=3 plus proto=tcp has broader NAS compatibility (UniFi Drive,
+    // Synology DSM 7, TrueNAS) than defaulting to v4.2, and `nolock` avoids an
+    // unnecessary NLM lock-server dependency.
     let line = format!(
         "{}:{} /mnt/archive nfs rw,noauto,nolock,proto=tcp,vers=3 0 0",
         server, share
@@ -392,24 +382,22 @@ async fn configure_cifs_mount(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
 
     ensure_pkg("cifs-utils", emitter).await?;
 
-    // Credentials live in a 0600 file referenced by fstab so the
-    // password doesn't leak into the world-readable fstab itself.
-    // Matches `/root/.dashusbArchiveCredentials` from the bash flow.
+    // Credentials live in a 0600 file referenced by fstab so the password does
+    // not leak into the world-readable fstab itself.
     let creds_path = "/root/.dashusbArchiveCredentials";
     let mut creds = format!("username={}\npassword={}\n", user, pass);
     if !domain.is_empty() {
         creds.push_str(&format!("domain={}\n", domain));
     }
     std::fs::write(creds_path, creds).context("write credentials file")?;
-    // `chmod 600` via shell — std::os::unix::fs::PermissionsExt isn't on
-    // the Windows dev host where we cargo-check, so we keep this off the
-    // std::os::unix path entirely. The setup phase only ever runs on
-    // Linux at execution time, so the shell call is the real code path.
+    // `chmod 600` via shell rather than std::os::unix::fs::PermissionsExt,
+    // which is unavailable on the Windows dev host used for cargo check. The
+    // setup phase only ever executes on Linux, so this is the real code path.
     let _ = sentryusb_shell::run("chmod", &["600", creds_path]).await;
 
     std::fs::create_dir_all("/mnt/archive").context("mkdir /mnt/archive")?;
 
-    // Fstab mangles spaces in paths as \040. Preserves share names like
+    // fstab encodes spaces in paths as \040, which preserves share names like
     // "Tesla Cam" without breaking the field split.
     let share_escaped = share.replace(' ', "\\040");
     let line = format!(

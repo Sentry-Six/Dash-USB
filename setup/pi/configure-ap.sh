@@ -47,23 +47,19 @@ function nm_add_ap () {
 
   if ! iw dev ap0 info &> /dev/null
   then
-    # create additional virtual interface for the wifi device
     iw dev "$WLAN" interface add ap0 type __ap || return 1
   fi
 
-  # turn off power savings for both interfaces since they use
-  # the same underlying hardware, and we don't want one to go
-  # into power save mode just because the other is idle
+  # Both interfaces share one radio, so neither may enter power save just
+  # because the other is idle.
   iw "$WLAN" set power_save off || return 1
   iw ap0 set power_save off || return 1
 
-  # set up access point on the virtual interface using networkmanager
   nmcli con delete DASHUSB_AP &> /dev/null || true
   nmcli con delete TESLAUSB_AP &> /dev/null || true
-  # autoconnect is set at add time: a profile created with the default
+  # autoconnect MUST be set at add time. A profile created with the default
   # (autoconnect=yes) can be auto-activated by NM before a later "con modify"
-  # lands, leaving the AP broadcasting right out of setup. Away Mode controls
-  # when it comes up.
+  # lands, leaving the AP broadcasting straight out of setup.
   nmcli con add type wifi ifname ap0 mode ap con-name DASHUSB_AP autoconnect no ssid "$AP_SSID" || return 1
   # don't set band and channel, because that is controlled by the $WLAN interface
   #nmcli con modify DASHUSB_AP 802-11-wireless.band bg
@@ -74,16 +70,15 @@ function nm_add_ap () {
   nmcli con modify DASHUSB_AP ipv4.addr "$IP/24" || return 1
   nmcli con modify DASHUSB_AP ipv4.method shared || return 1
   nmcli con modify DASHUSB_AP ipv6.method disabled || return 1
-  # Remove stale if-up.d script from previous installs — it doesn't fire on
+  # Remove the stale if-up.d script from previous installs: it never fires on
   # NetworkManager/netplan systems (e.g. Pi 5 with Debian Trixie).
   rm -f /etc/network/if-up.d/dashusb-ap
 
-  # Use a NetworkManager dispatcher script instead: NM calls scripts in
-  # /etc/NetworkManager/dispatcher.d/ with $1=interface $2=action whenever
-  # an interface changes state.
-  # Use a NetworkManager dispatcher script that only recreates ap0 when
-  # Away Mode is active (flag file exists).  During normal operation the AP
-  # stays off so wlan0 can freely scan all channels.
+  # Use an NM dispatcher script instead, called with $1=interface $2=action on
+  # every interface state change. It recreates ap0 only when
+  # /mutable/sentryusb_away_mode.json exists, and nothing in the current
+  # product writes that file, so the AP stays off and wlan0 keeps the radio
+  # free to scan all channels.
   mkdir -p /etc/NetworkManager/dispatcher.d
   cat > /etc/NetworkManager/dispatcher.d/10-dashusb-ap << EOF
 #!/bin/bash
@@ -111,11 +106,11 @@ EOF
 
 
 function nm_write_ap_file () {
-  # Write the AP connection profile directly to disk, bypassing NM's
-  # keyfile plugin.  This works even when NM was started on a read-only
-  # root (the plugin refuses "nmcli con add", but the filesystem is
-  # writable after remountfs_rw).  Uses "nmcli con reload" instead of a
-  # full NM restart, so WiFi stays up and SSH sessions survive.
+  # Write the AP profile straight to disk, bypassing NM's keyfile plugin. This
+  # works even when NM started on a read-only root: the plugin then refuses
+  # "nmcli con add" although the filesystem is writable after remountfs_rw.
+  # "nmcli con reload" instead of a full NM restart keeps WiFi up and SSH
+  # sessions alive.
   log_progress "Writing AP connection file directly (NM keyfile workaround)"
   local _ssid="$AP_SSID"
   local _psk="$AP_PASS"
@@ -158,11 +153,10 @@ method=disabled
 EOF
   chmod 0600 "$_file"
 
-  # Tell NM to pick up the new file without a full restart
   nmcli con reload 2>/dev/null || true
 
-  # Install the dispatcher script for ap0 — only recreates ap0 when Away
-  # Mode is active (flag file exists).
+  # Same dispatcher as nm_add_ap: recreates ap0 only while
+  # /mutable/sentryusb_away_mode.json exists, which nothing writes today.
   rm -f /etc/network/if-up.d/dashusb-ap
   mkdir -p /etc/NetworkManager/dispatcher.d
   cat > /etc/NetworkManager/dispatcher.d/10-dashusb-ap << EOF2
@@ -191,27 +185,25 @@ EOF2
 
 if systemctl --quiet is-enabled NetworkManager.service
 then
-  # force-install iw because otherwise it will get autoremoved when
-  # alsa-utils is removed later
+  # Install iw explicitly, or it gets autoremoved along with alsa-utils later.
   apt-get -y install iw || exit 1
   if ! nm_add_ap
   then
-    # NM won't allow adding connections when its keyfile plugin started
-    # on a read-only root fs.  Instead of a full NM restart (which drops
-    # WiFi and kills SSH sessions), write the connection file directly
-    # and reload.
+    # NM refuses to add connections when its keyfile plugin started on a
+    # read-only root. Write the connection file directly and reload rather
+    # than restarting NM, which would drop WiFi and kill SSH sessions.
     if ! nm_write_ap_file
     then
       log_progress "STOP: Failed to configure AP"
       exit 1
     fi
   fi
-  # Setup only installs the profile — Away Mode owns bringing the AP up.
-  # Drop the scaffolding ap0 (it pins the shared radio to the AP channel and
-  # its existence triggers archiveloop's wifi_cycle), and make sure the
-  # connection is down in case NM activated it during configuration. Skipped
-  # while an Away Mode session is running so re-running setup doesn't kill
-  # the AP the user is connected through.
+  # Setup only installs the profile; it never leaves the AP up. Drop the
+  # scaffolding ap0, which pins the shared radio to the AP channel and whose
+  # mere existence triggers archiveloop's wifi_cycle, and force the connection
+  # down in case NM activated it during configuration. Skipped while
+  # /mutable/sentryusb_away_mode.json exists so re-running setup can't kill an
+  # AP the user is connected through.
   if [ ! -f /mutable/sentryusb_away_mode.json ]
   then
     nmcli con down DASHUSB_AP 2>/dev/null || true
@@ -233,12 +225,11 @@ then
   IP=${AP_IP:-"192.168.66.1"}
   NET=$(echo -n "$IP" | sed -e 's/\.[0-9]\{1,3\}$//')
 
-  # install required packages
   log_progress "installing dnsmasq and hostapd"
   apt-get -y install dnsmasq hostapd
 
   log_progress "configuring AP '$AP_SSID' with IP $IP"
-  # create udev rule
+  # udev rule: create ap0 on the same phy, sharing wlan0's MAC.
   MAC="$(cat /sys/class/net/wlan0/address)"
   cat <<- EOF > /etc/udev/rules.d/70-persistent-net.rules
 	SUBSYSTEM=="ieee80211", ACTION=="add|change", ATTR{macaddress}=="$MAC", KERNEL=="phy0", \
@@ -246,7 +237,6 @@ then
 	RUN+="/bin/ip link set ap0 address $MAC"
 	EOF
 
-  # configure dnsmasq
   cat <<- EOF > /etc/dnsmasq.conf
 	interface=lo,ap0
 	no-dhcp-interface=lo,wlan0
@@ -257,7 +247,6 @@ then
 	dhcp-option=3
 	EOF
 
-  # configure hostapd
   cat <<- EOF > /etc/hostapd/hostapd.conf
 	ctrl_interface=/var/run/hostapd
 	ctrl_interface_group=0
@@ -279,7 +268,8 @@ then
 	DAEMON_CONF="/etc/hostapd/hostapd.conf"
 	EOF
 
-  # define network interfaces. Note use of 'AP1' name, defined in wpa_supplication.conf below
+  # Network interfaces. The 'AP1' name comes from the id_str added to
+  # wpa_supplicant.conf at the end of this block.
   cat <<- EOF > /etc/network/interfaces
 	source-directory /etc/network/interfaces.d
 
@@ -300,7 +290,7 @@ then
 	iface AP1 inet dhcp
 	EOF
 
-  # For bullseye it is apparently necessary to explicitly disable wpa_supplicant for the ap0 interface
+  # Bullseye needs wpa_supplicant explicitly disabled on ap0.
   cat <<- EOF >> /etc/dhcpcd.conf
 	# disable wpa_supplicant for the ap0 interface
 	interface ap0
@@ -318,12 +308,11 @@ then
     ln -s /mutable/varlib/misc /var/lib/misc
   fi
 
-  # update the host name to have the AP IP address, otherwise
-  # clients connected to the IP will get 127.0.0.1 when looking
-  # up the dashusb host name
+  # Map the hostname to the AP IP: clients connected over the AP otherwise
+  # resolve the dashusb hostname to 127.0.0.1.
   sed -i -e "/^127.0.0.1\s*localhost/b; s/^127.0.0.1\(\s*.*\)/$IP\1/" /etc/hosts
 
-  # add ID string to wpa_supplicant
+  # Tag the client network as AP1 for the interfaces file above.
   sed -i -e 's/}/  id_str="AP1"\n}/'  /etc/wpa_supplicant/wpa_supplicant.conf
 else
   log_progress "AP mode already configured"

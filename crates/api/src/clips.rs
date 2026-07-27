@@ -43,14 +43,13 @@ struct EventMeta {
     longitude: Option<String>,
 }
 
-/// Read a category directory (today just `Continuous/`) and return its
-/// dated subfolders, newest first.
+/// Dated subfolders of a category directory (today just `Continuous/`), newest
+/// first.
 ///
-/// The snapshot symlink builder (`sentryusb_gadget::snapshot`)
-/// date-buckets the car's flat recording files into `YYYY-MM-DD/`
-/// folders under `/mutable/Recordings/Continuous`. `path().is_dir()`
-/// follows symlinks — required, since each entry is a symlink into a
-/// reflink snapshot.
+/// `path().is_dir()` must follow symlinks: the snapshot symlink builder
+/// (`sentryusb_gadget::snapshot`) date-buckets the car's flat recording files
+/// into `YYYY-MM-DD/` folders whose entries are symlinks into reflink
+/// snapshots.
 fn enumerate_event_dirs(base: &Path) -> Vec<String> {
     let mut dirs: Vec<String> = match std::fs::read_dir(base) {
         Ok(entries) => entries
@@ -64,10 +63,9 @@ fn enumerate_event_dirs(base: &Path) -> Vec<String> {
     dirs
 }
 
-/// Build the `[{ name, clips, hasMore }]` JSON the Viewer expects for
-/// one category — each clip group is a dated subfolder of `.mp4` files
-/// plus an optional `event.json` (unused by GM; kept for profiles with
-/// event folders).
+/// Build the `[{ name, clips, hasMore }]` JSON the Viewer expects for one
+/// category. Each clip group is a dated subfolder of `.mp4` files plus an
+/// optional `event.json` (unused by GM, kept for profiles with event folders).
 fn list_clips_in(
     teslacam_dir: &Path,
     category: &str,
@@ -123,7 +121,8 @@ fn list_clips_in(
     }])
 }
 
-/// GET /api/clips?category=Continuous&limit=20[&before=<date>]
+/// Query params: `category` (only `Continuous` is accepted), `limit` (default
+/// 20, capped at 200), and a `before` date cursor.
 pub async fn get_clips(
     State(_s): State<AppState>,
     Query(params): Query<ClipParams>,
@@ -134,11 +133,10 @@ pub async fn get_clips(
     }
     let limit = params.limit.unwrap_or(20).min(200);
 
-    // Each dated clip folder is read off disk, and the folders are
-    // symlinks into on-demand (autofs) snapshot mounts — the first read
-    // can block for seconds while the kernel mounts the image. Run it on
-    // the blocking pool so it can't stall the async reactor and drop the
-    // WebSocket heartbeat ("Reconnecting to DashUSB…").
+    // Dated clip folders are symlinks into on-demand (autofs) snapshot mounts,
+    // so the first read can block for seconds while the kernel mounts the
+    // image. Run it on the blocking pool or it stalls the async reactor and
+    // drops the WebSocket heartbeat ("Reconnecting to DashUSB…").
     let category = category.to_string();
     let before = params.before;
     let response = tokio::task::spawn_blocking(move || {

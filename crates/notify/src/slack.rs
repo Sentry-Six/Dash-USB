@@ -4,8 +4,8 @@ use reqwest::Client;
 pub async fn send(client: &Client, webhook_url: &str, title: &str, message: &str) -> Result<()> {
     let payload = serde_json::json!({
         "text": format!("{}: {}", title, message),
-        "username": "Tesla",
-        "icon_emoji": ":tesla:",
+        "username": "Dash USB",
+        "icon_emoji": ":camera:",
     });
 
     let resp = client

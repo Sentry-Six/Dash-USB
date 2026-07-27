@@ -1,31 +1,22 @@
 #!/bin/bash -eu
-# Thin forwarder around POST /api/notifications/send.
+# Thin forwarder around POST /api/notifications/send. Converts the positional
+# call contract into a JSON POST; the server owns per-channel HTTP, mobile
+# push, and history logging.
 #
-# The old implementation here spoke directly to every notifier (Discord,
-# Slack, Pushover, …). The Rust server now owns that logic — this script
-# just converts the positional-arg call contract into a JSON POST so
-# existing callers (archiveloop, temperature_monitor, post-archive-process.sh,
-# api handlers, etc.) keep working without modification.
+# Two things must stay on the bash side:
+#   * The gate check (GET /api/notifications/settings/check), so a disabled
+#     notification type doesn't still run the user's NOTIFICATION_COMMAND_*.
+#   * NOTIFICATION_COMMAND_START / _FINISH, user shell snippets that need the
+#     CALLER's environment (e.g. CURRENT_ARCHIVE_FILE from archiveloop).
+#     Running them server-side would lose that inheritance.
 #
-# What stays on the bash side:
-#   * The gate check (GET /api/notifications/settings/check) so we don't
-#     run user-defined NOTIFICATION_COMMAND_* side effects when the
-#     notification type is disabled.
-#   * NOTIFICATION_COMMAND_START / NOTIFICATION_COMMAND_FINISH — user
-#     shell snippets that need access to the *caller's* environment
-#     (e.g. CURRENT_ARCHIVE_FILE set by archiveloop). Moving these into
-#     the server would lose that env inheritance.
-#
-# Everything else — per-channel HTTP, mobile push, history logging — is
-# handled by the Rust endpoint in a single server-side transaction.
-#
-# Call contract (unchanged from the previous bash implementation):
+# Call contract:
 #   send-push-message <title> <message> [type] [notification_type]
 #
 # Reads env:
-#   DASHUSB_PORT             — API port (default 80)
-#   ARCHIVE_TOTAL_COUNT        — used for live_activity on archive_start
-#   NOTIFICATION_COMMAND_ENABLED / _START / _FINISH — local shell hook
+#   DASHUSB_PORT: API port (default 80)
+#   ARCHIVE_TOTAL_COUNT: used for live_activity on archive_start
+#   NOTIFICATION_COMMAND_ENABLED / _START / _FINISH: local shell hook
 
 title="$1"
 message="$2"
@@ -40,10 +31,9 @@ log() {
 DASHUSB_PORT="${DASHUSB_PORT:-80}"
 API_BASE="http://127.0.0.1:${DASHUSB_PORT}"
 
-# --- Type gate (same semantics as the old bash script) ---------------------
 # Skip entirely when the notification type is toggled off in user settings.
-# Fail-open on API errors so transient server hiccups don't silently drop
-# notifications (matches the defensive `|| true` approach in the old script).
+# Fail open on API errors so a transient server hiccup doesn't silently drop
+# notifications.
 if [ -n "$notification_type" ]; then
   gate_response=$(curl -sf --connect-timeout 2 --max-time 5 \
     "${API_BASE}/api/notifications/settings/check?type=${notification_type}" 2>/dev/null) || true
@@ -56,10 +46,9 @@ if [ -n "$notification_type" ]; then
   fi
 fi
 
-# --- NOTIFICATION_COMMAND_* (runs locally with caller env) ---------------
-# eval'd because users' config snippets may legitimately contain pipes,
-# variable references, etc. Fire-and-forget via `&` so a slow / broken
-# user command can't block the caller.
+# eval'd because a user's config snippet may legitimately contain pipes,
+# variable references, and so on. Backgrounded so a slow or broken user
+# command can't block the caller.
 if [ "${NOTIFICATION_COMMAND_ENABLED:-false}" = "true" ]; then
   if [ -n "${NOTIFICATION_COMMAND_START:-}" ] && [ "$type" = "start" ]; then
     eval "$NOTIFICATION_COMMAND_START" &
@@ -69,11 +58,10 @@ if [ "${NOTIFICATION_COMMAND_ENABLED:-false}" = "true" ]; then
   fi
 fi
 
-# --- Forward everything else to the server -------------------------------
-# Build the JSON with python3 so title / message can contain any printable
-# character (quotes, backslashes, newlines from error messages, …)
-# without breaking the request. python3 is already a hard dep because of
-# the BLE daemon and the RTC service, so no new requirement.
+# Build the JSON with python3 so title and message can hold any printable
+# character (quotes, backslashes, newlines from error messages) without
+# breaking the request. python3 is already a hard dependency of the BLE daemon
+# and the RTC service.
 payload=$(ARG_TITLE="$title" \
   ARG_MESSAGE="$message" \
   ARG_TYPE="$type" \
@@ -98,13 +86,11 @@ print(json.dumps(body))
 PYEOF
 )
 
-# Log the message the user asked us to send, matching the old script's
-# behavior of echoing to the log before any network IO.
+# Log before any network IO, so the message survives a failed send.
 log "$message"
 
-# Best-effort POST. Keep bash's fail-soft stance: the API running the
-# binary may be temporarily down (crash, update in progress); we log and
-# move on rather than break the caller.
+# Best-effort POST: the API may be temporarily down (crash, update in
+# progress). Log and move on rather than break the caller.
 response=$(curl -s --connect-timeout 5 --max-time 30 -w "\n%{http_code}" \
   -X POST \
   -H "Content-Type: application/json" \
@@ -122,9 +108,9 @@ if [ "$http_code" -ge 200 ] 2>/dev/null && [ "$http_code" -lt 300 ] 2>/dev/null;
   if [ "$skipped" = "true" ]; then
     log "Notifications skipped (type disabled by server)"
   else
-    # Extract the providers array (e.g. ["mobile_push","discord"]) and
-    # the failed array (e.g. ["discord: timeout"]) from the response JSON
-    # using Python — avoids fragile nested-JSON sed parsing.
+    # Extract the providers array (e.g. ["mobile_push","discord"]) and the
+    # failed array (e.g. ["discord: timeout"]) with Python; sed can't parse
+    # nested JSON reliably.
     parse_result=$(python3 - "$body" <<'PYEOF'
 import sys, json
 try:

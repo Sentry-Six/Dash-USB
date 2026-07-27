@@ -69,7 +69,6 @@ export default function Support() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Check if support server is reachable
   useEffect(() => {
     fetch("/api/support/check")
       .then(r => r.json())
@@ -77,12 +76,10 @@ export default function Support() {
       .catch(() => setAvailable(false))
   }, [])
 
-  // Scroll to bottom on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [messages])
 
-  // Fetch messages
   const fetchMessages = useCallback(async () => {
     if (!ticket) return
     try {
@@ -101,7 +98,6 @@ export default function Support() {
           const last = data.messages[data.messages.length - 1]
           if (last.id) setLastMessageId(last.id)
 
-          // Mark as read
           fetch(`/api/support/ticket/${ticket.ticketId}/mark-read`, {
             method: "POST",
             headers: { "X-Auth-Token": ticket.authToken },
@@ -115,7 +111,6 @@ export default function Support() {
     } catch { /* ignore */ }
   }, [ticket, lastMessageId])
 
-  // Poll for messages
   useEffect(() => {
     if (!ticket || ticketClosed) return
     fetchMessages()
@@ -129,7 +124,8 @@ export default function Support() {
       if (t) localStorage.setItem(STORAGE_KEY, JSON.stringify(t))
       else localStorage.removeItem(STORAGE_KEY)
     } catch {
-      // localStorage unavailable (private mode/quota) — ticket just won't persist
+      // localStorage unavailable (private mode or quota): the ticket just
+      // won't persist.
     }
   }
 
@@ -139,11 +135,10 @@ export default function Support() {
     setStatus({ text: "Sending...", type: "loading" })
 
     try {
-      // Track the active ticket for this send (needed because setState is async)
+      // Local copy: setTicket hasn't applied yet inside this handler.
       let activeTicket = ticket
 
       if (!activeTicket) {
-        // Create new ticket
         setStatus({ text: "Creating support ticket...", type: "loading" })
         const res = await fetch("/api/support/ticket", {
           method: "POST",
@@ -163,7 +158,6 @@ export default function Support() {
         }
         saveTicket(activeTicket)
       } else {
-        // Send message to existing ticket
         if (!attachment) {
           setStatus({ text: "Sending message...", type: "loading" })
           const res = await fetch(`/api/support/ticket/${activeTicket.ticketId}/message`, {
@@ -179,10 +173,10 @@ export default function Support() {
         }
       }
 
-      // Upload diagnostics as a file attachment (byte-faithful — matches the
-      // Logs tab Download). Use /api/logs/diagnostics, not /api/diagnostics:
-      // the latter strips ANSI/control chars server-side, which loses bytes
-      // (NULs from device-tree files, etc.) the support agent may need.
+      // Upload diagnostics byte-faithfully, matching the Logs tab Download.
+      // Use /api/logs/diagnostics, not /api/diagnostics: the latter strips
+      // ANSI and control chars server-side, losing bytes (NULs from
+      // device-tree files, etc.) the support agent may need.
       if (includeDiagnostics && activeTicket) {
         setStatus({ text: "Collecting diagnostics...", type: "loading" })
         await fetch("/api/diagnostics/refresh", { method: "POST" }).catch(() => { })
@@ -214,7 +208,6 @@ export default function Support() {
         })
       }
 
-      // Upload attachment if present
       if (attachment && activeTicket) {
         setStatus({ text: "Uploading attachment...", type: "loading" })
         const reader = new FileReader()
@@ -240,14 +233,12 @@ export default function Support() {
         })
       }
 
-      // Clear form
       setMessage("")
       setIncludeDiagnostics(false)
       setAttachment(null)
       setStatus({ text: "Sent!", type: "success" })
       setTimeout(() => setStatus(null), 2000)
 
-      // Refresh messages
       setTimeout(() => fetchMessages(), 500)
     } catch (err) {
       setStatus({ text: err instanceof Error ? err.message : "Failed to send", type: "error" })
@@ -283,7 +274,6 @@ export default function Support() {
     setStatus(null)
   }
 
-  // Offline state
   if (available === false) {
     return (
       <div className="flex h-[calc(100vh-120px)] flex-col items-center justify-center gap-4 md:h-[calc(100vh-96px)]">

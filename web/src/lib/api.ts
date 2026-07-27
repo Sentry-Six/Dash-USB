@@ -1,8 +1,8 @@
 const API_BASE = "/api"
 
-// Backend API base URL for resolving relative attachment/media URLs.
-// The Pi proxies API requests locally, but media assets are served directly
-// by the backend. Override via Vite env for staging/dev.
+// Base URL for resolving relative attachment/media URLs. The Pi proxies API
+// requests locally, but media assets are served directly by the backend.
+// Override via Vite env for staging/dev.
 export const BACKEND_BASE_URL = import.meta.env.VITE_SENTRY_API_URL || "https://api.sentry-six.com"
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -29,10 +29,10 @@ export interface PiStatus {
   uptime: string
   drives_active: string
   /**
-   * Host-link state from /sys/class/udc ("configured" = the car is
-   * actually enumerated and talking). drives_active only reflects the
-   * configfs binding — the Pi's intent to present — and stays "yes"
-   * through a dead link. Present only on backends ≥ v3.13.4.
+   * Host-link state from /sys/class/udc; "configured" means the car has
+   * enumerated the gadget and is talking. drives_active only reflects the
+   * configfs binding (the Pi's intent to present) and stays "yes" through a
+   * dead link. Present only on backends ≥ v3.13.4.
    */
   udc_state?: string
   /** Seconds since the car last wrote to cam_disk.bin, -1 when unknown. */

@@ -6,24 +6,19 @@ use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 
-/// Configuration variables as key-value pairs.
 pub type SetupConfig = HashMap<String, String>;
 
-/// Standard location for the setup variables file.
 pub const DEFAULT_CONFIG_PATH: &str = "/root/dashusb.conf";
 
-/// Location on the boot partition.
 pub const BOOT_CONFIG_PATH: &str = "/boot/firmware/dashusb.conf";
 
-/// Legacy boot partition path.
 const LEGACY_BOOT_PATH: &str = "/boot/dashusb.conf";
 
-/// Returns the first existing config file path.
+/// First existing config path.
 ///
-/// `DASHUSB_CONFIG_PATH` overrides the on-Pi search chain entirely so
-/// the daemon can run off-Pi (local development) against a config file
-/// in a writable location. The override is read once; with it unset the
-/// probe loop below runs live on every call, exactly as before.
+/// `DASHUSB_CONFIG_PATH` replaces the on-Pi search chain entirely so the
+/// daemon can run off-Pi against a config in a writable location. Read
+/// once; unset means the probe loop runs live on every call.
 pub fn find_config_path() -> &'static str {
     static ENV_OVERRIDE: OnceLock<Option<&'static str>> = OnceLock::new();
     let ov = ENV_OVERRIDE.get_or_init(|| {
@@ -43,9 +38,9 @@ pub fn find_config_path() -> &'static str {
     DEFAULT_CONFIG_PATH
 }
 
-/// Base directory for runtime state that lives under `/mutable` on the
-/// Pi (preferences store, GPS fix cache). `DASHUSB_MUTABLE_DIR`
-/// redirects it for off-Pi development; unset means `/mutable`.
+/// Base directory for runtime state (preferences store, GPS fix cache).
+/// `DASHUSB_MUTABLE_DIR` redirects it for off-Pi development; unset
+/// means `/mutable`.
 pub fn mutable_dir() -> &'static str {
     static DIR: OnceLock<&'static str> = OnceLock::new();
     DIR.get_or_init(|| {
@@ -57,12 +52,11 @@ pub fn mutable_dir() -> &'static str {
     })
 }
 
-/// Reads a dashusb.conf file and returns both active (exported) and
-/// commented-out variables.
+/// Returns (active exports, commented-out exports).
 pub fn parse_file(path: &str) -> Result<(SetupConfig, SetupConfig)> {
-    // A missing conf is a valid starting state (pi-gen images ship only
-    // dashusb.conf.sample; the wizard's first save creates the real file).
-    // Treat it as an empty template — every key lands via the append pass.
+    // A missing conf is a valid starting state: pi-gen images ship only
+    // dashusb.conf.sample, and the wizard's first save creates the real
+    // file. Treat it as empty.
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -85,33 +79,31 @@ pub fn parse_file(path: &str) -> Result<(SetupConfig, SetupConfig)> {
     Ok((active, commented))
 }
 
-/// Writes the configuration back to the file, preserving comments and structure.
-/// Variables in `new_config` will be written as active exports. Variables not in
-/// `new_config` that were previously active will be commented out.
+/// Writes the config back, preserving comments and structure. Keys in
+/// `new_config` become active exports; previously active keys absent
+/// from it are commented out.
 pub fn write_file(path: &str, new_config: &SetupConfig) -> Result<()> {
-    // Keys are written into `export KEY=...` lines unquoted. `quote()`
-    // neutralizes hostile *values*, but a hostile *key* — e.g. one
-    // containing a newline or `=` — would inject an extra export line
-    // into the bash-sourced config. Reject the whole write if any key
-    // isn't a plain shell identifier (the same rule parse_key_value
-    // enforces on read), so a crafted key can't smuggle in (say) a
-    // WEB_PASSWORD override through the pre-setup /api/setup/config PUT.
+    // Reject the whole write if any key is not a plain shell identifier.
+    // Keys go into `export KEY=...` unquoted: `quote()` neutralizes
+    // hostile values, but a key containing a newline or `=` injects an
+    // extra export line into the bash-sourced config (smuggling in, say,
+    // a WEB_PASSWORD override via the pre-setup /api/setup/config PUT).
+    // Same rule parse_key_value enforces on read.
     if let Some(bad) = new_config.keys().find(|k| !is_valid_key(k)) {
         anyhow::bail!("refusing to write config: invalid key {:?}", bad);
     }
-    // Values can't contain a newline: `quote()` would emit a literal
-    // multi-line bash string, but `parse_file()` is line-based and reads
-    // back only the first line — so the value silently truncates on the
-    // next load (and the trailing lines become stray config). Reject the
-    // write rather than persist something that won't round-trip. (A
-    // textarea-backed field like NOTIFICATION_COMMAND_* is the realistic
-    // source of a newline.)
+    // Reject newline values: `quote()` would emit a literal multi-line
+    // bash string, but `parse_file()` is line-based and reads back only
+    // the first line, so the value silently truncates on the next load
+    // and the trailing lines become stray config. (A textarea-backed
+    // field like NOTIFICATION_COMMAND_* is the realistic source.)
     if let Some((k, _)) = new_config.iter().find(|(_, v)| v.contains(['\n', '\r'])) {
         anyhow::bail!("refusing to write config: value for {:?} contains a newline", k);
     }
-    // A missing conf is a valid starting state (pi-gen images ship only
-    // dashusb.conf.sample; the wizard's first save creates the real file).
-    // Treat it as an empty template — every key lands via the append pass.
+    // A missing conf is a valid starting state: pi-gen images ship only
+    // dashusb.conf.sample, and the wizard's first save creates the real
+    // file. Treat it as an empty template; every key lands via the
+    // append pass below.
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -129,7 +121,6 @@ pub fn write_file(path: &str, new_config: &SetupConfig) -> Result<()> {
             if let Some(val) = new_config.get(&key) {
                 output.push(format!("export {}={}", key, quote(val)));
             } else {
-                // Comment out variables not in new_config
                 output.push(format!("#{}", line));
             }
         } else if let Some((key, _)) = parse_commented_export_line(line) {
@@ -144,20 +135,18 @@ pub fn write_file(path: &str, new_config: &SetupConfig) -> Result<()> {
         }
     }
 
-    // Append any new variables not in the original file
     for (key, val) in new_config {
         if !seen.contains_key(key) {
             output.push(format!("export {}={}", key, quote(val)));
         }
     }
 
-    // Atomic write: tmp + fsync + rename. A direct `fs::File::create`
-    // followed by streaming writes is vulnerable to a torn file on power
-    // cut mid-write, which on a Pi that loses power the instant the
-    // user's Tesla disconnects is a real scenario. Config corruption
-    // means the next boot can't parse dashusb.conf and setup defaults
-    // to unset everything — including archive URLs, hostnames, WiFi AP
-    // creds. Write to `<path>.tmp`, fsync, rename over.
+    // Atomic write: tmp + fsync + rename. Streaming into a direct
+    // `fs::File::create` leaves a torn file on a power cut mid-write,
+    // which is real on a Pi that loses power the instant the car
+    // disconnects. A corrupt dashusb.conf will not parse on the next
+    // boot, so setup defaults everything to unset: archive URLs,
+    // hostnames, WiFi AP creds.
     let tmp = format!("{}.tmp", path);
     {
         let mut file = fs::File::create(&tmp)
@@ -169,9 +158,8 @@ pub fn write_file(path: &str, new_config: &SetupConfig) -> Result<()> {
             }
             writer.flush()?;
         }
-        // Drop the writer above, then fsync the underlying file so the
-        // rename below doesn't expose an empty-but-renamed file after
-        // a crash.
+        // fsync after the writer drops, so a crash cannot leave the
+        // rename below exposing an empty file.
         let _ = file.sync_all();
     }
     if let Err(e) = fs::rename(&tmp, path) {
@@ -182,14 +170,12 @@ pub fn write_file(path: &str, new_config: &SetupConfig) -> Result<()> {
     Ok(())
 }
 
-/// Tries to parse a line as `export KEY=VALUE`.
 fn parse_export_line(line: &str) -> Option<(String, String)> {
     let trimmed = line.trim_start();
     let rest = trimmed.strip_prefix("export ")?;
     parse_key_value(rest)
 }
 
-/// Tries to parse a line as `# export KEY=VALUE`.
 fn parse_commented_export_line(line: &str) -> Option<(String, String)> {
     let trimmed = line.trim_start();
     let rest = trimmed.strip_prefix('#')?;
@@ -199,8 +185,7 @@ fn parse_commented_export_line(line: &str) -> Option<(String, String)> {
 }
 
 /// True when `key` is a plain shell identifier: `[A-Za-z_][A-Za-z0-9_]*`.
-/// The single source of truth for key validity, used on both the parse
-/// (read) and write paths.
+/// Single source of truth for key validity on both the read and write paths.
 fn is_valid_key(key: &str) -> bool {
     let mut bytes = key.bytes();
     match bytes.next() {
@@ -210,7 +195,6 @@ fn is_valid_key(key: &str) -> bool {
     bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
-/// Parses `KEY=VALUE` from a string.
 fn parse_key_value(s: &str) -> Option<(String, String)> {
     let eq_pos = s.find('=')?;
     let key = &s[..eq_pos];
@@ -223,7 +207,7 @@ fn parse_key_value(s: &str) -> Option<(String, String)> {
     Some((key.to_string(), val))
 }
 
-/// Removes surrounding single or double quotes from a value.
+/// Strips surrounding quotes, `$'...'` wrapping, and trailing inline comments.
 fn unquote(s: &str) -> String {
     let s = s.trim();
     if s.len() >= 2 {
@@ -234,7 +218,7 @@ fn unquote(s: &str) -> String {
             return s[1..s.len() - 1].to_string();
         }
     }
-    // Handle $'...' syntax
+    // bash ANSI-C quoting.
     if s.starts_with("$'") && s.ends_with('\'') && s.len() >= 3 {
         return s[2..s.len() - 1].to_string();
     }
@@ -248,25 +232,23 @@ fn unquote(s: &str) -> String {
     s.to_string()
 }
 
-/// Wraps a value in single quotes for safe bash export.
+/// Quotes a value for safe bash export; bare when it has no special characters.
 fn quote(s: &str) -> String {
     if s.is_empty() {
         return "''".to_string();
     }
-    // If value contains no special characters, leave it bare.
-    // \n and \r are included so an embedded newline gets quoted — the file
-    // stays valid bash for `source` consumers. (parse_file is line-based
-    // and still can't round-trip multi-line values; see review ledger.)
+    // \n and \r are in SPECIAL so an embedded newline gets quoted and the
+    // file stays valid bash for `source` consumers. write_file rejects such
+    // values anyway; parse_file is line-based and cannot round-trip them.
     const SPECIAL: &str = " \t\n\r'\"\\$!#&|;(){}[]<>?*~`";
     if !s.chars().any(|c| SPECIAL.contains(c)) {
         return s.to_string();
     }
-    // Use single quotes; escape any embedded single quotes
     let escaped = s.replace('\'', "'\\''");
     format!("'{}'", escaped)
 }
 
-/// Helper to get a config value, trying active first then commented.
+/// Active values take precedence over commented-out ones.
 pub fn get_config_value(active: &SetupConfig, commented: &SetupConfig, key: &str) -> Option<String> {
     active.get(key).or_else(|| commented.get(key)).cloned()
 }
@@ -343,7 +325,7 @@ mod tests {
 
     #[test]
     fn write_file_rejects_injection_key() {
-        // A key carrying a newline + a second export would inject an
+        // A key carrying a newline plus a second export would inject an
         // arbitrary variable (e.g. WEB_PASSWORD) into the bash-sourced
         // config. write_file must refuse the whole write.
         let dir = std::env::temp_dir().join(format!(

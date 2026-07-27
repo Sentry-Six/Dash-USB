@@ -76,7 +76,6 @@ export function ConfigBackupSection() {
       if (!res.ok) throw new Error("Backup failed")
       const result = await res.json()
       setLastBackup({ date: result.date, timestamp: new Date().toISOString() })
-      // Refresh list
       try {
         const list = await fetch("/api/system/backups").then((r) => r.json())
         setBackups(list || [])
