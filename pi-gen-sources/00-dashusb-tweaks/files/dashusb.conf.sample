@@ -254,6 +254,21 @@ export CAM_SIZE=64G
 #   hotter, making it an ideal time to capture temperature.
 export TEMPERATURE_POSTARCHIVE=true
 #
+#   Travel Mode. Set to true when the Pi reaches the archive over an
+#   always-on link (the vehicle's hotspot, a tethered phone, a VPN) rather
+#   than home WiFi. The normal flow archives once the network appears and
+#   then waits for it to disappear, which never happens on an always-on
+#   link, so snapshots would stop after the first cycle. Travel Mode paces
+#   the cycles on a timer instead and keeps the drive connected to the car.
+#   Settings has a toggle for this; the key is read fresh every cycle.
+#export TRAVEL_MODE_ENABLED=false
+#
+#   Seconds between Travel Mode cycles. Defaults to SNAPSHOT_INTERVAL.
+#export TRAVEL_MODE_INTERVAL=900
+#
+#   Seconds before retrying a failed Travel Mode cycle (minimum 15).
+#export TRAVEL_MODE_RETRY_INTERVAL=60
+#
 #   Display unit for every CPU-temperature readout — dashboard System tile,
 #   push notifications, health-check API, and archive-failure log entries.
 #   "C" = Celsius, "F" = Fahrenheit. Defaults to Celsius if unset. The web

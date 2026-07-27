@@ -120,10 +120,80 @@ function fix_errors_in_image () {
   log "Finished fsck on $image."
 }
 
+# Travel Mode: the archive target is always reachable (car hotspot, VPN,
+# tethered phone), so the normal park-at-home rhythm never fires. Reads
+# TRAVEL_MODE_ENABLED from the config rather than the environment so the
+# Settings toggle applies without restarting archiveloop. Config paths match
+# sentryusb_config::find_config_path(); first existing file wins.
+function travel_mode_active () {
+  # Cached for TRAVEL_MODE_CACHE_TTL seconds: archive_is_reachable consults
+  # this, and the reachability waits call that once a second, so an uncached
+  # read would source a config file at 1 Hz forever. The TTL keeps the
+  # Settings toggle effectively live without the churn.
+  local now=$SECONDS
+  if [ -n "${_TM_CACHE_AT:-}" ] && \
+     [ $((now - _TM_CACHE_AT)) -lt "${TRAVEL_MODE_CACHE_TTL:-5}" ] && \
+     [ "$now" -ge "${_TM_CACHE_AT}" ]; then
+    return "${_TM_CACHE_VAL:-1}"
+  fi
+
+  local conf val rc=1
+  for conf in /root/dashusb.conf /boot/firmware/dashusb.conf /boot/dashusb.conf
+  do
+    [ -f "$conf" ] || continue
+    # Isolated subshell so bash itself parses export/quoting, no side effects.
+    # `|| true` guards the parent: a conf that exits non-zero would otherwise
+    # abort archiveloop under `set -e`.
+    val=$( set +eu; . "$conf" >/dev/null 2>&1; printf '%s' "${TRAVEL_MODE_ENABLED:-}" ) || true
+    case "${val,,}" in
+      yes|true|1|on) rc=0 ;;
+    esac
+    break
+  done
+  _TM_CACHE_AT=$now
+  _TM_CACHE_VAL=$rc
+  return "$rc"
+}
+
+# Seconds between Travel Mode cycles. TRAVEL_MODE_INTERVAL is an undocumented
+# power-user override; otherwise pace with the user's snapshot interval.
+function travel_mode_interval () {
+  local v="${TRAVEL_MODE_INTERVAL:-${SNAPSHOT_INTERVAL:-${SNAPSHOT_INTERVAL_DEFAULT:-900}}}"
+  case "$v" in
+    ''|*[!0-9]*) v=900 ;;
+  esac
+  # Base 10 explicitly: a leading zero would otherwise be read as octal, and
+  # "0900" is an invalid octal literal that aborts the script under set -e.
+  v=$((10#$v))
+  if [ "$v" -lt 60 ] || [ "$v" -gt 86400 ]; then v=900; fi
+  echo "$v"
+}
+
+# Delay before retrying a failed Travel Mode cycle. Clamped so a bad override
+# cannot turn the loop into a hot spin.
+function travel_mode_retry_interval () {
+  local v="${TRAVEL_MODE_RETRY_INTERVAL:-60}"
+  case "$v" in
+    ''|*[!0-9]*) v=60 ;;
+  esac
+  v=$((10#$v))
+  if [ "$v" -lt 15 ] || [ "$v" -gt 3600 ]; then v=60; fi
+  echo "$v"
+}
+
 function archive_is_reachable () {
   local reachable=true
 
-  /root/bin/archive-is-reachable.sh "$ARCHIVE_SERVER" || reachable=false
+  # A 1 s ping deadline misreads a slow cellular link as offline, which in
+  # Travel Mode would stall archiving on a working connection. Give the
+  # probe more room when Travel Mode is on; normal mode keeps the snappy
+  # default so drive-away detection stays fast.
+  if travel_mode_active; then
+    ARCHIVE_PING_TIMEOUT="${ARCHIVE_PING_TIMEOUT:-4}" \
+      /root/bin/archive-is-reachable.sh "$ARCHIVE_SERVER" || reachable=false
+  else
+    /root/bin/archive-is-reachable.sh "$ARCHIVE_SERVER" || reachable=false
+  fi
 
   if [ "$reachable" = false ]
   then
@@ -131,6 +201,45 @@ function archive_is_reachable () {
     return
   fi
   true
+}
+
+# Replaces wait_for_archive_to_be_unreachable when Travel Mode is on. An
+# always-on link never goes unreachable, so that wait would block forever and
+# halt snapshotting; sleep a bounded interval instead and let the next
+# iteration snapshot and upload whatever the car has written since.
+#
+# A failed cycle retries sooner than a full interval so a brief dropout (a
+# tunnel, a dead zone) does not cost a whole snapshot window of footage.
+function travel_mode_pace () {
+  local interval
+  if [ "${ARCHIVE_CYCLE_FAILED:-0}" = "1" ]; then
+    interval=$(travel_mode_retry_interval)
+    log "Travel Mode: last cycle failed, retrying in ${interval}s"
+  else
+    interval=$(travel_mode_interval)
+    log "Travel Mode: next snapshot and archive in ${interval}s"
+  fi
+
+  # Sleep in slices, watching for the canary that POST /api/system/trigger-sync
+  # drops. Normal mode consumes it inside the reachability waits; Travel Mode
+  # idles here instead, so without this check "Archive Sync" would do nothing
+  # until the interval expired.
+  local deadline=$((SECONDS + interval))
+  local remaining slice
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if [ -e /tmp/archive_is_reachable ]; then
+      if rm -f -- /tmp/archive_is_reachable; then
+        log "Travel Mode: manual sync requested, starting next cycle early"
+        return 0
+      fi
+      log "Travel Mode: could not consume manual sync request"
+    fi
+    remaining=$((deadline - SECONDS))
+    slice=5
+    if [ "$remaining" -lt "$slice" ]; then slice=$remaining; fi
+    [ "$slice" -gt 0 ] && sleep "$slice"
+  done
+  return 0
 }
 
 function with_gadget_lock () {
@@ -164,6 +273,14 @@ function connect_usb_drives_to_host_locked() {
 }
 
 function run_archive_cycle () {
+  # Export the relaxed probe deadline for the whole cycle so child scripts
+  # inherit it. The rclone transfer monitor probes reachability to decide
+  # whether to kill an in-flight upload; at the 1 s default a slow cellular
+  # link reads as dead and the transfer dies mid-flight.
+  if travel_mode_active; then
+    export ARCHIVE_PING_TIMEOUT="${ARCHIVE_PING_TIMEOUT:-4}"
+  fi
+
   # Records the outcome in ARCHIVE_CYCLE_FAILED and swallows the failure so
   # `set -e` can't abort the main loop.
   ARCHIVE_CYCLE_FAILED=0
@@ -315,6 +432,14 @@ function wait_for_archive_to_be_unreachable () {
   log "Waiting for archive to be unreachable..."
   while true
     do
+      # Travel Mode may be switched on while parked here. Without this the
+      # toggle would not take effect until the link dropped or the service
+      # restarted, which on an always-on link means never.
+      if travel_mode_active
+      then
+        log "Travel Mode enabled while waiting; resuming paced cycles."
+        break
+      fi
       if ! retry archive_is_reachable
       then
         log "Archive is unreachable."
@@ -769,7 +894,16 @@ function archive_recordings () {
   then
     if [ "$archive_success" = "true" ]
     then
-      clean_cam_mount freespace
+      # clean_cam_mount mounts cam_disk.bin, which requires disconnecting the
+      # gadget. In Travel Mode the car is driving and recording, so defer it
+      # rather than interrupt capture. The car runs its own rolling delete on
+      # that drive, and snapshot pruning on /backingfiles is handled
+      # separately by the free-space manager, which never touches the gadget.
+      if travel_mode_active; then
+        log "Travel Mode: deferring freespace cleanup to keep the drive connected to the car"
+      else
+        clean_cam_mount freespace
+      fi
     else
       log "Skipping cleaning step after archive error"
     fi
@@ -826,8 +960,11 @@ function archive_clips () {
   touch /tmp/flag_post_archive  #Set post-archive flag for optional temperature logging
   clear_archive_status
   # Reconnect the cam drive first so the car can resume recording immediately.
-  # Nothing below touches the cam disk.
-  connect_usb_drives_to_host
+  # Nothing below touches the cam disk. In Travel Mode the gadget was never
+  # disconnected (cleanup was deferred above), so skip the cycle entirely.
+  if ! travel_mode_active; then
+    connect_usb_drives_to_host
+  fi
   /root/bin/send-live-activity end complete || true
   /root/bin/disconnect-archive.sh 2>> "$LOG_FILE" || true
 
@@ -1100,10 +1237,26 @@ then
 
   doubleblink
 
+  # Probe reachability ONCE and reuse it: probing separately for the reconnect
+  # and the wait let a single transient miss skip the debounced wait entirely.
+  reachable_now=0
+  archive_is_reachable && reachable_now=1
+
   # Skip the gadget cycle if the user drove away during archive: the gadget is
   # still presented to the car, and re-cycling it would interrupt recording.
-  if archive_is_reachable; then
+  # Travel Mode never disconnects it, so skip the cycle there too.
+  if [ "$reachable_now" = 1 ] && ! travel_mode_active; then
     connect_usb_drives_to_host
+  fi
+
+  # Without the Travel Mode branch this boot cycle would block here forever on
+  # an always-on link and never reach the main loop.
+  if travel_mode_active; then
+    # Repair a dead gadget BEFORE sleeping: pacing first would leave the car
+    # without a drive for the whole interval.
+    check_if_usb_gadget_is_mounted
+    travel_mode_pace
+  elif [ "$reachable_now" = 1 ]; then
     wait_for_archive_to_be_unreachable
   fi
 fi
@@ -1144,10 +1297,23 @@ do
 
   doubleblink
 
+  # Probe reachability ONCE and reuse it (see the boot block above).
+  reachable_now=0
+  archive_is_reachable && reachable_now=1
+
   # Skip the gadget cycle if the user drove away during archive: the gadget is
   # still presented to the car, and re-cycling it would interrupt recording.
-  if archive_is_reachable; then
+  # Travel Mode never disconnects it, so skip the cycle there too.
+  if [ "$reachable_now" = 1 ] && ! travel_mode_active; then
     connect_usb_drives_to_host
+  fi
+
+  if travel_mode_active; then
+    # Repair a dead gadget BEFORE sleeping: pacing first would leave the car
+    # without a drive for the whole interval.
+    check_if_usb_gadget_is_mounted
+    travel_mode_pace
+  elif [ "$reachable_now" = 1 ]; then
     wait_for_archive_to_be_unreachable
   fi
 
