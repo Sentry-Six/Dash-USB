@@ -15,7 +15,10 @@ function connectionmonitor {
   do
     for _ in {1..5}
     do
-      if timeout 6 /root/bin/archive-is-reachable.sh "${ARCHIVE_SERVER:-8.8.8.8}"
+      # Inherit ARCHIVE_PING_TIMEOUT so a slow cellular link (Travel Mode)
+      # is not misread as dead and used to kill an in-flight transfer.
+      if ARCHIVE_PING_TIMEOUT="${ARCHIVE_PING_TIMEOUT:-1}" \
+         timeout 6 /root/bin/archive-is-reachable.sh "${ARCHIVE_SERVER:-8.8.8.8}"
       then
         sleep 5
         continue 2
