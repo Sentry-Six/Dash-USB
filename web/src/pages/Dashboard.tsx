@@ -62,8 +62,6 @@ function getWifiStrengthBars(strength: string): number {
   return 1
 }
 
-// Mini 4-bar signal indicator. Filled bars get the tile's accent colour;
-// the rest are a muted slate so the gauge reads at a glance.
 function WifiBars({ bars }: { bars: number }) {
   return (
     <span className="inline-flex items-end gap-[2px] align-middle" aria-label={`${bars}/4 bars`}>
@@ -114,8 +112,8 @@ export default function Dashboard() {
   const [storageBreakdown, setStorageBreakdown] =
     useState<StorageBreakdown | null>(null)
   const [archiveProgress, setArchiveProgress] = useState<ProcessProgress | null>(null)
-  // Units come from the shared store — coherent defaults and live-synced with
-  // the Settings → Display & Units controls.
+  // Shared store keeps this live-synced with the Display & Units controls
+  // in Settings.
   const { tempF: systemUseFahrenheit } = useUnits()
   const [rtcWarning, setRtcWarning] = useState<string | null>(null)
 
@@ -173,9 +171,9 @@ export default function Dashboard() {
       })
       .catch(() => {})
 
-    // Pause every poller while the tab is hidden (phone in a pocket, a
-    // backgrounded tab) so the dashboard stops hitting the Pi and
-    // draining the phone battery for data nobody's looking at.
+    // Pause every poller while the tab is hidden (phone in a pocket) so the
+    // dashboard stops hitting the Pi and draining battery for data nobody
+    // is looking at.
     const statusInterval = setInterval(() => {
       if (!document.hidden) fetchStatus()
     }, 2000)
@@ -185,14 +183,14 @@ export default function Dashboard() {
     const storageInterval = setInterval(() => {
       if (!document.hidden) fetchStorageBreakdown()
     }, 10000)
-    // Local-only counter, but still skip it while hidden so React isn't
-    // re-rendering the dashboard once a second for a backgrounded tab.
+    // Local-only counter, but skip it while hidden to avoid re-rendering
+    // the dashboard once a second for a backgrounded tab.
     const uptimeInterval = setInterval(() => {
       if (!document.hidden) setUptime((p) => p + 1)
     }, 1000)
 
-    // Snap the live tiles back to current the moment the tab is shown
-    // again, rather than waiting for the slower intervals.
+    // Refresh the tiles the moment the tab is shown again instead of
+    // waiting out the slower intervals.
     const onVisible = () => {
       if (document.hidden) return
       fetchStatus()
@@ -246,7 +244,7 @@ export default function Dashboard() {
     )
   }
 
-  // Build banner stack — priority sorted (warn > update).
+  // Banner stack, priority sorted (warn before update).
   const banners: BannerItem[] = []
   if (rtcWarning) {
     banners.push({
@@ -307,7 +305,7 @@ export default function Dashboard() {
   )
 }
 
-// ─── Tiles ──────────────────────────────────────────────────────────────────
+// Tiles
 
 function SystemTile({
   status,
@@ -343,11 +341,10 @@ function SystemTile({
           value={`${status.fan_speed} RPM`}
         />
       )}
-      {/* Three-state: "Connected" needs the host link up ("configured"),
-          not just the gadget bound in configfs — a bound gadget with a
-          dead link is exactly how the car shows an error while the old
-          two-state pill stayed green. Label and color derive from ONE
-          state value so they can't drift. */}
+      {/* "Connected" requires udc_state == "configured", not just a gadget
+          bound in configfs: a bound gadget with a dead host link is exactly
+          how the car reports an error. Label and colour must derive from the
+          one state value so they cannot drift. */}
       <Row
         icon={<HardDrive className="h-3.5 w-3.5" />}
         label="USB Drives"
@@ -448,9 +445,9 @@ function NetworkTile({ status }: { status: PiStatus }) {
           )}
         </>
       ) : (
-        // Always render an Ethernet row — keeps tile balanced when WiFi is
-        // present but ethernet isn't (or vice versa). Muted styling signals
-        // disconnected state without taking the tile's halo over.
+        // Always render an Ethernet row so the tile stays balanced when only
+        // one interface is up. Muted styling signals the disconnected state
+        // without claiming the tile's halo.
         <div className="tile-row">
           <span className="inline-flex text-slate-600">
             <EthernetPort className="h-3.5 w-3.5" />
@@ -497,10 +494,9 @@ function StorageTile({
         <span className="text-[11px] text-slate-500">
           / {formatBytes(totalSpace)} · {usedPctStr} used
         </span>
-        {/* Reassurance tooltip — high storage usage triggers panic
-            for new users ("96% used!"), but Dash USB rotates
-            snapshots automatically as space gets tight. CSS-only
-            group-hover so we don't need React state for it. */}
+        {/* High usage alarms new users ("96% used!") even though snapshots
+            rotate automatically as space gets tight. CSS-only group-hover,
+            so no React state is needed. */}
         <span className="group relative inline-flex items-center self-center">
           <Info
             aria-label="About storage management"
@@ -589,8 +585,6 @@ function ActivityTile({
 
   return (
     <div className="relative flex flex-col">
-      {/* Phase pill — pinned to the card's top-right corner; only
-          renders during an actual archive run. */}
       {archiving && (
         <div className="pointer-events-none absolute right-2 top-2 z-10">
           <Pill kind="accent">

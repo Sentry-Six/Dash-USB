@@ -69,17 +69,16 @@ export function ArchiveStep({ data, onChange }: StepProps) {
   const [testing, setTesting] = useState(false)
   const [testStage, setTestStage] = useState<string | null>(null)
   const [testResult, setTestResult] = useState<{ success: boolean; error?: string } | null>(null)
-  // Lifted to ArchiveStep so the displayed key survives switching between
-  // archive systems (CIFS ↔ rsync) — the file on disk persists either way,
-  // this just keeps the visible state sticky across the conditional render.
+  // Lifted here so the displayed key survives switching archive systems
+  // (CIFS to rsync and back). The file on disk persists either way; this
+  // only keeps the visible state across the conditional render.
   const [pubKey, setPubKey] = useState<string | null>(null)
 
-  // Backend broadcasts `archive_test_status` for the long-running stages of
-  // Test Connection — specifically the on-demand `apt-get install` of
-  // nfs-common / cifs-utils when the userspace mount helper is missing.
-  // Without this, the button just sits on "Testing..." for up to 4 minutes
-  // (apt can wait on the dpkg frontend lock if setup is concurrently
-  // running) with no indication of what's actually happening.
+  // The backend broadcasts `archive_test_status` for the slow stages of Test
+  // Connection, mainly the on-demand `apt-get install` of nfs-common or
+  // cifs-utils when the userspace mount helper is missing. Without it the
+  // button sits on "Testing..." for up to 4 minutes, since apt can block on
+  // the dpkg frontend lock while setup runs concurrently.
   useEffect(() => {
     if (!testing) return
     let ws: WebSocket | null = null
@@ -100,7 +99,7 @@ export function ArchiveStep({ data, onChange }: StepProps) {
           }
         } catch { /* ignore */ }
       }
-    } catch { /* ws unavailable — button stays on "Testing..." */ }
+    } catch { /* ws unavailable; the button stays on "Testing..." */ }
     return () => { cancelled = true; ws?.close() }
   }, [testing])
 
@@ -150,7 +149,6 @@ export function ArchiveStep({ data, onChange }: StepProps) {
         to WiFi.
       </p>
 
-      {/* System selector */}
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
         {archiveSystems.map((s) => (
           <button
@@ -176,7 +174,6 @@ export function ArchiveStep({ data, onChange }: StepProps) {
         ))}
       </div>
 
-      {/* Dynamic fields per archive system */}
       {system === "cifs" && (
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Archive Server" field="ARCHIVE_SERVER" placeholder="hostname or IP" data={data} onChange={onChange} error={req("ARCHIVE_SERVER", ["cifs"])} />
@@ -214,7 +211,6 @@ export function ArchiveStep({ data, onChange }: StepProps) {
         </div>
       )}
 
-      {/* Test Connection */}
       {system !== "none" && (
         <div className="flex items-center gap-3">
           <button
@@ -254,7 +250,6 @@ export function ArchiveStep({ data, onChange }: StepProps) {
         </div>
       )}
 
-      {/* Archive options */}
       {system !== "none" && (
         <div className="space-y-2">
           <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
@@ -276,7 +271,6 @@ export function ArchiveStep({ data, onChange }: StepProps) {
         </div>
       )}
 
-      {/* Config backup location */}
       <div className="space-y-2 rounded-lg border border-white/5 bg-white/[0.02] p-4">
         <div className="flex items-center gap-2">
           <Save className="h-4 w-4 text-blue-400" />

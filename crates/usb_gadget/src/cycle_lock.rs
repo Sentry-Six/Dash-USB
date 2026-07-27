@@ -1,20 +1,17 @@
 //! Cross-process serialization of USB-gadget disable/enable cycles.
 //!
-//! archiveloop wraps every gadget teardown/bring-up — the main loop's
-//! connect/disconnect and the gadget stall watchdog — in an exclusive
-//! `flock` on [`GADGET_CYCLE_LOCK_PATH`] (`GADGET_CYCLE_LOCK` in
-//! `run/archiveloop`). Rust code that cycles the gadget outside archiveloop
-//! must hold the same lock across its whole disable→work→enable window,
-//! otherwise the two sides interleave — worst case one re-enables the
-//! gadget while the other has cam_disk.bin mounted, putting two writers on
-//! one block device and corrupting the filesystem the car records to.
+//! archiveloop holds an exclusive flock on [`GADGET_CYCLE_LOCK_PATH`] around
+//! every gadget teardown and bring-up. Rust code that cycles the gadget must
+//! hold the same lock for its whole disable/work/enable window. Interleaving
+//! the two sides can re-enable the gadget while cam_disk.bin is still
+//! mounted, which puts two writers on one block device and corrupts the
+//! filesystem the car records to.
 //!
-//! Deliberately NOT taken inside [`crate::enable`]/[`crate::disable`]:
-//! archiveloop's enable_gadget.sh/disable_gadget.sh shims curl back into
-//! /api/system/gadget-enable|disable *while archiveloop already holds the
-//! flock*, so locking at that depth would wedge the shim until its
-//! `--max-time 30` expires and fail archiveloop's cycle. Only callers that
-//! own a complete cycle take this lock.
+//! MUST NOT be taken inside [`crate::enable`]/[`crate::disable`]. The
+//! enable_gadget.sh and disable_gadget.sh shims curl into
+//! /api/system/gadget-enable|disable while archiveloop already holds the
+//! flock, so locking at that depth wedges the shim until its `--max-time 30`
+//! expires and fails the cycle. Only callers that own a complete cycle lock.
 
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -31,11 +28,9 @@ pub struct CycleGuard {
     _file: File,
 }
 
-/// Acquire the gadget-cycle flock, waiting up to `timeout` for whoever
-/// holds it (an archive media sync holds it for minutes, the stall
-/// watchdog for seconds). Polls `LOCK_NB` rather than parking in
-/// `flock(2)` so the wait is bounded. Blocking call — run it on a
-/// blocking thread.
+/// Acquire the gadget-cycle flock, waiting up to `timeout`. An archive media
+/// sync can hold it for minutes. Polls `LOCK_NB` rather than parking in
+/// `flock(2)` so the wait stays bounded. Blocking: run on a blocking thread.
 pub fn acquire(timeout: Duration) -> io::Result<CycleGuard> {
     acquire_path(Path::new(GADGET_CYCLE_LOCK_PATH), timeout)
 }

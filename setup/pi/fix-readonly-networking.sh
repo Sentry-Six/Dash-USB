@@ -1,9 +1,8 @@
 #!/bin/bash
-# Fix networking on DashUSB installs that used the old read-only setup,
-# where /var/lib/NetworkManager and related dirs were symlinked to /mutable.
-# That caused WiFi/AP to fail after reboot when the USB drive wasn't ready.
-# Run as root after: /root/bin/remountfs_rw
-# Then run this script (e.g. via setup-dashusb fix_networking). Reboot after.
+# Repair installs whose read-only setup symlinked /var/lib/NetworkManager and
+# friends to /mutable, which left WiFi and the AP dead after a reboot whenever
+# the USB drive wasn't ready in time.
+# Run as root, after /root/bin/remountfs_rw. Reboot afterwards.
 
 set -e
 
@@ -20,7 +19,7 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-# ---- Check if the old broken state is present; skip if already fixed ----
+# ---- Detect the broken state; skip when already fixed ----
 _needs_fix=false
 [ -L /var/lib/NetworkManager ] && _needs_fix=true
 [ -L /etc/NetworkManager/system-connections ] && _needs_fix=true
@@ -41,7 +40,7 @@ fi
 
 log_progress "Applying networking fix for read-only root..."
 
-# Ensure /mutable is mounted so we can copy from it if needed
+# /mutable must be mounted to copy the backed-up profiles out of it.
 if ! findmnt --mountpoint /mutable &> /dev/null; then
   if grep -q 'LABEL=mutable' /etc/fstab; then
     mount /mutable || log_progress "Warning: could not mount /mutable, will create empty dirs where needed"
@@ -76,14 +75,14 @@ for d in /var/lib/dhcp /var/lib/dhcpcd; do
 done
 
 # ---- resolv.conf: point to /tmp (always writable) ----
-# Also redirect away from systemd-resolved's stub (/run/systemd/resolve/...)
-# because we configure NM with dns=none below and use a dispatcher script
-# to populate resolv.conf; systemd-resolved would conflict with that.
+# Redirect away from systemd-resolved's stub (/run/systemd/resolve/...) too:
+# NM is configured with dns=none below and a dispatcher script populates
+# resolv.conf, which systemd-resolved would fight.
 _resolv_target=$(readlink -f /etc/resolv.conf 2>/dev/null || true)
 if [ "$_resolv_target" != "/tmp/resolv.conf" ]; then
   log_progress "Redirecting resolv.conf to /tmp (was: ${_resolv_target:-empty})"
-  # Seed /tmp/resolv.conf with current DNS so resolution keeps working.
-  # Try multiple sources: nmcli (NetworkManager), existing resolv.conf, fallback.
+  # Seed with the current DNS so resolution keeps working. Sources in order:
+  # nmcli, the existing resolv.conf, then a public fallback.
   > /tmp/resolv.conf
   if command -v nmcli &>/dev/null; then
     nmcli --terse --fields IP4.DNS dev show 2>/dev/null \
@@ -101,19 +100,18 @@ if [ "$_resolv_target" != "/tmp/resolv.conf" ]; then
 fi
 
 # ---- tmpfiles.d: seed /tmp/resolv.conf on every boot ----
-# /tmp is a tmpfs that is empty after reboot, so without this rule the
-# resolv.conf symlink dangles and DNS breaks.
-# Seed with a public DNS fallback so basic resolution works during early boot;
-# dhcpcd / NetworkManager will overwrite with DHCP-provided servers (e.g. PiHole)
-# once a lease is obtained.
+# /tmp is empty after a reboot, so without this rule the resolv.conf symlink
+# dangles and DNS breaks. The public fallback covers early boot; dhcpcd or
+# NetworkManager overwrites it with the DHCP-provided servers (e.g. PiHole)
+# once a lease arrives.
 log_progress "Installing tmpfiles.d rule for resolv.conf"
 mkdir -p /etc/tmpfiles.d
 echo 'f /tmp/resolv.conf 0644 root root - nameserver 1.1.1.1' > /etc/tmpfiles.d/resolv-fallback.conf
 
 # ---- DHCP client hooks to populate /tmp/resolv.conf ----
 # On a read-only root, /etc/resolv.conf is a symlink to /tmp/resolv.conf.
-# Install hooks for whichever DHCP client is present so DNS gets populated
-# when a lease is obtained.  Multiple hooks can coexist harmlessly.
+# Install a hook for whichever DHCP client is present so DNS is populated when
+# a lease arrives. Multiple hooks coexist harmlessly.
 
 # -- NetworkManager: dns=none + dispatcher --
 if command -v nmcli &>/dev/null; then
@@ -196,9 +194,9 @@ fi
 # ---- Unblock Bluetooth + install boot service ----
 rfkill unblock bluetooth 2>/dev/null || true
 
-# Install a systemd service that unblocks Bluetooth at every boot.
-# On RPi the BT radio starts soft-blocked by default; on a read-only root
-# the block is never cleared, breaking BLE (Tesla BLE key).
+# Unblock Bluetooth at every boot. On Raspberry Pi the BT radio starts
+# soft-blocked, and on a read-only root the block is never cleared, so BLE
+# and app pairing never work.
 if [ ! -e /etc/systemd/system/rfkill-unblock-bluetooth.service ]; then
   log_progress "Installing Bluetooth rfkill-unblock boot service"
   cat > /etc/systemd/system/rfkill-unblock-bluetooth.service << 'BTUNIT'
@@ -219,8 +217,8 @@ BTUNIT
 fi
 
 # ---- Reload NM config (dns=none + dispatcher) without dropping WiFi ----
-# A full restart would kill SSH sessions.  The reboot that follows will
-# fully apply the new configuration.
+# A full restart would kill SSH sessions. The reboot that follows applies the
+# new configuration in full.
 if systemctl is-active --quiet NetworkManager 2>/dev/null; then
   log_progress "Reloading NetworkManager configuration"
   nmcli general reload 2>/dev/null || true

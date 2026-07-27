@@ -4,25 +4,21 @@ import type { StepProps } from "../SetupWizard"
 import { cn } from "@/lib/utils"
 
 /**
- * Privacy disclosure + analytics opt-in.
+ * Privacy disclosure and analytics opt-in. Two GDPR requirements ride on
+ * this step:
  *
- * This step covers two GDPR requirements:
+ * 1. Article 13 transparency at the point of collection: the disclosure
+ *    table must list every outbound data flow before the user can click
+ *    past this screen.
  *
- * 1. Article 13 transparency at the point of collection. The "What we send
- *    and when" table below enumerates every outbound data flow before the
- *    user clicks past this screen, so the user knows what's coming before
- *    it leaves the device.
+ * 2. Article 21 right to object by automated means: the opt-in requires
+ *    explicit affirmative action, so no pre-ticked default (CJEU Planet49,
+ *    Art. 4(11)), and both buttons keep equal visual weight to avoid the
+ *    dark-pattern asymmetry flagged by EDPB Guidelines 03/2022.
  *
- * 2. Article 21 right to object, exercisable by automated means. The
- *    analytics opt-in is the toggle — explicit affirmative action required
- *    (no pre-ticked default, per CJEU Planet49 / Art. 4(11)). Both buttons
- *    have equal visual weight to avoid the dark-pattern asymmetry EDPB
- *    Guidelines 03/2022 flags.
- *
- * The opt-in writes the `analytics_opt_in` preference immediately on click
- * (independent of the wizard's Apply flow) — that way the choice sticks
- * even if the user backs out of the wizard, and the next update-check
- * telemetry already honors it.
+ * The opt-in writes `analytics_opt_in` immediately on click, independent of
+ * the wizard's Apply flow, so the choice survives backing out of the wizard
+ * and the next update check already honours it.
  */
 export function PrivacyStep(_props: StepProps) {
   const [choice, setChoice] = useState<boolean | null>(null)
@@ -37,8 +33,8 @@ export function PrivacyStep(_props: StepProps) {
         if (typeof data?.value === "boolean") setChoice(data.value)
       })
       .catch(() => {
-        // Pref hasn't been set yet — leave as null so neither button is
-        // highlighted, forcing an explicit choice.
+        // Pref not set yet. Leave it null so neither button is highlighted
+        // and the choice stays explicit.
       })
   }, [])
 
@@ -75,7 +71,7 @@ export function PrivacyStep(_props: StepProps) {
         does.
       </p>
 
-      {/* Disclosure table — Article 13 transparency at point of collection */}
+      {/* Article 13 transparency at the point of collection. */}
       <div className="mt-8 w-full max-w-2xl rounded-xl border border-white/10 bg-white/[0.02] p-5">
         <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">
           What we send, when, and why
@@ -123,7 +119,7 @@ export function PrivacyStep(_props: StepProps) {
         </p>
       </div>
 
-      {/* Opt-in — explicit affirmative action, no pre-tick */}
+      {/* Explicit affirmative action; must never be pre-ticked. */}
       <div className="mt-6 w-full max-w-2xl rounded-xl border border-white/10 bg-white/[0.02] p-5">
         <p className="text-sm font-semibold text-slate-200">
           Help us count new installs?

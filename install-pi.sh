@@ -1,10 +1,8 @@
 #!/bin/bash -eu
 #
-# DashUSB (Rust) Installer
-#
-# Minimal installer — downloads the Rust binary and installs the systemd
-# service. The binary itself handles ALL setup (partitioning, disk images,
-# system config, etc.) via the web UI setup wizard.
+# DashUSB installer. Downloads the binary and installs the systemd service.
+# The binary handles ALL setup (partitioning, disk images, system config)
+# through the web UI setup wizard.
 #
 # Usage:
 #   sudo -i
@@ -32,14 +30,11 @@ if [[ $EUID -ne 0 ]]; then
     error_exit "This script must be run as root. Try: sudo -i"
 fi
 
-# Backward-compat: the Go install.sh accepted `norootshrink` as its
-# first arg to skip the root-partition shrink step (used when an
-# external USB/NVMe data drive supplies the storage). In the Rust
-# port the shrink moved into the binary's setup wizard — it's
-# automatically skipped when DATA_DRIVE is set on the Storage step
-# (or in /root/dashusb.conf). Recognize the legacy arg here so it
-# doesn't silently look like a "local binary path" lookup, and
-# clear it so it doesn't get treated as one.
+# Legacy first arg `norootshrink` skipped the root-partition shrink when an
+# external USB/NVMe drive supplied the storage. The shrink now lives in the
+# binary's setup wizard and is skipped automatically when DATA_DRIVE is set
+# (Storage step, or /root/dashusb.conf). Consume the arg here so it isn't
+# mistaken for a local binary path.
 case "${1:-}" in
     norootshrink|no-root-shrink|NOROOTSHRINK|norrotshrink)
         info "Note: '$1' was a Go-era install arg; in the Rust port,"
@@ -64,23 +59,18 @@ ok "/dashusb -> $(readlink /dashusb)"
 
 # ── Step 2: Install DashUSB Binary(es) + Picker ──────────────────
 #
-# On aarch64 we stage three per-CPU-tuned variants (a53/a72/a76) so each
-# Pi runs code matched to its microarchitecture. The runtime picker
-# (dashusb-pick-binary, installed below) symlinks the best one to
-# dashusb-current at every service start.
+# aarch64 stages three per-CPU-tuned variants (a53/a72/a76) so each Pi runs
+# code matched to its microarchitecture; armv7 has a single variant. The
+# runtime picker (dashusb-pick-binary, installed below) symlinks the best one
+# to dashusb-current at every service start, using /proc/cpuinfo detection.
 #
-# On armv7 there's no microarchitectural split — single variant.
-# Same picker handles both cases via /proc/cpuinfo detection.
-#
-# armv6 (Pi Zero W / Pi 1) is no longer supported: the original Pi Zero W
-# is too underpowered to run the daemon and was dropped from CI to keep
-# release artifact counts manageable.
+# armv6 (Pi Zero W / Pi 1) is refused: too underpowered for the daemon, and
+# dropped from CI, so no release artifact exists.
 
 mkdir -p "$INSTALL_DIR"
 
-# Detect userspace arch first. The aarch64 case stages multiple binaries;
-# the others stage one. Same detection logic the picker uses at boot,
-# duplicated here only to decide which release files to download.
+# Detect userspace arch first, only to decide which release files to
+# download. The picker repeats this detection at boot.
 if command -v dpkg >/dev/null 2>&1; then
     DPKG_ARCH=$(dpkg --print-architecture)
     case "$DPKG_ARCH" in
@@ -100,7 +90,7 @@ else
     esac
 fi
 
-# Map the family → suffixes we need to download. aarch64 expands to three.
+# Map the family to the release suffixes to download.
 case "$ARCH_FAMILY" in
     aarch64) SUFFIXES="linux-arm64-a53 linux-arm64-a72 linux-arm64-a76" ;;
     armv7)   SUFFIXES="linux-armv7" ;;
@@ -108,11 +98,9 @@ case "$ARCH_FAMILY" in
 esac
 
 if [ -n "${1:-}" ] && [ -f "${1:-}" ]; then
-    # Local-binary mode — installer was invoked with a path to a binary on
-    # disk. Skip downloads and stage that one binary under all matching
-    # CPU suffixes so the picker always finds something. (This is a
-    # convenience for local dev builds; production installs use the
-    # download path below.)
+    # Local-binary mode (dev builds): stage the one binary under every CPU
+    # suffix so the picker always finds something. Production installs take
+    # the download path below.
     info "Installing binary from local path: $1"
     for sfx in $SUFFIXES; do
         cp "$1" "$INSTALL_DIR/$BINARY_NAME-$sfx"
@@ -166,12 +154,12 @@ else
     error_exit "Failed to install dashusb-pick-binary — daemon won't start without it"
 fi
 
-# Run the picker once now so the -current symlink + active-variant file
-# exist before systemd tries to start the service.
+# Run the picker now so the -current symlink and active-variant file exist
+# before systemd starts the service.
 "$PICKER_DST" || error_exit "dashusb-pick-binary failed on first run — check journalctl"
 
-# Back-compat symlink at the old path so any third-party tooling or shell
-# wrappers referencing /opt/dashusb/dashusb keep working.
+# Keep the old path working for third-party tooling and shell wrappers that
+# reference /opt/dashusb/dashusb.
 ln -sfn "$INSTALL_DIR/dashusb-current" "$INSTALL_DIR/$BINARY_NAME"
 
 # Ensure binary is on PATH
@@ -221,12 +209,11 @@ ok "dashusb.service installed and enabled"
 
 info "Installing DashUSB BLE daemon..."
 BLE_REPO_URL="https://raw.githubusercontent.com/${REPO}/main/server/ble"
-# Install at /root/bin/ — matches both the vendored service unit's
-# hardcoded ExecStart path AND what pi-gen 00-run.sh installs, so the
-# binary is reachable whether the user came via image-flash or
-# install-pi.sh. Don't install elsewhere + sed-patch the unit: that can
-# silently fail on older sed / SELinux, leaving the service pointing at
-# a missing path.
+# Install at /root/bin/: it matches both the vendored unit's hardcoded
+# ExecStart path and what pi-gen's 00-run.sh installs, so the daemon is
+# reachable whether the user flashed the image or ran install-pi.sh. Do NOT
+# install elsewhere and sed-patch the unit; that can fail silently on older
+# sed or under SELinux, leaving the service pointing at a missing path.
 BLE_INSTALL_PATH="/root/bin/dashusb-ble.py"
 mkdir -p /root/bin
 
@@ -236,18 +223,17 @@ if curl -fsSL "$BLE_REPO_URL/dashusb-ble.py" -o "$BLE_INSTALL_PATH" 2>/dev/null;
     curl -fsSL "$BLE_REPO_URL/com.dashusb.ble.conf" -o /etc/dbus-1/system.d/com.dashusb.ble.conf 2>/dev/null || true
 
     apt-get install -y python3-dbus python3-gi bluez >/dev/null 2>&1 || warn "BLE daemon apt deps install failed — the daemon may not start"
-    # Pi-OS extras the unit leans on (rfkill in ExecStartPre; pi-bluetooth
-    # wires the UART firmware). Best-effort: absent on non-Pi distros,
+    # Pi OS extras the unit leans on (rfkill in ExecStartPre; pi-bluetooth
+    # wires up the UART firmware). Best effort: absent on non-Pi distros,
     # usually preinstalled on Pi OS.
     apt-get install -y rfkill >/dev/null 2>&1 || true
     apt-get install -y pi-bluetooth >/dev/null 2>&1 || true
     systemctl daemon-reload
     systemctl enable dashusb-ble 2>/dev/null || true
-    # Reload (SIGHUP) — NOT restart. Restarting dbus on Pi OS kills logind,
-    # which kills any active SSH session and can wedge the box hard enough
-    # to need a power-cycle. Reload picks up the new policy file (which is
-    # all we need — dbus rereads /etc/dbus-1/system.d/ on SIGHUP) without
-    # dropping any clients.
+    # Reload (SIGHUP), NOT restart. Restarting dbus on Pi OS kills logind,
+    # which kills any active SSH session and can wedge the box hard enough to
+    # need a power cycle. SIGHUP makes dbus reread /etc/dbus-1/system.d/,
+    # which is all the new policy file needs, without dropping clients.
     systemctl reload dbus 2>/dev/null || true
     ok "BLE daemon installed at $BLE_INSTALL_PATH"
 else
@@ -260,15 +246,14 @@ fi
 
 # ── Step 3c: archiveloop ↔ gadget shim scripts ─────────────────────
 #
-# archiveloop (shell) calls /root/bin/enable_gadget.sh and disable_gadget.sh
-# directly. On a pre-existing Go install those are real configfs scripts; if
-# we leave them alone they fight with the Rust handler — two concurrent
-# writers to the same /sys/kernel/config/usb_gadget/dashusb tree produces
-# half-configured gadgets that enumerate without exposing LUNs.
+# archiveloop calls /root/bin/enable_gadget.sh and disable_gadget.sh directly.
+# On a pre-existing install those are real configfs scripts, and leaving them
+# in place gives two concurrent writers to the same
+# /sys/kernel/config/usb_gadget/dashusb tree: half-configured gadgets that
+# enumerate without exposing LUNs.
 #
-# Replace them with thin curl shims so archiveloop drives the Rust API
-# instead. The shims are idempotent — archiveloop can call enable while we're
-# already enabled without side effects.
+# Overwrite them with thin curl shims so archiveloop drives the API instead.
+# The shims are idempotent; enabling an already-enabled gadget is a no-op.
 
 info "Installing archiveloop gadget shims..."
 mkdir -p /root/bin
@@ -289,11 +274,10 @@ chmod +x /root/bin/disable_gadget.sh
 
 ok "Gadget shims installed at /root/bin/{enable,disable}_gadget.sh"
 
-# Fetch envsetup.sh from the repo. archiveloop sources this at runtime to read
-# /root/dashusb.conf and export CAM_MOUNT / ARCHIVE_* etc. The
-# pi-gen image build deploys it as part of the image; install-pi.sh users never
-# get it, so dashusb-archive.service fails fast with "envsetup.sh: No such
-# file or directory" and respawns until systemd gives up.
+# archiveloop sources envsetup.sh at runtime to read /root/dashusb.conf and
+# export CAM_MOUNT, ARCHIVE_*, and friends. The pi-gen image ships it; without
+# this fetch, install-pi.sh users get dashusb-archive.service failing with
+# "envsetup.sh: No such file or directory" until systemd gives up respawning.
 if curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/setup/pi/envsetup.sh" \
        -o /root/bin/envsetup.sh 2>/dev/null; then
     chmod +x /root/bin/envsetup.sh
@@ -303,12 +287,12 @@ else
 fi
 
 # ── Step 3d: remountfs_rw helper + /root/.bashrc reminder ──────────
-# `remountfs_rw` is created by the pi-gen image build; install-pi.sh users
-# (any non-pi-gen install, e.g. DietPi/Armbian) never get it. The BLE daemon
-# calls it to remount root RW before saving the pairing PIN, and fails with
-# "Failed to save PIN: No such file or directory: '/root/bin/remountfs_rw'"
-# if absent — blocks BLE pair from SC. Always-install a tiny stub: works
-# whether root is RO (does the remount) or already RW (no-op + exit 0).
+# The pi-gen image build creates `remountfs_rw`; non-pi-gen installs
+# (DietPi/Armbian) never get it. The BLE daemon calls it to remount root RW
+# before saving the pairing PIN and otherwise fails with "Failed to save PIN:
+# No such file or directory: '/root/bin/remountfs_rw'", blocking BLE pairing
+# from SC. Install a stub that works whether root is read-only (remounts) or
+# already writable (no-op, exit 0).
 mkdir -p /root/bin
 if [ ! -f /root/bin/remountfs_rw ]; then
     cat > /root/bin/remountfs_rw <<'REMOUNT_RW'
@@ -334,11 +318,11 @@ if ! grep -q DASHUSB_TIP1 /root/.bashrc 2>/dev/null; then
 fi
 
 # ── Step 3d2: install the runtime-patches script (called by OTA updater) ──
-# Universal — runs for everyone; each patch inside self-detects its own
-# precondition (board, file presence, etc.). Lives at a stable path the
-# Rust binary's update.rs invokes after every binary swap so install-time
-# fixes — BLE non-fatal-adv on BCM4345C0 (4C+), EATT disable on all
-# boards, etc. — heal automatically on update instead of silently rotting.
+# Runs for everyone; each patch inside self-detects its own precondition
+# (board, file presence). It lives at a stable path that update.rs invokes
+# after every binary swap, so install-time fixes (BLE non-fatal-adv on
+# BCM4345C0 / 4C+, EATT disable on all boards) heal automatically on update
+# instead of silently rotting.
 PATCHES_URL="https://raw.githubusercontent.com/${REPO}/main/setup/pi/apply-runtime-patches.sh"
 PATCHES_DST="/usr/local/bin/dashusb-apply-runtime-patches"
 PATCHES_LOCAL="$(dirname "${1:-/dev/null}")/setup/pi/apply-runtime-patches.sh"
@@ -351,24 +335,25 @@ elif curl -fsSL --max-time 10 "$PATCHES_URL" -o "$PATCHES_DST" 2>/dev/null; then
 else
     warn "Could not fetch runtime-patches script — OTA updates won't re-apply BLE patches"
 fi
-# Run it once now so first-install applies patches without waiting for the
-# first OTA update. The script's per-patch detection-gates make this a
-# no-op on non-applicable boards.
+# Run it now so a first install gets the patches without waiting for an OTA
+# update. Per-patch detection gates make this a no-op on other boards.
 if [ -x "$PATCHES_DST" ]; then
     "$PATCHES_DST" || warn "runtime-patches first-run reported issues — see output above"
 fi
 
 # ── Step 3f: Rock Pi 4C+ (RK3399 / dwc3) hardware setup ────────────────────
-# A NO-OP on Raspberry Pi and every non-4C+ board (detection-gated). On a Rock
-# Pi 4C+ a generic install leaves three things broken, all fixed here so SC works
-# with WiFi + BLE out of the box:
-#   1. rfkill — the BLE daemon's unit calls /usr/sbin/rfkill; DietPi's minimal
-#      base omits it, so dashusb-ble.service fails 203/EXEC without it.
-#   2. dwc3 overlay → OTG port to PERIPHERAL/high-speed (else /sys/class/udc is
-#      empty → no USB mass-storage gadget → Tesla never sees the dashcam).
-#   3. BT+WiFi firmware (AP6256/BCM4345C0 combo) + a legacy raw-HCI LE advertiser
-#      (the chip rejects BlueZ extended advertising, so SC can't discover it).
-# Best-effort: each sub-step warns on failure rather than aborting the install.
+# Detection-gated: a no-op on Raspberry Pi and every other non-4C+ board. On a
+# Rock Pi 4C+ a generic install leaves three things broken, all fixed here so
+# SC works with WiFi and BLE out of the box:
+#   1. rfkill: the BLE daemon's unit calls /usr/sbin/rfkill, which DietPi's
+#      minimal base omits, so dashusb-ble.service fails 203/EXEC.
+#   2. dwc3 overlay puts the OTG port in PERIPHERAL/high-speed mode. Without
+#      it /sys/class/udc is empty, so there is no USB mass-storage gadget and
+#      the car never sees the dashcam drive.
+#   3. BT+WiFi firmware (AP6256/BCM4345C0 combo) plus a legacy raw-HCI LE
+#      advertiser: the chip rejects BlueZ extended advertising, so SC can't
+#      discover it.
+# Best effort: each sub-step warns on failure rather than aborting the install.
 is_rock_4cplus() {
     grep -qai 'rock-4c-plus\|rockpi4c-plus\|ROCK 4C+' \
         /proc/device-tree/model /proc/device-tree/compatible 2>/dev/null
@@ -380,11 +365,11 @@ has_dietpi_overlays() {
 NEEDS_REBOOT=0
 if is_rock_4cplus; then
     info "Rock Pi 4C+ detected — applying USB-gadget + BLE hardware setup..."
-    # Best-effort section: don't let a minor apt/systemd hiccup abort the install.
+    # Best effort: don't let a minor apt/systemd hiccup abort the install.
     set +e
 
-    # 1. Apt dependencies — rfkill (BLE daemon calls it) and device-tree-compiler
-    #    (sub-step 2 compiles a dwc3 overlay with `dtc`; DietPi minimal ships neither).
+    # 1. rfkill (the BLE daemon calls it) and device-tree-compiler (sub-step 2
+    #    compiles a dwc3 overlay with `dtc`). DietPi minimal ships neither.
     if apt-get install -y rfkill device-tree-compiler >/dev/null 2>&1; then
         ok "rfkill + device-tree-compiler installed"
         systemctl reset-failed dashusb-ble.service 2>/dev/null || true
@@ -393,7 +378,8 @@ if is_rock_4cplus; then
         warn "rfkill/dtc install failed — BLE daemon and dwc3 overlay may not work"
     fi
 
-    # 2. High-speed dwc3 peripheral overlay (compiled on-device → self-contained)
+    # 2. High-speed dwc3 peripheral overlay, compiled on-device so no
+    #    prebuilt .dtbo has to ship.
     if has_dietpi_overlays; then
         apt-get install -y device-tree-compiler >/dev/null 2>&1 || true
         mkdir -p /boot/overlay-user
@@ -440,9 +426,10 @@ DTS
         warn "peripheral+high-speed overlay for your image manually, or no USB gadget."
     fi
 
-    # 3. Bluetooth + WiFi firmware — AP6256 (BCM4345C0 WiFi+BT combo) coexistence.
-    #    BT .hcd MUST be the GENERIC patch, NOT BCM4345C0.raspberrypi,*.hcd — the Pi
-    #    profile kills the WiFi SDIO half (brcmf rxctl timeout / wlan0 I/O error).
+    # 3. Bluetooth + WiFi firmware coexistence on the AP6256 (BCM4345C0
+    #    WiFi+BT combo). The BT .hcd MUST be the GENERIC patch, never
+    #    BCM4345C0.raspberrypi,*.hcd: the Pi profile kills the WiFi SDIO half
+    #    (brcmf rxctl timeout / wlan0 I/O error).
     BRCM=/lib/firmware/brcm
     HCD=""
     for c in BCM4345C0_003.001.025.0162.0000_Generic_UART_37_4MHz_wlbga_ref_iLNA_iTR_eLG.hcd \
@@ -471,8 +458,8 @@ DTS
         warn "nvram_ap6256.txt not found — WiFi may be unstable with BT (generic calibration)."
     fi
 
-    # 4. (Recommended) OpenSSH instead of Dropbear — Dropbear ships no SFTP
-    #    subsystem, so scp/sftp to the Pi fail.
+    # 4. Prefer OpenSSH over Dropbear: Dropbear ships no SFTP subsystem, so
+    #    scp/sftp to the board fail.
     if command -v dropbear >/dev/null 2>&1 && [ -x /boot/dietpi/func/dietpi-set_software ]; then
         if /boot/dietpi/func/dietpi-set_software ssh-server openssh >/dev/null 2>&1; then
             ok "Switched SSH server to OpenSSH (scp/sftp support)"
@@ -486,19 +473,18 @@ fi
 
 # ── Step 3g: BLE legacy-advertising helper (chip-gated install) ────
 #
-# A small per-chip workaround: Broadcom controllers in the BCM4345/43430/43438
-# family reject BlueZ's modern RegisterAdvertisement (or default to a
-# scannable-but-non-connectable advertising type), so SC's connect attempt
-# fails ~10s later with "GATT 147 bond=BOND_NONE". The helper service
-# installed here programs legacy ADV_IND (connectable) directly over raw
-# HCI at 100ms intervals, plus a udev rule that brings the BLE stack up the
-# moment hci0 appears (UART BT attaches late on cold boot).
+# Broadcom controllers in the BCM4345/43430/43438 family reject BlueZ's modern
+# RegisterAdvertisement (or default to a scannable-but-non-connectable
+# advertising type), so SC's connect attempt fails ~10s later with "GATT 147
+# bond=BOND_NONE". The helper service installed here programs legacy ADV_IND
+# (connectable) directly over raw HCI at 100ms intervals, plus a udev rule that
+# brings the BLE stack up the moment hci0 appears (UART BT attaches late on
+# cold boot).
 #
-# Gate: only install where the chip is known affected. Pi 4 / Pi 5
-# (BCM43455 / CYW43455) are deliberately EXCLUDED — their modern bluetoothd
-# path works, and the raw-HCI helper here would override their good ext-adv
-# with legacy adv (regression). If a Pi 4/5 user DOES hit the same
-# "GATT 147 bond=BOND_NONE" symptom they can opt in with:
+# Install only where the chip is known affected. Pi 4 / Pi 5 (BCM43455 /
+# CYW43455) are deliberately EXCLUDED: their modern bluetoothd path works, and
+# this helper would override their good ext-adv with legacy adv. A Pi 4/5 user
+# who does hit "GATT 147 bond=BOND_NONE" can opt in with:
 #     sudo touch /mutable/force-ble-adv-helper
 # That sentinel forces install regardless of chip detection.
 is_known_broken_ble_chip() {
@@ -514,7 +500,7 @@ if is_known_broken_ble_chip; then
     BLE_ADV_BASE_URL="https://raw.githubusercontent.com/${REPO}/main/setup/pi"
     LOCAL_PI_DIR="$(dirname "${1:-/dev/null}")/setup/pi"
     fetch_file() {
-        # $1 = filename, $2 = destination. Tries local repo first, then URL.
+        # $1 = filename, $2 = destination. Tries the local repo, then the URL.
         if [ -f "$LOCAL_PI_DIR/$1" ]; then
             install -m 644 "$LOCAL_PI_DIR/$1" "$2"
         elif curl -fsSL --max-time 15 "$BLE_ADV_BASE_URL/$1" -o "$2" 2>/dev/null; then
@@ -544,8 +530,8 @@ if is_known_broken_ble_chip; then
 fi
 
 # ── Step 3z: clean up a previous Sentry USB (Tesla) install ─────────
-# Installing Dash USB over a repurposed Tesla Pi must not leave the old
-# product's services fighting ours. Idempotent; silent on fresh systems.
+# Installing Dash USB onto a repurposed Sentry USB board must not leave the old
+# product's services fighting this one. Idempotent; silent on fresh systems.
 for unit in sentryusb sentryusb-archive sentryusb-ble sentryusb-telemetry sentryusb-ble-adv; do
     systemctl disable --now "$unit" >/dev/null 2>&1 || true
     rm -f "/etc/systemd/system/${unit}.service" "/lib/systemd/system/${unit}.service"
@@ -562,11 +548,10 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 
 if [ ! -f /root/dashusb.conf ]; then
     info "Creating sample config..."
-    # NOTE: this MUST be the Rust port repo (Dash-USB). Earlier
-    # versions pointed at the legacy Go repo, so the download silently
-    # returned the Go-era sample OR fell back to the tiny offline stub
-    # below — both of which left the "raw config editor" in the web UI
-    # showing only a handful of keys instead of the full documented set.
+    # The sample MUST come from this repo (Dash-USB). Any other source
+    # returns a stale key set, or falls through to the stub below, and the web
+    # UI's raw config editor then shows a handful of keys instead of the full
+    # documented set.
     SAMPLE_URL="https://raw.githubusercontent.com/${REPO}/main/pi-gen-sources/00-dashusb-tweaks/files/dashusb.conf.sample"
     if curl -fsSL --max-time 15 "$SAMPLE_URL" -o /root/dashusb.conf; then
         ok "Sample config downloaded to /root/dashusb.conf"
@@ -627,8 +612,8 @@ if ! command -v avahi-daemon >/dev/null 2>&1; then
         || warn "avahi-daemon install failed — ${TARGET_HOSTNAME}.local may not resolve"
 fi
 # Advertise IPv4 only: a AAAA answer for .local sends Windows/Chrome to the
-# Pi's rotating SLAAC address (slow, stale) and triggers Chrome Private
-# Network Access "CORS" blocks on the plain-http UI. Device IPv6 untouched.
+# board's rotating SLAAC address (slow, stale) and triggers Chrome Private
+# Network Access "CORS" blocks on the plain-http UI. Device IPv6 is untouched.
 AVAHI_V4_URL="https://raw.githubusercontent.com/${REPO}/main/setup/pi/avahi-ipv4-only.sh"
 if curl -fsSL --max-time 15 "$AVAHI_V4_URL" -o /tmp/avahi-ipv4-only.sh 2>/dev/null; then
     bash /tmp/avahi-ipv4-only.sh >/dev/null 2>&1 || warn "could not apply IPv4-only mDNS config"
@@ -645,7 +630,7 @@ ok "mDNS active: http://${TARGET_HOSTNAME}.local"
 info "Starting DashUSB..."
 systemctl restart dashusb
 
-# Get IP address for the user — try multiple methods, network may have just bounced
+# Wait for an IP to report back; the network may have just bounced.
 IP=""
 for _ in $(seq 1 30); do
     IP=$(hostname -I 2>/dev/null | awk '{print $1}')

@@ -1,4 +1,7 @@
 #!/bin/bash -eu
+# Block until the car pauses its writes through the mass-storage gadget, so a
+# snapshot lands between clips. Exits 0 once file-storage has written under
+# 500 KB/s for 5 consecutive seconds (or is gone), 1 after the 90s cap.
 
 PREVWRITTEN=-1
 
@@ -21,7 +24,7 @@ do
   WRITTEN=$(grep ^write_bytes "/proc/$PROC/io" | awk '{print $2}')
   if (( PREVWRITTEN == -1 ))
   then
-    # we don't have a previous measurement yet
+    # no previous measurement to diff against yet
     PREVWRITTEN=$WRITTEN
     continue
   fi
@@ -43,7 +46,6 @@ do
     WRITING)
       if (( DELTA < 500000 ))
       then
-        # transition to the "not writing" state
         log "no longer writing, wrote $BURSTSIZE"
         BURSTSIZE=0
         STATE=IDLE
@@ -55,10 +57,9 @@ do
       ;;
 
     IDLE)
-      # not writing
       if (( DELTA > 500000 ))
       then
-        # apparently we're still/again writing
+        # writing again
         log "going back to writing state"
         BURSTSIZE=$DELTA
         STATE=WRITING

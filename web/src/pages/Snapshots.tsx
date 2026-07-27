@@ -48,9 +48,9 @@ export default function Snapshots() {
   const [error, setError] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<Set<string>>(new Set())
   const [confirmId, setConfirmId] = useState<string | null>(null)
-  // Default oldest-first per the user's explicit request: that's what
-  // they need to delete to free space, so the first row is the most
-  // useful action by default. Allow re-sorting for browsing.
+  // Oldest first by default: the oldest snapshot is the one to delete to
+  // free space, so the top row is the most useful action. Re-sortable for
+  // browsing.
   const [sortMode, setSortMode] = useState<SortMode>("oldest")
 
   const refresh = useCallback(async () => {
@@ -102,8 +102,8 @@ export default function Snapshots() {
         const body = await res.json().catch(() => ({}))
         throw new Error(body?.error || "Delete failed")
       }
-      // Optimistic UI update + background refresh of the free-space
-      // gauge so the user sees the GB freed land immediately.
+      // Drop the row optimistically and refresh in the background so the
+      // freed space lands on the gauge immediately.
       setSnapshots((prev) => prev.filter((s) => s.id !== id))
       setConfirmId(null)
       void refresh()
@@ -134,7 +134,6 @@ export default function Snapshots() {
         </p>
       </div>
 
-      {/* Free-space gauge */}
       {free && free.mounted && (
         <div className="glass-card mb-6 p-4">
           <div className="mb-2 flex items-center justify-between text-sm">
@@ -176,7 +175,6 @@ export default function Snapshots() {
         </div>
       )}
 
-      {/* Sort controls */}
       {snapshots.length > 0 && (
         <div className="mb-3 flex items-center justify-between">
           <p className="text-xs text-slate-500">
@@ -197,7 +195,6 @@ export default function Snapshots() {
         </div>
       )}
 
-      {/* Snapshot list */}
       {loading ? (
         <div className="flex justify-center py-12">
           <Loader2 className="h-6 w-6 animate-spin text-slate-500" />
@@ -265,7 +262,6 @@ export default function Snapshots() {
         </ul>
       )}
 
-      {/* Footnote */}
       {snapshots.length > 0 && (
         <p className="mt-6 text-xs text-slate-500">
           Snapshots are archived footage. Deletion is permanent — clips covered

@@ -1,14 +1,9 @@
-//! Startup migration: update peripheral files (shell scripts, BLE daemon,
-//! Avahi service, etc.) when the binary has been replaced by a newer version
-//! but the surrounding artifacts on disk are stale.
+//! Startup migration: refresh peripheral files (shell scripts, BLE daemon,
+//! Avahi service, service units) when a replace-only binary update has left
+//! the surrounding on-disk artifacts at the previous version.
 //!
-//! This solves the bootstrap problem for existing installs whose Rust binary
-//! was updated via a minimal replace-only update path — their scripts, BLE
-//! daemon, and service files were left at the old version. Once this code
-//! has run once, future boots will self-heal automatically.
-//!
-//! Gated by a marker file (`/opt/dashusb/.migrated-<version>`) so it runs
-//! at most once per installed version. Never touches user setup configuration.
+//! Gated by the marker file `/opt/dashusb/.migrated-<version>`, so it runs at
+//! most once per installed version. Never touches user setup configuration.
 
 use std::time::Duration;
 
@@ -20,9 +15,9 @@ const MIGRATE_REPO: &str = "Sentry-Six/Dash-USB";
 const MIGRATE_BRANCH: &str = "main";
 
 pub async fn run_startup_migration() {
-    // Unconditional idempotent heals first — these must NOT sit behind
-    // the .migrated-<version> marker below (a heal added after a version
-    // was already marked would never run).
+    // Unconditional idempotent heals run first. They MUST NOT sit behind the
+    // .migrated-<version> marker below: a heal added after a version was
+    // already marked would never run.
     heal_temperature_unit_key();
 
     // Skip in dev mode (no version file, or explicit "dev")
@@ -54,18 +49,16 @@ pub async fn run_startup_migration() {
 
     let script = build_migration_script(&tarball_url);
 
-    // Retry up to 3 times with exponential backoff. The script itself
-    // fails fast on `curl: Could not resolve host: github.com` when DNS
-    // isn't ready yet — and that's exactly the state we hit racing
-    // network-online.target at boot. Every retry is a full script run;
-    // `set -e` + idempotent file writes mean re-running after a partial
-    // success is safe (existing files get overwritten with identical
-    // bytes from the tarball).
+    // Retry up to 3 times, backing off a further 5 s each attempt. The script
+    // fails fast on `curl: Could not resolve host: github.com`, exactly the
+    // state hit when racing network-online.target at boot. Each retry is a
+    // full script run; `set -e` plus idempotent file writes make re-running
+    // after a partial success safe (files are overwritten with identical
+    // tarball bytes).
     //
-    // The `nss-lookup.target` dependency on the service unit is the
-    // primary fix; this is belt-and-suspenders for the edge case where
-    // the resolver comes up but its first query fails because the
-    // upstream DNS cache is cold.
+    // The service unit's `nss-lookup.target` dependency is the primary fix.
+    // This covers the resolver coming up but failing its first query against
+    // a cold upstream DNS cache.
     let mut last_err: Option<String> = None;
     for attempt in 1..=3 {
         match sentryusb_shell::run_with_timeout(
@@ -78,15 +71,14 @@ pub async fn run_startup_migration() {
             Ok(_) => {
                 // Re-apply runtime patches AFTER the migration. The migration
                 // script unconditionally rewrites /root/bin/dashusb-ble.py
-                // from the upstream tarball — which silently undoes board-
-                // specific fixes the OTA updater already applied (BCM4345C0
+                // from the upstream tarball, silently undoing board-specific
+                // fixes the OTA updater already applied. BCM4345C0
                 // non-fatal-adv on Rock 4C+ is the headline case: OTA patches
                 // ble.py → reboot → this migration unpatches it → BLE crash
-                // loop on next start). Invoke the standalone runtime-patches
-                // script (idempotent + detection-gated) so the patches survive
-                // every migration. Best-effort: a missing script just yields
-                // an info log — the OTA flow's bootstrap path will populate
-                // it on the next update.
+                // loop on next start. The standalone runtime-patches script is
+                // idempotent and detection-gated, so the patches survive every
+                // migration. Best-effort: a missing script only logs, and the
+                // OTA bootstrap path populates it on the next update.
                 if std::path::Path::new("/usr/local/bin/dashusb-apply-runtime-patches").exists() {
                     match sentryusb_shell::run_with_timeout(
                         Duration::from_secs(30),
@@ -114,11 +106,10 @@ pub async fn run_startup_migration() {
             }
             Err(e) => {
                 let msg = e.to_string();
-                // Only retry for transient failure signatures. A genuine
-                // 404 on the tarball URL, a write permission error, or
-                // an archive-corrupt error isn't going to fix itself on
-                // a second try, and we don't want to burn 30+ seconds
-                // on guaranteed-failing retries.
+                // Retry only on transient failure signatures. A 404 on the
+                // tarball URL, a write permission error, or a corrupt archive
+                // will not fix itself on a second try, and retrying burns 30+
+                // seconds of boot on a guaranteed failure.
                 let transient = msg.contains("Could not resolve host")
                     || msg.contains("Temporary failure in name resolution")
                     || msg.contains("Connection timed out")
@@ -142,16 +133,16 @@ pub async fn run_startup_migration() {
         "[migrate] Warning: startup migration failed after retries: {}",
         last_err.as_deref().unwrap_or("unknown")
     );
-    // Don't write marker — retry on next boot.
+    // No marker written: retry on the next boot.
 }
 
 /// Collapse the retired `SYSTEM_TEMPERATURE_UNIT` override into
-/// `TEMPERATURE_UNIT`. Dash USB has exactly one temperature source (the
-/// Pi CPU); the two-key split was Tesla-era residue that let the
-/// Settings sub-toggle and the alert monitor disagree across a reboot.
-/// The specific override wins over the general key — it was the newer,
-/// more deliberate choice wherever both were set. Idempotent: after the
-/// first pass the old key is commented out and this is a no-op.
+/// `TEMPERATURE_UNIT`. Dash USB has exactly one temperature source (the Pi
+/// CPU); the two-key split is residue from the upstream Tesla project and let
+/// the Settings sub-toggle and the alert monitor disagree across a reboot. The
+/// specific override wins over the general key, being the newer and more
+/// deliberate choice wherever both were set. Idempotent: after the first pass
+/// the old key is commented out and this is a no-op.
 fn heal_temperature_unit_key() {
     let path = sentryusb_config::find_config_path();
     let Ok((mut active, _)) = sentryusb_config::parse_file(path) else {
@@ -343,9 +334,9 @@ systemctl restart dashusb-ble 2>/dev/null || true
 mod tests {
     use super::*;
 
-    /// The migration script is a format!() template full of shell — a
-    /// stray unescaped `{` or a typo'd quote renders a script that fails
-    /// at runtime on every user's Pi. Render it and let bash parse it.
+    /// The migration script is a format!() template full of shell: a stray
+    /// unescaped `{` or a typo'd quote renders a script that fails at runtime
+    /// on every user's Pi. Render it and let bash parse it.
     #[test]
     fn migration_script_parses() {
         let script = build_migration_script(

@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# setup-dashusb — retired.
+# setup-dashusb: retired.
 #
 # The legacy bash setup orchestrator was removed in the Dash USB fork.
 # Setup runs exclusively through the dashusb daemon: open the web UI

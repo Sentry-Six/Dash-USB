@@ -7,10 +7,9 @@ import { ConnectionBanner } from "./ConnectionBanner"
 import { cn } from "@/lib/utils"
 import { ConnectionProvider } from "@/hooks/useConnectionStatus"
 
-// Routes likely to be visited after the Dashboard. Prefetched on idle
-// so navigation is instant. Heavy/rare routes (Terminal) are
-// intentionally NOT in this list — we don't want to burn data on
-// screens the user may never open.
+// Routes likely to follow the Dashboard, prefetched on idle so navigation is
+// instant. Heavy or rarely opened routes (Terminal) stay out of this list:
+// don't burn data on screens the user may never visit.
 const PREFETCH_ROUTES: Array<() => Promise<unknown>> = [
   () => import("@/pages/Viewer"),
   () => import("@/pages/Files"),
@@ -19,8 +18,7 @@ const PREFETCH_ROUTES: Array<() => Promise<unknown>> = [
 ]
 
 export function AppShell() {
-  // Persist the collapse choice so it survives reloads (previously reset
-  // to expanded every refresh).
+  // Persist the collapse choice across reloads.
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try {
       return localStorage.getItem("sidebar-collapsed") === "1"
@@ -30,9 +28,9 @@ export function AppShell() {
   })
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
-  // Warm the module cache for likely-next routes on idle. Respects
-  // Save-Data and effectively-slow connections so we don't punish
-  // metered users.
+  // Warm the module cache for likely-next routes on idle. Skipped under
+  // Save-Data or a slow effective connection so metered users aren't charged
+  // for pages they never open.
   useEffect(() => {
     const conn = (navigator as Navigator & {
       connection?: { saveData?: boolean; effectiveType?: string }
@@ -99,10 +97,10 @@ export function AppShell() {
               <span className="text-sm font-semibold text-slate-100" style={{ fontFamily: '"Inter", -apple-system, system-ui, sans-serif' }}>Dash USB</span>
             </div>
 
-            {/* Cap the content column so cards don't stretch into giant
-                sparse bands on wide monitors / zoomed-out viewports —
-                centered in the post-sidebar area. Pages that genuinely
-                need full bleed can opt out with their own wrapper. */}
+            {/* Cap and center the content column in the post-sidebar area so
+                cards don't stretch into sparse bands on wide monitors or
+                zoomed-out viewports. Pages that genuinely need full bleed can
+                opt out with their own wrapper. */}
             <div className="mx-auto w-full max-w-[1280px] p-4 pb-safe md:p-6">
               <ConnectionBanner />
               <Outlet />

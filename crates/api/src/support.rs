@@ -1,10 +1,9 @@
-//! Support-ticket proxy to backend API.
+//! Support-ticket proxy to the backend API.
 //!
-//! Support API:
 //! - Forwards `X-Auth-Token` (per-ticket session token) and `X-Passcode`
 //!   (fingerprint-based admin access) from the incoming request.
-//! - Re-serializes JSON bodies to normalize broken Unicode escapes (\usb etc.
-//!   appear in diagnostics text and choke strict JSON parsers).
+//! - Re-serializes JSON bodies to normalize broken Unicode escapes (\usb and
+//!   similar appear in diagnostics text and choke strict JSON parsers).
 //! - Preserves the upstream status code instead of flattening to 200/502.
 
 use std::time::Duration;
@@ -35,8 +34,8 @@ fn forward_headers(src: &HeaderMap) -> reqwest::header::HeaderMap {
     h
 }
 
-/// Re-parse + re-serialize JSON to normalize encoding issues. If parse fails,
-/// return the original bytes unchanged (upstream may accept non-strict JSON).
+/// Re-parse and re-serialize to normalize encoding issues. On a parse failure
+/// the original bytes pass through: upstream may accept non-strict JSON.
 fn sanitize_json(raw: &[u8]) -> Vec<u8> {
     match serde_json::from_slice::<serde_json::Value>(raw) {
         Ok(v) => serde_json::to_vec(&v).unwrap_or_else(|_| raw.to_vec()),

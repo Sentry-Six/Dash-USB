@@ -10,10 +10,10 @@ then
   exit 0
 fi
 
-# Re-read the display unit from the conf on every call so a settings
-# change applies to the long-running monitor without a reboot. Parses
-# only this one key — sourcing the whole conf mid-flight would re-export
-# archive/WiFi state. Falls back to the boot-time env, then Celsius.
+# Re-read the display unit from the conf on every call so a settings change
+# reaches this long-running monitor without a reboot. Parse only this one key:
+# sourcing the whole conf mid-flight would re-export archive/WiFi state.
+# Falls back to the boot-time env, then Celsius.
 function current_unit() {
   local unit
   unit=$(sed -n "s/^export TEMPERATURE_UNIT=[\"']\?\([CFcf]\).*/\1/p" /root/dashusb.conf 2>/dev/null | tail -1)
@@ -47,10 +47,9 @@ do
     peak_time=$timestamp
   fi
 
-  # Log Warning threshold exceeded
   if [[ ! ( -z "${TEMPERATURE_WARNING:+x}" ) ]]
   then
-    if [[ "$raw_temp" -lt $((TEMPERATURE_WARNING - 5000)) ]] # Clear Warning flag if below threshold - 5 degrees (hysteresis)
+    if [[ "$raw_temp" -lt $((TEMPERATURE_WARNING - 5000)) ]] # 5 degrees of hysteresis
     then
       set_warning=0
     fi
@@ -62,10 +61,9 @@ do
     fi
   fi
 
-  # Log Caution threshold exceeded
   if [[ ! ( -z "${TEMPERATURE_CAUTION:+x}" ) ]]
   then
-    if [[ "$raw_temp" -lt $((TEMPERATURE_CAUTION - 5000)) ]] # Clear Caution flag if below threshold - 5 degrees (hysteresis)
+    if [[ "$raw_temp" -lt $((TEMPERATURE_CAUTION - 5000)) ]] # 5 degrees of hysteresis
     then
       set_caution=0
     fi
@@ -77,7 +75,8 @@ do
     fi
   fi
 
-  # Log temperature at fixed interval
+  # TEMPERATURE_INTERVAL is in minutes; counter is in seconds and advances 60
+  # per iteration.
   if [[ ! ( -z "${TEMPERATURE_INTERVAL:+x}" ) ]]
   then
     counter_mod=$((counter % (TEMPERATURE_INTERVAL * 60)))
@@ -87,10 +86,10 @@ do
     fi
   fi
 
-  # Log right after Archive_Clips
+  # Report right after an archive cycle; archiveloop drops the flag file.
   if [[ -e /tmp/flag_post_archive ]]
   then
-    rm /tmp/flag_post_archive # Clear flag
+    rm /tmp/flag_post_archive
     if [[ "${TEMPERATURE_POSTARCHIVE:-false}" = "true" ]]
     then
       message="Temperature Monitor: $(readable "$raw_temp") (max=$(readable "$peak_temp") $peak_time)"

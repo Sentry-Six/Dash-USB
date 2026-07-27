@@ -1,9 +1,9 @@
-//! Snapshot automount — port of `configure-automount.sh`.
+//! Snapshot automount.
 //!
-//! Installs autofs, wires `/tmp/snapshots` to the `auto.dashusb` map
-//! script, and converts existing per-snapshot `mnt` directories into
-//! symlinks pointing at the autofs path (so snapshots mount on-demand
-//! when something `cd`s into them, instead of all at boot).
+//! Installs autofs, wires `/tmp/snapshots` to the `auto.dashusb` map script,
+//! and converts existing per-snapshot `mnt` directories into symlinks pointing
+//! at the autofs path, so snapshots mount on demand when something `cd`s into
+//! them rather than all at boot.
 
 use std::path::Path;
 use std::time::Duration;
@@ -33,8 +33,8 @@ pub async fn configure_automount(emitter: &SetupEmitter) -> Result<bool> {
     // The Raspbian Stretch autofs package didn't ship /etc/auto.master.d.
     let _ = std::fs::create_dir_all("/etc/auto.master.d");
 
-    // `auto.dashusb` is written into /root/bin by the runtime-scripts
-    // phase. Writing it here would duplicate code and risk drift.
+    // The runtime-scripts phase MUST run before this one: it is what writes
+    // `auto.dashusb` into /root/bin. Writing it here too would risk drift.
     let map_script = "/root/bin/auto.dashusb";
     if !Path::new(map_script).exists() {
         anyhow::bail!(
@@ -80,7 +80,8 @@ async fn convert_snapshot_dirs_to_links(emitter: &SetupEmitter) {
             continue;
         }
 
-        // Try to unmount; keep going even if it wasn't mounted.
+        // Unmount first so the rmdir succeeds; a failure here just means it
+        // was not mounted.
         let _ = sentryusb_shell::run("umount", &[&mnt.to_string_lossy()]).await;
         if std::fs::remove_dir(&mnt).is_err() {
             emitter.progress(&format!(

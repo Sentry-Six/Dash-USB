@@ -1,10 +1,9 @@
 type MessageHandler = (data: unknown) => void
 type StatusListener = (connected: boolean) => void
 
-// Reconnect backoff bounds. First retry stays at 3s (snappy recovery
-// from a brief blip), then doubles up to a 30s ceiling so a Pi that's
-// mid-reboot (OTA update) or an endpoint that keeps refusing isn't hit
-// ~20×/min. Reset to the floor on a successful open.
+// First retry stays at 3s for quick recovery from a blip, then doubles to a
+// 30s ceiling so a Pi mid-reboot (OTA update) or a refusing endpoint is not
+// hit ~20 times a minute. Reset to the floor on a successful open.
 const INITIAL_RECONNECT_MS = 3000
 const MAX_RECONNECT_MS = 30000
 

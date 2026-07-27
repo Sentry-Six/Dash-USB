@@ -16,29 +16,21 @@ import { useVersion } from "@/hooks/useVersion"
 import type { RawConfigEntry } from "@/components/settings/sections/RawConfigEditor"
 import type { PiStatus } from "@/lib/api"
 
-// Lazy tab chunks — only the active tab pays for its bundle. Visiting
-// /settings without clicking a tab pulls just the shell + Device
-// (default). Each tab module exports a named component, so wrap with
-// `.then(m => ({ default: m.X }))` to satisfy React.lazy's
-// default-export contract.
 const DeviceTab = lazy(() => import("@/pages/settings/DeviceTab").then(m => ({ default: m.DeviceTab })))
 const NetworkTab = lazy(() => import("@/pages/settings/NetworkTab").then(m => ({ default: m.NetworkTab })))
 const NotificationsTab = lazy(() => import("@/pages/settings/NotificationsTab").then(m => ({ default: m.NotificationsTab })))
 const SystemTab = lazy(() => import("@/pages/settings/SystemTab").then(m => ({ default: m.SystemTab })))
 
-// Modals are only mounted while open — defer their bundles entirely
-// until the user opens them. SetupWizard alone pulls in several
-// step components.
 const SetupWizard = lazy(() => import("@/components/setup/SetupWizard").then(m => ({ default: m.SetupWizard })))
 const RawConfigEditor = lazy(() => import("@/components/settings/sections/RawConfigEditor").then(m => ({ default: m.RawConfigEditor })))
 const HealthCheckModal = lazy(() => import("@/components/settings/sections/HealthCheckModal").then(m => ({ default: m.HealthCheckModal })))
 const SpeedTestModal = lazy(() => import("@/components/settings/sections/SpeedTestModal").then(m => ({ default: m.SpeedTestModal })))
 
-// Four task-based groups (consolidated from the original seven):
-//   Device                  — units, software updates
-//   Network                 — WiFi/Eth
-//   Notifications           — mobile push
-//   System                  — backups/export/raw-config, setup wizard, privacy
+// Tab contents:
+//   Device:        units, software updates
+//   Car & Network: WiFi, Ethernet
+//   Notifications: mobile push
+//   System:        backups/export/raw-config, setup wizard, privacy
 const TABS = [
   "Device",
   "Car & Network",
@@ -62,11 +54,10 @@ export default function Settings() {
   } | null>(null)
   const [confirmReboot, setConfirmReboot] = useState(false)
   const [drivesConnected, setDrivesConnected] = useState<boolean | null>(null)
-  // Local 1s tick so the header strip uptime advances between status polls
-  // (status itself only refreshes every 4s — too jumpy for a wall clock).
+  // Local 1s tick so header uptime advances between the 4s status polls,
+  // which are too coarse to drive a wall clock on their own.
   const [tickOffset, setTickOffset] = useState(0)
 
-  // Modal state
   const [wizardOpen, setWizardOpen] = useState(false)
   const [wizardInitialData, setWizardInitialData] = useState<
     Record<string, string> | undefined
@@ -76,11 +67,10 @@ export default function Settings() {
   const [healthOpen, setHealthOpen] = useState(false)
   const [speedOpen, setSpeedOpen] = useState(false)
 
-  // Version is included in the Export Config file header so the receiver
-  // knows which schema produced it. HeaderStrip fetches its own copy via
-  // the same hook — the underlying request is cheap and the hook caches
-  // nothing across mounts, but /api/system/version itself is a static
-  // string so duplicate calls are harmless.
+  // Version goes into the Export Config file header so the receiver knows
+  // which schema produced it. HeaderStrip fetches its own copy through the
+  // same hook; /api/system/version is a static string, so the duplicate
+  // call costs nothing.
   const version = useVersion()
 
   // Status poll (drives the actions rail USB toggle + header strip uptime)
@@ -92,7 +82,7 @@ export default function Settings() {
         if (mounted) {
           setStatus(data)
           setDrivesConnected(data.drives_active === "yes")
-          setTickOffset(0) // reset local tick when we get a fresh server value
+          setTickOffset(0) // reset the local tick on each fresh server value
         }
       } catch {
         /* ignore */
@@ -108,10 +98,10 @@ export default function Settings() {
     }
   }, [])
 
-  // Pi config (uses_ble, DASHUSB_HOSTNAME). SBC model now comes from the
-  // status payload (which already detects Pi 5 reliably) — the previous
-  // rtc-status flag only flipped to is_pi5=true when a battery was present,
-  // so a Pi 5 without an RTC battery was mis-labelled as "Pi 4 / earlier".
+  // Pi config supplies uses_ble and DASHUSB_HOSTNAME. The SBC model must
+  // come from the status payload, not the rtc-status flag: that flag only
+  // reports is_pi5 when an RTC battery is fitted, so a battery-less Pi 5
+  // reads as "Pi 4 / earlier".
   useEffect(() => {
     fetch("/api/config")
       .then((r) => r.json())
@@ -120,8 +110,8 @@ export default function Settings() {
   }, [])
 
   const sbc = status?.sbc_model || null
-  // /api/config returns each key as { value, active } OR as a raw string,
-  // depending on shape — handle both.
+  // /api/config returns each key either as { value, active } or as a raw
+  // string. Handle both.
   const hostnameEntry = piConfig?.DASHUSB_HOSTNAME as
     | { value?: string; active?: boolean }
     | string
@@ -141,8 +131,8 @@ export default function Settings() {
 
   async function handleReboot(): Promise<string | void> {
     // First press arms the confirm; the parent re-renders the chip's label
-    // ("Restart Pi" → "Confirm Restart"). Returning "confirm" tells the chip
-    // not to flash a success state — the label change is the feedback.
+    // ("Restart Pi" → "Confirm Restart"). Returning "confirm" suppresses the
+    // chip's success flash, since the label change is the feedback.
     if (!confirmReboot) {
       setConfirmReboot(true)
       setTimeout(() => setConfirmReboot(false), 10000)
@@ -157,7 +147,7 @@ export default function Settings() {
   async function handleToggleDrives(): Promise<string> {
     const res = await fetch("/api/system/toggle-drives", { method: "POST" })
     if (!res.ok) throw new Error("Toggle failed")
-    // Eagerly refresh status so the chip label updates to the new state
+    // Refresh status eagerly so the chip label reaches its new state
     // ("USB · Connected" / "USB · Disconnected") on the next render.
     try {
       const data = await api.getStatus()
@@ -242,7 +232,7 @@ export default function Settings() {
 
   const uptimeSec = status ? parseFloat(status.uptime) + tickOffset : null
 
-  // ⚠️ Mobile / tab-bar — switch to scrollable variant under 640px.
+  // The tab bar switches to its scrollable variant under 640px.
   const [isMobile, setIsMobile] = useState(
     typeof window !== "undefined" && window.innerWidth < 640
   )
@@ -280,8 +270,8 @@ export default function Settings() {
         )}
       </Suspense>
 
-      {/* Modals — each wrapped in its own Suspense so a slow chunk for
-          one doesn't block the rest of the page. */}
+      {/* Each modal gets its own Suspense so one slow chunk cannot block
+          the rest of the page. */}
       {wizardOpen && (
         <Suspense fallback={null}>
           <SetupWizard

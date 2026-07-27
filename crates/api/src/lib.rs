@@ -29,41 +29,33 @@ use axum::Json;
 use axum::http::StatusCode;
 use serde::Serialize;
 
-/// Standard JSON response helper.
 pub fn json_response<T: Serialize>(status: StatusCode, data: T) -> (StatusCode, Json<serde_json::Value>) {
     (status, Json(serde_json::to_value(data).unwrap_or_default()))
 }
 
-/// Standard error response.
 pub fn json_error(status: StatusCode, msg: &str) -> (StatusCode, Json<serde_json::Value>) {
     (status, Json(serde_json::json!({"error": msg})))
 }
 
-/// Standard success response.
 pub fn json_ok() -> (StatusCode, Json<serde_json::Value>) {
     (StatusCode::OK, Json(serde_json::json!({"success": true})))
 }
 
-/// Canonical longitude in [-180, 180). The web map (Leaflet) allows panning
-/// into repeated world copies, so clients can submit values like -221.4 for
-/// 138.6°E; wrap on write AND on read so legacy stored values never rehydrate
-/// out-of-range in the UI. Haversine tolerates ±360, so this is storage/display
-/// hygiene, not geofence correctness. Matches the web's `normalizeLon`.
+/// Canonical longitude in [-180, 180). Leaflet lets clients pan into repeated
+/// world copies and submit values like -221.4 for 138.6°E, so wrap on write AND
+/// on read: stored legacy values must not rehydrate out of range in the UI.
+/// Haversine tolerates ±360, so this is storage/display hygiene, not geofence
+/// correctness. Must stay in step with the web's `normalizeLon`.
 pub fn normalize_lon(lon: f64) -> f64 {
     (lon + 180.0).rem_euclid(360.0) - 180.0
 }
 
-/// Process-wide shared `reqwest` client for the outbound community /
-/// notification proxies.
+/// Process-wide `reqwest` client for the outbound community and notification
+/// proxies, so the TLS stack and connection pool are reused across requests.
 ///
-/// Previously every proxied request built its own `reqwest::Client`,
-/// spinning up a fresh rustls/TLS stack and connection pool with no
-/// keep-alive reuse. One shared client pools connections to the two
-/// upstreams across requests. It carries **no** request-level timeout —
-/// the per-endpoint values (10s / 15s / 30s …) are preserved by each
-/// call site via `.timeout(..)` on the request builder, which overrides
-/// the client default. The 120s builder timeout is only a backstop so a
-/// site that forgets one can't hang a connection forever.
+/// Each call site sets its own per-endpoint `.timeout(..)` on the request
+/// builder, which overrides the client default. The 120s builder timeout is
+/// only a backstop so a site that forgets one can't hang a connection forever.
 pub fn http_client() -> &'static reqwest::Client {
     use std::sync::OnceLock;
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -90,7 +82,7 @@ mod tests {
 
     #[test]
     fn normalize_lon_half_open_range() {
-        // Convention: [-180, 180) — exact +180 canonicalizes to -180.
+        // Convention: [-180, 180), so exact +180 canonicalizes to -180.
         assert!((normalize_lon(180.0) - (-180.0)).abs() < 1e-9);
         assert!((normalize_lon(-180.0) - (-180.0)).abs() < 1e-9);
     }

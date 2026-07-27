@@ -1,11 +1,10 @@
-//! Pi environment detection — replaces `envsetup.sh`.
+//! Pi environment detection.
 
 use std::fs;
 use std::path::Path;
 
 use anyhow::Result;
 
-/// Detected Pi model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PiModel {
     Pi5,
@@ -25,11 +24,11 @@ impl PiModel {
             .replace('\0', "");
         let lower = model.to_lowercase();
 
-        // Require the "raspberry pi" prefix on every match so non-Pi boards
-        // whose model string happens to contain "zero" / "pi N" (e.g.
-        // "Radxa Zero 3W", "Radxa ROCK Pi 4") fall through to Other and
-        // get routed via the non-Pi setup paths instead of inheriting
-        // Pi-specific config.txt / dwc2 / UDC assumptions.
+        // Every match REQUIRES the "raspberry pi" prefix so non-Pi boards
+        // whose model string happens to contain "zero" or "pi N" ("Radxa Zero
+        // 3W", "Radxa ROCK Pi 4") fall through to Other and take the non-Pi
+        // setup paths instead of inheriting Pi-specific config.txt, dwc2, and
+        // UDC assumptions.
         if lower.contains("raspberry pi 5") {
             PiModel::Pi5
         } else if lower.contains("raspberry pi 4") {
@@ -88,7 +87,6 @@ fn dt_compatible_contains(needle: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Detected environment paths and configuration.
 #[derive(Debug, Clone)]
 pub struct SetupEnv {
     pub pi_model: PiModel,
@@ -112,18 +110,16 @@ impl SetupEnv {
     pub async fn detect() -> Result<Self> {
         let pi_model = PiModel::detect();
 
-        // Ensure /dashusb symlink exists
         ensure_sentryusb_symlink()?;
 
         let boot_path = fs::read_link("/dashusb")
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| "/boot".to_string());
 
-        // Look through /dashusb first (preserves the user's chosen
-        // boot dir), then fall through to the canonical locations so a
-        // broken symlink left over from a prior install doesn't make
-        // every cmdline/config edit silently no-op. Bookworm puts the
-        // boot files under /boot/firmware; older images use /boot.
+        // /dashusb first, preserving the user's chosen boot dir, then the
+        // canonical locations so a broken symlink left by a prior install
+        // cannot make every cmdline/config edit silently no-op. Bookworm puts
+        // the boot files under /boot/firmware; older images use /boot.
         let cmdline_path = [
             "/dashusb/cmdline.txt",
             "/boot/firmware/cmdline.txt",
@@ -142,22 +138,21 @@ impl SetupEnv {
         .find(|p| Path::new(p).exists())
         .map(|s| s.to_string());
 
-        // Detect boot disk
         let boot_disk = detect_boot_disk().await.ok();
         let root_partition = detect_root_partition().await.ok();
 
-        // Load config. Only use *active* (uncommented) exports — commented
-        // sample lines in dashusb.conf are documentation, not user choices.
-        // Merging them in would make every optional phase (AP setup, extra
-        // drives, etc.) run against sample defaults the user never picked.
+        // Only *active* (uncommented) exports count. Commented sample lines in
+        // dashusb.conf are documentation, not user choices; merging them in
+        // would run every optional phase (AP setup, extra drives) against
+        // sample defaults the user never picked.
         let config_path = sentryusb_config::find_config_path();
         let mut config = sentryusb_config::parse_file(config_path)
             .map(|(active, _commented)| active)
             .unwrap_or_default();
 
-        // Migrate legacy key names (teslausb-era lowercase, renamed
-        // settings). Copies the old value to the new key only if the new
-        // key isn't already set — so user edits to the new name always win.
+        // Migrate legacy key names (lowercase and renamed settings). The old
+        // value is copied only when the new key is unset, so user edits to the
+        // new name always win.
         migrate_legacy_config_keys(&mut config);
 
         let data_drive = config.get("DATA_DRIVE")
@@ -176,24 +171,24 @@ impl SetupEnv {
         })
     }
 
-    /// Get a config value with a default.
     pub fn get(&self, key: &str, default: &str) -> String {
         self.config.get(key).cloned().unwrap_or_else(|| default.to_string())
     }
 
-    /// True when `key` is present AND non-empty (after trimming).
+    /// True when `key` is present AND non-empty after trimming.
     ///
-    /// Mirrors the runtime's bash `${VAR:+x}` test (run/awake_start) and
-    /// the wizard frontend's JS-falsy check. The wizard clears a
-    /// deselected keep-awake provider by writing `export KEY=''`; that
-    /// empty value must read as "not configured", not as a second
-    /// provider. Use this — not `config.contains_key` — anywhere a config
-    /// value's presence gates behavior.
+    /// Must match the runtime's bash `${VAR:+x}` test (run/awake_start) and
+    /// the wizard frontend's JS-falsy check. The wizard clears a deselected
+    /// keep-awake provider by writing `export KEY=''`, and that empty value
+    /// must read as "not configured", not as a second provider. Use this
+    /// rather than `config.contains_key` anywhere a config value's presence
+    /// gates behavior.
     pub fn is_set(&self, key: &str) -> bool {
         self.config.get(key).is_some_and(|v| !v.trim().is_empty())
     }
 
-    /// Get a config value as bool (matches bash `true`/`false`).
+    /// Only the literals `true` and `false` are recognized; anything else
+    /// falls back to `default`.
     pub fn get_bool(&self, key: &str, default: bool) -> bool {
         match self.config.get(key).map(|s| s.as_str()) {
             Some("true") => true,
@@ -204,9 +199,8 @@ impl SetupEnv {
 }
 
 
-/// Copy legacy config keys to their current names, matching the table in
-/// bash `envsetup.sh:62-94`. New-name wins: if the user has already set
-/// the new key, we don't overwrite it from the old one.
+/// Copy legacy config keys to their current names. The new name wins: a key
+/// the user already set is never overwritten from its legacy counterpart.
 fn migrate_legacy_config_keys(config: &mut std::collections::HashMap<String, String>) {
     const LEGACY_MAP: &[(&str, &str)] = &[
         ("archiveserver", "ARCHIVE_SERVER"),
@@ -273,10 +267,10 @@ fn ensure_sentryusb_symlink() -> Result<()> {
 }
 
 async fn detect_boot_disk() -> Result<String> {
-    // `-p` makes lsblk emit full paths already (e.g. "/dev/sda"), so don't
-    // prepend "/dev/" again — that yields "/dev//dev/sda" and every sfdisk
-    // call on it fails silently, cascading into bogus "not last partition"
-    // errors during the shrink phase.
+    // `-p` already makes lsblk emit full paths ("/dev/sda"), so "/dev/" MUST
+    // NOT be prepended again: "/dev//dev/sda" makes every sfdisk call on it
+    // fail silently, cascading into bogus "not last partition" errors during
+    // the shrink phase.
     let output = sentryusb_shell::run(
         "lsblk", &["-dpno", "pkname", &detect_mount_source("/dashusb").await?],
     ).await?;

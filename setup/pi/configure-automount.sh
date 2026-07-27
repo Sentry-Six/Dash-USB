@@ -32,7 +32,7 @@ function log_progress () {
 }
 
 apt-get -y install autofs
-# the Raspbian Stretch autofs package does not include the /etc/auto.master.d folder
+# Some autofs packages ship no /etc/auto.master.d.
 if [ ! -d /etc/auto.master.d ]
 then
   mkdir /etc/auto.master.d

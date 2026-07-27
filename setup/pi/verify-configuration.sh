@@ -30,8 +30,8 @@ function check_supported_hardware () {
   then
     return
   fi
-  # Original Pi Zero W (armv6) was dropped in 2026 — get a clear message
-  # before the generic catch-all below.
+  # Name the original Pi Zero W (armv6) explicitly so it gets a clear message
+  # instead of the generic catch-all below.
   if grep -q 'Raspberry Pi Zero W' /sys/firmware/devicetree/base/model
   then
     setup_progress "STOP: unsupported hardware: Raspberry Pi Zero W"
@@ -56,7 +56,6 @@ function check_udc () {
 
 function check_xfs () {
   setup_progress "Checking XFS support"
-  # install XFS tools if needed
   if ! hash mkfs.xfs
   then
     apt-get -y install xfsprogs
@@ -95,11 +94,10 @@ function check_available_space () {
 function check_available_space_sd () {
   setup_progress "Verifying that there is sufficient space available on the MicroSD card..."
 
-  # Minimum usable space: 8 GiB for backingfiles partition, or 8 GiB unpartitioned.
-  # Old 32 GiB threshold blocked cards smaller than ~38 GB even after root shrink.
+  # Minimum usable space: 8 GiB in the backingfiles partition, or 8 GiB
+  # unpartitioned.
   local min_space=$(( (1<<30) * 8 ))
 
-  # check if backingfiles and mutable already exist
   if [ -e /dev/disk/by-label/backingfiles ] && [ -e /dev/disk/by-label/mutable ]
   then
     backingfiles_size=$(blockdev --getsize64 /dev/disk/by-label/backingfiles)
@@ -109,12 +107,9 @@ function check_available_space_sd () {
       exit 1
     fi
   else
-    # The following assumes that all the partitions are at the start
-    # of the disk, and that all the free space is at the end.
-
+    # Assumes every partition sits at the start of the disk and all free space
+    # is at the end.
     local available_space
-
-    # query unpartitioned space
     available_space=$(sfdisk -F "$BOOT_DISK" | grep -o '[0-9]* bytes' | head -1 | awk '{print $1}')
 
     if [ "$available_space" -lt "$min_space" ]
@@ -131,9 +126,9 @@ function check_available_space_sd () {
 function check_available_space_usb () {
   setup_progress "Verifying that there is sufficient space available on the USB drive ..."
 
-  # Verify that the disk has been provided and not a partition.
-  # Use timeout to avoid hanging indefinitely on unresponsive drives
-  # (e.g. USB drive in sleep mode, I/O errors after interrupted setup).
+  # DATA_DRIVE must name a disk, not a partition. The timeout keeps an
+  # unresponsive drive (asleep, or throwing I/O errors after an interrupted
+  # setup) from hanging setup forever.
   local drive_type
   drive_type=$(timeout 30 lsblk -pno TYPE "$DATA_DRIVE" 2>/dev/null | head -n 1) || {
     setup_progress "STOP: Could not read $DATA_DRIVE (drive may be unresponsive or disconnected). Try unplugging and reconnecting it."
@@ -146,9 +141,8 @@ function check_available_space_usb () {
     exit 1
   fi
 
-  # This verifies only the total size of the USB Drive.
-  # All existing partitions on the drive will be erased if backingfiles are to be created or changed.
-  # EXISTING DATA ON THE DATA_DRIVE WILL BE REMOVED.
+  # Checks the total size only. Creating or changing backingfiles erases every
+  # existing partition: ALL EXISTING DATA ON DATA_DRIVE WILL BE REMOVED.
 
   local drive_size
   drive_size=$(timeout 30 blockdev --getsize64 "$DATA_DRIVE") || {

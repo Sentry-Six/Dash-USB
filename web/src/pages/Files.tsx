@@ -36,11 +36,9 @@ interface FileEntry {
   path: string
   is_dir: boolean
   size: number
-  // Matches the backend's serialized field name (files.rs FileEntry).
-  // This was previously declared as `modified`, which doesn't exist in
-  // the response — the Date column rendered blank for every file and
-  // the two date sorts quietly degraded to name order (NaN timestamps
-  // made the name tiebreaker always win).
+  // Must match the backend's serialized field name (files.rs FileEntry).
+  // A mismatch fails silently: the Date column renders blank and both
+  // date sorts degrade to name order on NaN timestamps.
   mod_time: string
 }
 
@@ -96,26 +94,24 @@ export default function Files() {
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const sortMenuRef = useRef<HTMLDivElement>(null)
 
-  // Fetch config to determine which tabs to show
+  // Which drive tabs to show depends on the device config.
   useEffect(() => {
     async function loadConfig() {
       try {
         const res = await fetch("/api/config")
         const cfg = await res.json()
         const visible: DriveTab[] = []
-        // Always show the USB Drive root
+        // The USB Drive root is always available.
         visible.push(ALL_DRIVES.find(d => d.id === "USB Drive")!)
-        // Show Recordings tab if the cam drive is configured
         if (cfg.has_cam === "yes") {
           visible.push(ALL_DRIVES.find(d => d.id === "Recordings")!)
         }
-        // If nothing is configured (e.g. dev mode), show all
+        // Nothing configured (e.g. dev mode): show every tab.
         const result = visible.length > 0 ? visible : ALL_DRIVES
         setDrives(result)
         setActiveDrive(result[0])
         setCurrentPath(result[0].base)
       } catch {
-        // Fallback: show all
         setDrives(ALL_DRIVES)
         setActiveDrive(ALL_DRIVES[0])
         setCurrentPath(ALL_DRIVES[0].base)
@@ -140,9 +136,9 @@ export default function Files() {
         const raw = await res.json()
         // Server returns { path, entries: [...] } wrapper
         const data: FileEntry[] = Array.isArray(raw) ? raw : (raw.entries ?? [])
-        // Auto-navigate into the matching subfolder when at a drive's base path
-        // (disk images have a root folder matching the
-        // drive name, possibly alongside hidden metadata folders)
+        // At a drive's base path, descend into the folder named after the
+        // drive: disk images carry one, sometimes next to hidden metadata
+        // folders that would otherwise be the first thing shown.
         if (activeDrive && path === activeDrive.base && !searchQuery) {
           const match = data.find(
             (e) => e.is_dir && e.name === activeDrive.id
@@ -164,12 +160,11 @@ export default function Files() {
 
   useEffect(() => {
     if (currentPath) fetchFiles(currentPath, search || undefined)
-    // search intentionally omitted: search changes fetch via the debounced
-    // handler below; including it here would double-fetch on every keystroke.
+    // search intentionally omitted: the debounced handler below already
+    // fetches on change, so listing it here double-fetches per keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPath])
 
-  // Debounced search
   function handleSearchChange(value: string) {
     setSearch(value)
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
@@ -189,11 +184,11 @@ export default function Files() {
     return () => document.removeEventListener("mousedown", handleClick)
   }, [showSortMenu])
 
-  // Client-side sorting (directories always first, name tiebreaker for stability)
+  // Client-side sort: directories first, name as the tiebreaker so the
+  // order stays stable across refetches.
   const sortedFiles = useMemo(() => {
     const sorted = [...files]
     sorted.sort((a, b) => {
-      // Directories always come first
       if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1
       const nameCmp = a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
       switch (sortOption) {
@@ -306,9 +301,9 @@ export default function Files() {
       setUploads([])
       setUploading(false)
     }, 2000)
-    // fetchFiles is a plain function (new identity each render); listing it
-    // would defeat the memoization. It only closes over currentPath, which
-    // is a dep.
+    // fetchFiles is a plain function with a new identity each render, so
+    // listing it would defeat the memo. It closes over currentPath only,
+    // which is already a dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPath])
 

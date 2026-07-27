@@ -61,8 +61,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     checkAuth()
-    // Re-check periodically so we detect invalidated sessions (e.g., after
-    // server restart which clears in-memory sessions).
+    // Re-check periodically to catch invalidated sessions; a server restart
+    // clears the in-memory session store.
     const iv = setInterval(checkAuth, 10_000)
     return () => clearInterval(iv)
   }, [checkAuth])

@@ -1,10 +1,10 @@
-//! WiFi AP configuration — port of `configure-ap.sh`.
+//! WiFi AP configuration.
 //!
-//! Sets up a concurrent AP on a virtual interface (ap0). Tries NetworkManager
-//! first, falls back to writing the .nmconnection keyfile directly (needed
+//! Sets up a concurrent AP on a virtual interface (ap0). Three paths, tried in
+//! order: NetworkManager; writing the .nmconnection keyfile directly (needed
 //! when NM was started on a read-only root and its keyfile plugin refuses
-//! `nmcli con add`), and finally falls back to wpa_supplicant + hostapd on
-//! systems without NetworkManager.
+//! `nmcli con add`); wpa_supplicant plus hostapd on systems without
+//! NetworkManager.
 
 use std::path::Path;
 use std::time::Duration;
@@ -18,9 +18,8 @@ use crate::SetupEmitter;
 
 /// Configure the WiFi access point.
 ///
-/// The runner gates this on `AP_SSID` and a valid `AP_PASS` being set, so by
-/// the time we get here both are populated. We still defend against missing
-/// values in case this is called directly.
+/// The runner already gates this on `AP_SSID` and a valid `AP_PASS`; the
+/// checks are repeated here so a direct call is still safe.
 pub async fn configure_ap(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> {
     let ssid = match env.config.get("AP_SSID") {
         Some(v) if !v.is_empty() => v.clone(),
@@ -50,8 +49,8 @@ pub async fn configure_ap(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> 
         .await
         .is_ok()
     {
-        // Make sure `iw` is installed — it would otherwise get swept up by
-        // autoremove when alsa-utils is removed in the readonly phase.
+        // `iw` must be marked installed here or the readonly phase's
+        // autoremove sweeps it up alongside alsa-utils.
         let _ = crate::apt::apt_install(
             |m| emitter.progress(m),
             &["iw"],
@@ -68,9 +67,9 @@ pub async fn configure_ap(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> 
                 info!("nmcli AP add failed ({e}); falling back to keyfile writer");
                 // NM's keyfile plugin sometimes refuses `nmcli con add` when
                 // NM was started while root was read-only. Writing the
-                // .nmconnection file directly works because the keyfile
-                // plugin re-reads it on `con reload` — and that doesn't
-                // require the plugin to be healthy.
+                // .nmconnection file directly works because the plugin
+                // re-reads it on `con reload`, which does not require the
+                // plugin to be healthy.
                 nm_write_ap_file(&ssid, &pass, &ip, emitter).await
                     .context("failed to configure AP (both nmcli and keyfile paths failed)")?;
                 teardown_ap_scaffolding().await;
@@ -96,14 +95,12 @@ pub async fn configure_ap(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> 
 
 /// Tear down the AP scaffolding the NM configure paths leave behind.
 ///
-/// Setup only installs the connection profile — Away Mode owns bringing the
-/// AP up. The ap0 interface created so `nmcli con add` succeeds must not
-/// outlive setup: it pins the shared radio to the AP channel (hurting wlan0
-/// scans) and its mere existence used to trigger archiveloop's `wifi_cycle`
-/// into bringing the AP up with Away Mode off. The `con down` also covers NM
-/// having auto-activated the profile during configuration. Skipped while an
-/// Away Mode session is running so re-running setup doesn't kill the AP the
-/// user is connected through.
+/// Setup only installs the connection profile; Away Mode owns bringing the AP
+/// up. The ap0 interface created so `nmcli con add` succeeds MUST NOT outlive
+/// setup: it pins the shared radio to the AP channel (hurting wlan0 scans),
+/// and its mere existence can push archiveloop's `wifi_cycle` into bringing
+/// the AP up with Away Mode off. The `con down` also covers NM having
+/// auto-activated the profile during configuration.
 async fn teardown_ap_scaffolding() {
     let _ = sentryusb_shell::run("nmcli", &["con", "down", "DASHUSB_AP"]).await;
     let _ = sentryusb_shell::run("iw", &["dev", "ap0", "del"]).await;
@@ -132,7 +129,7 @@ pub async fn deconfigure_ap(emitter: &SetupEmitter) -> Result<()> {
     let _ = sentryusb_shell::run("nmcli", &["con", "down", "DASHUSB_AP"]).await;
     let _ = sentryusb_shell::run("nmcli", &["con", "delete", "DASHUSB_AP"]).await;
     // `con delete` can fail under the same read-only-root keyfile quirk the
-    // add path works around — remove the file directly and reload.
+    // add path works around, so remove the file directly and reload.
     let _ = std::fs::remove_file(keyfile);
     let _ = sentryusb_shell::run("nmcli", &["con", "reload"]).await;
 
@@ -154,19 +151,18 @@ async fn nm_add_ap(
     let wlan = find_wifi_device().await?;
     emitter.progress(&format!("WiFi client interface: {}", wlan));
 
-    // Create virtual AP interface if it doesn't exist.
     if sentryusb_shell::run("iw", &["dev", "ap0", "info"]).await.is_err() {
         sentryusb_shell::run(
             "iw", &["dev", &wlan, "interface", "add", "ap0", "type", "__ap"],
         ).await.context("failed to create ap0 virtual interface")?;
     }
 
-    // Disable power save on both interfaces (they share hardware, and we
-    // don't want one to sleep just because the other is idle).
+    // Both interfaces share the same radio, so power save on either one
+    // stalls the other when it goes idle.
     let _ = sentryusb_shell::run("iw", &[&wlan, "set", "power_save", "off"]).await;
     let _ = sentryusb_shell::run("iw", &["ap0", "set", "power_save", "off"]).await;
 
-    // Remove old / legacy connection names.
+    // Remove current and legacy connection names.
     let _ = sentryusb_shell::run("nmcli", &["con", "delete", "DASHUSB_AP"]).await;
     let _ = sentryusb_shell::run("nmcli", &["con", "delete", "TESLAUSB_AP"]).await;
 
@@ -204,10 +200,10 @@ async fn nm_add_ap(
 
 /// Fallback: write the connection file directly and `nmcli con reload`.
 ///
-/// When NM's keyfile plugin started on a read-only root it refuses
-/// `nmcli con add`, but once the FS is remounted rw we can write the
-/// file ourselves. `nmcli con reload` picks it up without a full restart,
-/// so SSH sessions survive.
+/// A keyfile plugin that started on a read-only root refuses `nmcli con add`,
+/// but once the FS is remounted rw the file can be written directly.
+/// `nmcli con reload` picks it up without a full restart, so SSH sessions
+/// survive.
 async fn nm_write_ap_file(
     ssid: &str,
     pass: &str,
@@ -253,10 +249,10 @@ async fn nm_write_ap_file(
          [ipv6]\n\
          method=disabled\n"
     );
-    // Created 0600 from the start (no world-readable window for the
-    // PSK). NM's keyfile plugin REFUSES to load connection files with
-    // looser perms, so getting this wrong doesn't just leak — it
-    // silently breaks the AP profile.
+    // Created 0600 from the start, so the PSK never has a world-readable
+    // window. NM's keyfile plugin REFUSES to load connection files with looser
+    // perms, so getting this wrong does not just leak: it silently breaks the
+    // AP profile.
     write_secret_file(file, &contents)?;
 
     let _ = sentryusb_shell::run("nmcli", &["con", "reload"]).await;
@@ -265,7 +261,7 @@ async fn nm_write_ap_file(
     Ok(())
 }
 
-/// hostapd + dnsmasq path — for systems that don't use NetworkManager.
+/// hostapd plus dnsmasq path, for systems without NetworkManager.
 async fn configure_hostapd_path(
     ssid: &str,
     pass: &str,
@@ -287,7 +283,7 @@ async fn configure_hostapd_path(
         .unwrap_or_default();
     let mac = mac.trim();
 
-    // udev rule — creates ap0 on hardware phy0 and pins its MAC.
+    // udev rule: create ap0 on hardware phy0 and pin its MAC.
     let udev_rule = format!(
         "SUBSYSTEM==\"ieee80211\", ACTION==\"add|change\", \
          ATTR{{macaddress}}==\"{mac}\", KERNEL==\"phy0\", \
@@ -311,7 +307,7 @@ async fn configure_hostapd_path(
     )?;
 
     let _ = std::fs::create_dir_all("/etc/hostapd");
-    // 0600 — the file carries the WPA passphrase.
+    // 0600: the file carries the WPA passphrase.
     write_secret_file(
         "/etc/hostapd/hostapd.conf",
         &format!(
@@ -392,7 +388,7 @@ async fn configure_hostapd_path(
                     && !l.trim_start().starts_with("127.0.0.1\tlocalhost")
                     && !l.trim_start().starts_with("127.0.0.1 localhost")
                 {
-                    // Replace 127.0.0.1 prefix with the AP IP; keep the rest.
+                    // Swap the 127.0.0.1 prefix for the AP IP, keeping the rest.
                     let rest = l
                         .trim_start()
                         .strip_prefix("127.0.0.1")
@@ -407,10 +403,10 @@ async fn configure_hostapd_path(
         std::fs::write("/etc/hosts", new + "\n")?;
     }
 
-    // Tag the wpa_supplicant network block(s) with the id_str the
-    // ifupdown config maps to AP1. Only `network={...}` blocks are
-    // touched — a bare `.replace("}")` would also stamp cred / p2p
-    // blocks and anything else with a closing brace.
+    // Tag the wpa_supplicant network blocks with the id_str the ifupdown
+    // config maps to AP1. ONLY `network={...}` blocks may be touched: a bare
+    // `.replace("}")` would also stamp cred and p2p blocks, and anything else
+    // holding a closing brace.
     if let Ok(conf) = std::fs::read_to_string("/etc/wpa_supplicant/wpa_supplicant.conf") {
         let new = tag_network_blocks_with_id_str(&conf, "AP1");
         std::fs::write("/etc/wpa_supplicant/wpa_supplicant.conf", new)?;
@@ -420,10 +416,11 @@ async fn configure_hostapd_path(
     Ok(())
 }
 
-/// Insert `id_str="<id>"` as the last entry of every `network={...}`
-/// block. Other block types (`cred={`, `p2p_...`) and stray braces are
-/// left untouched. Blocks that already carry an id_str are skipped, so
-/// the transform is idempotent.
+/// Insert `id_str="<id>"` as the last entry of every `network={...}` block.
+/// Only a closing brace that ends a `network={` block may be tagged: other
+/// block types (`cred={`, `p2p_...`) and stray braces are left untouched.
+/// Blocks that already carry an id_str are skipped, so the transform is
+/// idempotent.
 fn tag_network_blocks_with_id_str(conf: &str, id: &str) -> String {
     let mut out: Vec<String> = Vec::new();
     let mut in_network = false;
@@ -450,10 +447,10 @@ fn tag_network_blocks_with_id_str(conf: &str, id: &str) -> String {
     result
 }
 
-/// Write a root-only (0600) file containing secrets (WiFi PSKs). The
-/// mode is applied at create time so there's no world-readable window;
-/// `set_permissions` afterwards covers the pre-existing-file case,
-/// where the open-time mode doesn't apply.
+/// Write a root-only (0600) file containing secrets (WiFi PSKs). The mode is
+/// applied at create time so there is no world-readable window;
+/// `set_permissions` afterwards covers the pre-existing-file case, where the
+/// open-time mode does not apply.
 fn write_secret_file(path: &str, contents: &str) -> Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -473,10 +470,10 @@ fn write_secret_file(path: &str, contents: &str) -> Result<()> {
 
 /// Find the primary WiFi client device from NetworkManager.
 ///
-/// Prefers the device backing an *active* WiFi connection (the right
-/// answer when several wifi interfaces exist), but falls back to any
-/// managed wifi device — a Pi being set up over Ethernet with WiFi
-/// configured-but-disconnected would otherwise fail AP setup entirely.
+/// Prefers the device backing an *active* WiFi connection, the right answer
+/// when several wifi interfaces exist, then falls back to any managed wifi
+/// device. Without the fallback, a Pi set up over Ethernet with WiFi
+/// configured but disconnected fails AP setup entirely.
 async fn find_wifi_device() -> Result<String> {
     for _ in 0..5 {
         let output = sentryusb_shell::run(
@@ -490,8 +487,9 @@ async fn find_wifi_device() -> Result<String> {
         if !wlan.is_empty() {
             return Ok(wlan);
         }
-        // No active wifi connection — fall back to the device list.
-        // `:wifi$` excludes wifi-p2p entries; ap0 is our own AP iface.
+        // No active wifi connection, so fall back to the device list.
+        // `:wifi$` excludes wifi-p2p entries; ap0 is this device's own AP
+        // interface.
         let output = sentryusb_shell::run(
             "bash",
             &[

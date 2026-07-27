@@ -32,7 +32,6 @@ type ReleaseInfo = {
 }
 
 interface Props {
-  /** Optional callback so the parent can react when an install kicks off. */
   onInstallStart?: () => void
 }
 
@@ -179,9 +178,8 @@ export function UpdateSection({ onInstallStart }: Props) {
     setUpdateStatus("checking_internet")
     setUpdateError(null)
     setUpdateMessage("Checking internet connection...")
-    // Track the version we're installing so the success modal and message
-    // can show it without trusting /api/system/version — the OLD daemon
-    // answers that endpoint until reboot fires and can return a stale tag.
+    // Track the target version locally: /api/system/version is answered by
+    // the OLD daemon until the reboot fires, so it can return a stale tag.
     const preUpdateVersion = version
     let newVersion: string | null = targetVersion ?? null
     setInstalledVersion(newVersion)
@@ -247,11 +245,11 @@ export function UpdateSection({ onInstallStart }: Props) {
             const r = await fetch("/api/system/version")
             if (r.ok) {
               const data = await r.json()
-              // Reject stale responses from the OLD daemon — it stays
-              // responsive until `reboot` fires and may answer before
-              // /opt/dashusb/version has been rewritten with the new
-              // tag. Wait for either the expected new version or any
-              // version distinct from the pre-update one.
+              // Reject stale responses: the old daemon stays responsive
+              // until `reboot` fires and may answer before
+              // /opt/dashusb/version is rewritten. Accept only the expected
+              // new version, or any version differing from the pre-update
+              // one.
               const polled = (data.version || "").trim()
               const matchesNew = newVersion && polled === newVersion
               const differsFromOld = preUpdateVersion && polled && polled !== preUpdateVersion
@@ -267,9 +265,8 @@ export function UpdateSection({ onInstallStart }: Props) {
                 setUpdateStatus("idle")
                 setUpdateMessage(null)
                 setInstalledVersion(null)
-                // Hard reload so every cached chunk and hook (useVersion,
-                // feature-gated UI) picks up against the freshly installed
-                // backend instead of holding the pre-update snapshot.
+                // Hard reload: cached chunks and hooks (useVersion,
+                // feature-gated UI) otherwise keep the pre-update snapshot.
                 window.location.reload()
               }, 6000)
             }
@@ -329,10 +326,10 @@ export function UpdateSection({ onInstallStart }: Props) {
         halo={headerHalo}
         title="Software Updates"
         badge={
-          // Always show the *current* installed version here. The available
-          // update's version is shown in the "Stable:"/"Pre-release:" card
-          // below; surfacing it in the badge made it look like the pending
-          // release was already installed. Accent just flags that one is waiting.
+          // The badge shows the *installed* version, never the available
+          // one: the pending release reads as already installed there. The
+          // "Stable:"/"Pre-release:" cards below carry that version, and
+          // the accent colour is all the badge says about it.
           <Pill kind={stableUpdate || prereleaseUpdate ? "accent" : "slate"}>
             {version ?? "…"}
           </Pill>

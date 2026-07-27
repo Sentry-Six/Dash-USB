@@ -20,8 +20,6 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
 interface NotificationEvent {
   id: string
   ts: number
@@ -50,8 +48,6 @@ interface HistoryResponse {
 }
 
 type Tab = "history" | "settings"
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const NOTIFICATION_TYPES = [
   { key: "archive_start", label: "Archive Started", description: "When file archiving begins", icon: Archive },
@@ -123,8 +119,6 @@ function absoluteTime(ts: number): string {
   return new Date(ts * 1000).toLocaleString()
 }
 
-// ─── Main component ───────────────────────────────────────────────────────────
-
 export default function Notifications() {
   const [activeTab, setActiveTab] = useState<Tab>("history")
   const [events, setEvents] = useState<NotificationEvent[]>([])
@@ -137,7 +131,6 @@ export default function Notifications() {
   const [offset, setOffset] = useState(0)
   const PAGE_SIZE = 50
 
-  // Load notification history
   const loadHistory = useCallback(async (currentOffset = 0, filter = typeFilter) => {
     setLoading(true)
     try {
@@ -156,7 +149,6 @@ export default function Notifications() {
     }
   }, [typeFilter])
 
-  // Load notification settings
   const loadSettings = useCallback(async () => {
     try {
       const res = await fetch("/api/notifications/settings")
@@ -181,7 +173,6 @@ export default function Notifications() {
     loadSettings()
   }, [loadHistory, loadSettings])
 
-  // Save settings
   async function handleToggle(key: keyof NotificationSettings) {
     if (!settings) return
     const updated = { ...settings, [key]: !settings[key] }
@@ -204,7 +195,6 @@ export default function Notifications() {
     }
   }
 
-  // Clear all history
   async function handleClearAll() {
     if (!confirmClear) {
       setConfirmClear(true)
@@ -220,26 +210,22 @@ export default function Notifications() {
     setConfirmClear(false)
   }
 
-  // Delete single notification
   async function handleDeleteOne(id: string) {
     setEvents(prev => prev.filter(e => e.id !== id))
     setTotal(prev => prev - 1)
     try {
       await fetch(`/api/notifications/history/${id}`, { method: "DELETE" })
     } catch {
-      // Reload on failure
       loadHistory(offset)
     }
   }
 
-  // Filter change
   function handleFilterChange(filter: string) {
     setTypeFilter(filter)
     setOffset(0)
     loadHistory(0, filter)
   }
 
-  // Pagination
   function handlePage(direction: "next" | "prev") {
     const newOffset = direction === "next" ? offset + PAGE_SIZE : Math.max(0, offset - PAGE_SIZE)
     setOffset(newOffset)
@@ -253,7 +239,6 @@ export default function Notifications() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-slate-100">Notifications</h1>
         <p className="mt-1 text-sm text-slate-500">
@@ -261,7 +246,6 @@ export default function Notifications() {
         </p>
       </div>
 
-      {/* Tab bar */}
       <div className="tab-bar">
         {TABS.map((tab) => (
           <button
@@ -275,12 +259,9 @@ export default function Notifications() {
         ))}
       </div>
 
-      {/* ── History Tab ──────────────────────────────────────────────── */}
       {activeTab === "history" && (
         <div className="space-y-4">
-          {/* Toolbar */}
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            {/* Filter */}
             <div className="flex items-center gap-2">
               <Filter className="h-4 w-4 text-slate-500" />
               <select
@@ -303,7 +284,6 @@ export default function Notifications() {
               )}
             </div>
 
-            {/* Clear all */}
             <button
               onClick={handleClearAll}
               disabled={events.length === 0}
@@ -320,7 +300,6 @@ export default function Notifications() {
             </button>
           </div>
 
-          {/* Events list */}
           {loading ? (
             <div className="flex items-center justify-center py-16">
               <Loader2 className="h-6 w-6 animate-spin text-blue-400" />
@@ -346,7 +325,6 @@ export default function Notifications() {
                     key={event.id}
                     className="glass-card group relative overflow-hidden p-4 transition-colors hover:bg-white/[0.04]"
                   >
-                    {/* Dismiss button */}
                     <button
                       onClick={() => handleDeleteOne(event.id)}
                       className="absolute right-3 top-3 rounded-md p-1 text-slate-600 opacity-0 transition-all hover:bg-white/10 hover:text-slate-400 group-hover:opacity-100"
@@ -356,12 +334,10 @@ export default function Notifications() {
                     </button>
 
                     <div className="flex gap-3">
-                      {/* Type icon */}
                       <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-xl", bg)}>
                         <Icon className={cn("h-4.5 w-4.5", color)} />
                       </div>
 
-                      {/* Content */}
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                           <span className={cn("text-xs font-semibold uppercase tracking-wider", color)}>
@@ -371,7 +347,6 @@ export default function Notifications() {
                         </div>
                         <p className="mt-0.5 text-sm text-slate-300 leading-relaxed">{event.message}</p>
 
-                        {/* Footer: time + providers */}
                         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
                           <span className="text-xs text-slate-600" title={absoluteTime(event.ts)}>
                             {relativeTime(event.ts)}
@@ -405,7 +380,6 @@ export default function Notifications() {
             </div>
           )}
 
-          {/* Pagination */}
           {total > PAGE_SIZE && (
             <div className="flex items-center justify-between pt-2">
               <button
@@ -430,7 +404,6 @@ export default function Notifications() {
         </div>
       )}
 
-      {/* ── Settings Tab ─────────────────────────────────────────────── */}
       {activeTab === "settings" && settings && (
         <div className="space-y-4">
           <div className="glass-card overflow-hidden p-5">

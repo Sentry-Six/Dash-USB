@@ -7,7 +7,7 @@ set -e
 
 # Build frontend. Prefer this repo's own web/ (current layout); fall back
 # to the legacy ../Sentry-USB/web sibling for old checkouts. static/ is
-# gitignored (never committed — a stale committed copy once silently
+# gitignored (never committed: a stale committed copy once silently
 # shipped an old UI), so this step is what populates it; without it a
 # bare cargo build embeds the "frontend not built" placeholder that
 # crates/sentryusb/build.rs writes.
@@ -30,7 +30,7 @@ fi
 
 # Pre-compress static assets so embed.rs can serve raw .br / .gz bytes
 # without burning per-request CPU on the Pi Zero 2W. Skips already-
-# compressed formats (woff2, png, jpg, ico). Brotli is optional —
+# compressed formats (woff2, png, jpg, ico). Brotli is optional:
 # without it the server falls back to gzip, and without gzip it falls
 # back to identity + the tower-http CompressionLayer.
 if [ -d crates/sentryusb/static ]; then

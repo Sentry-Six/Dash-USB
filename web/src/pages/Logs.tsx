@@ -10,16 +10,14 @@ const logTabs = [
 
 const SCROLL_THRESHOLD = 60
 
-// ---------------------------------------------------------------------------
-// Log line parser
+// Log line parser.
 //
-// Shell logs:  "Fri 20 Mar 21:27:22 PDT 2026: some message"
-// Go logs:     "Mon 21 Mar 14:30:45 UTC 2026: [drive-map] message"
-// Format:       Day DD Mon HH:MM:SS TZ YYYY:
+// Untagged:  "Fri 20 Mar 21:27:22 PDT 2026: some message"
+// Tagged:    "Mon 21 Mar 14:30:45 UTC 2026: [drive-map] message"
+// Format:     Day DD Mon HH:MM:SS TZ YYYY:
 //
-// We extract the time portion (HH:MM:SS), an optional [tag], and the message,
-// then classify the level by keywords so we can color-code it.
-// ---------------------------------------------------------------------------
+// Extracts the time (HH:MM:SS), an optional [tag] and the message, then
+// classifies the level by keyword for color coding.
 
 type LogLevel = "error" | "warning" | "success" | "info" | "debug" | "default"
 
@@ -30,7 +28,7 @@ interface ParsedLine {
   message: string
   level: LogLevel
   raw: string
-  fullTs: number // full timestamp in ms, used to detect clock jumps
+  fullTs: number // parsed timestamp in ms, 0 when the line has none
 }
 
 // Matches: "Day DD Mon HH:MM:SS TZ YYYY:" at the start of a line
@@ -49,7 +47,7 @@ const TAG_RE = /^\[([^\]]+)\]\s*/
 function classifyLevel(message: string, tag: string): LogLevel {
   const lower = message.toLowerCase()
 
-  // Errors — check first so "failed" always wins over softer matches
+  // Errors first, so "failed" wins over the softer matches below.
   if (
     lower.includes("error") ||
     lower.includes("failed") ||
@@ -61,7 +59,6 @@ function classifyLevel(message: string, tag: string): LogLevel {
   )
     return "error"
 
-  // Warnings
   if (
     lower.includes("warning") ||
     lower.includes("warn") ||
@@ -85,7 +82,6 @@ function classifyLevel(message: string, tag: string): LogLevel {
   )
     return "warning"
 
-  // Success
   if (
     lower.includes("nudge ok") ||
     lower.includes("success") ||
@@ -114,7 +110,7 @@ function classifyLevel(message: string, tag: string): LogLevel {
   )
     return "success"
 
-  // Info (tagged lines or informational keywords)
+  // Any tagged line counts as info, as do these keywords.
   if (
     tag ||
     lower.includes("starting") ||
@@ -153,7 +149,6 @@ function parseLine(raw: string): ParsedLine {
   let tag = ""
   let fullTs = 0
 
-  // Extract timestamp — captures (DD) (Mon) (HH:MM:SS) (YYYY)
   const tsMatch = rest.match(TIMESTAMP_RE)
   if (tsMatch) {
     const day = parseInt(tsMatch[1], 10)
@@ -166,7 +161,6 @@ function parseLine(raw: string): ParsedLine {
     rest = rest.slice(tsMatch[0].length)
   }
 
-  // Extract [tag]
   const tagMatch = rest.match(TAG_RE)
   if (tagMatch) {
     tag = tagMatch[1]
@@ -179,7 +173,6 @@ function parseLine(raw: string): ParsedLine {
   return { date, time, tag, message, level, raw, fullTs }
 }
 
-// Colors for each level
 const levelColors: Record<LogLevel, { text: string; tag: string }> = {
   error:   { text: "text-red-400",    tag: "text-red-500"    },
   warning: { text: "text-amber-400",  tag: "text-amber-500"  },
@@ -214,12 +207,10 @@ function FormattedLog({ content }: { content: string }) {
     return content.split("\n").map((line) => parseLine(line))
   }, [content])
 
-  // Track the last displayed date string so we only show a date header
-  // when the date actually changes (or at the start of a boot cycle).
-  // Plain loop (not a .map closure) so the accumulators stay render-local.
+  // Plain loop, not a .map closure, so the accumulators stay render-local.
   const rows: ReactNode[] = []
   let prevDate = ""
-  let inBootCycle = false // becomes true after we see the first entry
+  let inBootCycle = false // true after the first timestamped entry
 
   for (let i = 0; i < lines.length; i++) {
     const parsed = lines[i]
@@ -230,7 +221,7 @@ function FormattedLog({ content }: { content: string }) {
 
     // Boot cycle separator (====== lines from archiveloop)
     if (parsed.raw.trim().startsWith("=====")) {
-      prevDate = "" // reset — new boot cycle
+      prevDate = "" // new boot cycle
       inBootCycle = false
       rows.push(
         <span key={i} className="block border-b border-slate-700/40 my-3" />
@@ -238,9 +229,8 @@ function FormattedLog({ content }: { content: string }) {
       continue
     }
 
-    // Show a date header when:
-    // 1. First timestamped entry in a boot cycle
-    // 2. The date string actually changes (new day or clock correction)
+    // Date header on the first timestamped entry of a boot cycle, and whenever
+    // the date changes (new day or clock correction).
     let dateSeparator = null
     if (parsed.date) {
       if (!inBootCycle || parsed.date !== prevDate) {
@@ -275,8 +265,8 @@ export default function Logs() {
 
   const activeLog = logTabs.find((t) => t.id === activeTab)!
 
-  // Format archiveloop and setup logs (same timestamp format).
-  // Diagnostics is a structured system-info dump — keep it raw.
+  // archiveloop and setup share the timestamp format. Diagnostics is a
+  // structured system-info dump, so it stays raw.
   const shouldFormat = activeTab === "archiveloop" || activeTab === "setup"
 
   // With flex-direction: column-reverse, scrollTop is 0 at the bottom

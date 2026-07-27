@@ -1,11 +1,10 @@
 //! Config backup and restore.
 //!
-//! A backup is a JSON envelope containing
-//! the `dashusb.conf` contents plus the user preferences, SSH keys, rclone
-//! config, Tesla BLE pairing keys, and notification-device credentials — the
-//! stuff the user doesn't want to re-set up after an SD-card reflash. Change
-//! detection via SHA-256 hash avoids filling the backup dir with identical
-//! copies.
+//! A backup is a JSON envelope holding `dashusb.conf`, the user preferences,
+//! SSH keys, rclone config, BLE pairing keys and notification-device
+//! credentials: everything a user would otherwise re-enter after an SD-card
+//! reflash. A SHA-256 over that content gates rewrites so the backup dir
+//! doesn't fill with identical copies.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -26,12 +25,10 @@ const BACKUP_VERSION: u32 = 1;
 
 // Paths included in a backup.
 //
-// The Rust wizard generates ed25519 keys (smaller, faster, modern) at
-// /root/.ssh/id_ed25519 — the Go-era code generated RSA at
-// /root/.ssh/id_rsa. Backups need to find whichever was generated, AND
-// restores need to write the key back to the path matching its type.
-// Always check ed25519 first since that's what new installs produce;
-// fall back to RSA so restoring an old Go-era backup still works.
+// New installs generate ed25519 at /root/.ssh/id_ed25519; older ones generated
+// RSA at /root/.ssh/id_rsa. A backup must pick up whichever exists, and a
+// restore must write the key back to the path matching its type. Check ed25519
+// first, then fall back to RSA so old backups still restore.
 const SSH_ED25519_PRIVATE_KEY: &str = "/root/.ssh/id_ed25519";
 const SSH_ED25519_PUBLIC_KEY: &str = "/root/.ssh/id_ed25519.pub";
 const SSH_RSA_PRIVATE_KEY: &str = "/root/.ssh/id_rsa";
@@ -100,9 +97,8 @@ fn read_file_if_exists(path: &str) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
 
-/// Flatten the preferences Map<String, Value> to Map<String, String>, matching
-/// Go's `map[string]string`. JSON values stringify via their literal form for
-/// primitives; objects/arrays are serialized.
+/// Flatten preferences to `Map<String, String>`. Primitives take their literal
+/// form; objects and arrays are serialized.
 fn prefs_as_strings() -> HashMap<String, String> {
     let prefs = crate::preferences::load_prefs();
     let mut out = HashMap::with_capacity(prefs.len());
@@ -145,9 +141,9 @@ async fn build_backup_data_async() -> Result<BackupData, String> {
     })
 }
 
-/// Hex SHA-256 of all backup-relevant data with time-varying fields excluded
-/// so the hash is stable across identical snapshots. Preferences are sorted
-/// by key so hashing order is deterministic.
+/// Hex SHA-256 over backup-relevant data only: time-varying fields are excluded
+/// and preferences are hashed in sorted key order, so identical snapshots hash
+/// identically.
 fn compute_backup_hash(data: &BackupData) -> String {
     use ring::digest::{Context, SHA256};
     let mut ctx = Context::new(&SHA256);
@@ -198,25 +194,23 @@ fn write_backup_to_dir(dir: &str, data: &BackupData) -> Result<(), String> {
     Ok(())
 }
 
-/// Run `write` against a mounted `/mnt/archive`, owning the mount for
-/// the duration. Serialized against archiveloop's connect/disconnect
-/// scripts via the shared archive-mount flock, so a mount this creates
-/// can't be adopted by an archive cycle mid-write, and archiveloop's
-/// `umount -f -l` can't land under an in-flight backup.
+/// Run `write` against a mounted `/mnt/archive`, owning the mount for the
+/// duration. The shared archive-mount flock serializes this against
+/// archiveloop's connect/disconnect scripts, so a mount created here can't be
+/// adopted by an archive cycle mid-write and archiveloop's `umount -f -l` can't
+/// land under an in-flight backup.
 ///
-/// If the share wasn't mounted, mounts it from fstab and unmounts it
-/// again before releasing the lock — a CIFS mount left up after the
-/// car drives away goes stale ("host is down") and wedges the next
-/// archive cycle, which is exactly what disconnect-archive.sh exists
-/// to prevent. A mount that was already up (an archive cycle's, whose
-/// post-archive step is what called us) is left alone; its owner
-/// unmounts it. The unmount runs even when `write` fails; an unmount
-/// failure is logged but doesn't mask the write result.
+/// If the share wasn't mounted, mount it from fstab and unmount it again before
+/// releasing the lock. A CIFS mount left up after the car drives away goes
+/// stale ("host is down") and wedges the next archive cycle, which is what
+/// disconnect-archive.sh exists to prevent. A mount that was already up belongs
+/// to whoever made it (usually the archive cycle whose post-archive step called
+/// this) and is left alone. The unmount runs even when `write` fails, and an
+/// unmount failure is logged without masking the write result.
 ///
-/// The whole transaction runs in its own spawned task: if the HTTP
-/// request future is cancelled (client disconnect), the lock guard must
-/// not drop mid-write and skip the unmount — the task detaches and
-/// finishes cleanup on its own.
+/// The transaction runs in its own spawned task: if the request future is
+/// cancelled by a client disconnect, the lock guard MUST NOT drop mid-write and
+/// skip the unmount, so the task detaches and finishes cleanup itself.
 async fn with_archive_mounted<F, Fut>(write: F) -> Result<(), String>
 where
     F: FnOnce() -> Fut + Send + 'static,
@@ -260,8 +254,8 @@ where
         )
         .await;
         // findmnt is ground truth, not mount's exit status: a timed-out
-        // mount(8) may still have completed the kernel transition, and
-        // that mount is ours to clean up.
+        // mount(8) may still have completed the kernel transition, and that
+        // mount is ours to clean up.
         if is_mounted().await {
             mounted_by_us = true;
         } else {
@@ -275,9 +269,9 @@ where
     let result = write().await;
 
     if mounted_by_us {
-        // Mirror disconnect-archive.sh: bounded, force+lazy so a dead
-        // share can't hang the API. On failure the mount lingers (same
-        // exposure as a crash mid-archive) — log and move on.
+        // Mirror disconnect-archive.sh: bounded, force and lazy, so a dead
+        // share can't hang the API. On failure the mount lingers, the same
+        // exposure as a crash mid-archive, so log it and move on.
         if let Err(e) = sentryusb_shell::run_with_timeout(
             Duration::from_secs(15),
             "umount",
@@ -396,7 +390,6 @@ pub struct BackupQuery {
     pub force: Option<String>,
 }
 
-/// POST /api/system/backup
 pub async fn create_backup(
     State(_s): State<AppState>,
     Query(q): Query<BackupQuery>,
@@ -480,10 +473,8 @@ pub async fn create_backup(
     })))
 }
 
-/// GET /api/system/backups
-///
-/// Merges local and archive listings, deduping by date (archive wins over
-/// local when both exist).
+/// Merges local and archive listings, deduping by date. The archive copy wins
+/// when both exist.
 pub async fn list_backups(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
     let mut all: Vec<BackupEntry> = Vec::new();
     all.extend(list_backups_in_dir(LOCAL_BACKUP_DIR, "ssd"));
@@ -491,7 +482,6 @@ pub async fn list_backups(State(_s): State<AppState>) -> (StatusCode, Json<serde
         all.extend(list_backups_in_dir(ARCHIVE_BACKUP_DIR, "archive"));
     }
 
-    // Dedupe by date: prefer archive copy if both exist.
     let mut seen: HashMap<String, usize> = HashMap::new();
     for i in 0..all.len() {
         let d = all[i].date.clone();
@@ -515,10 +505,8 @@ pub async fn list_backups(State(_s): State<AppState>) -> (StatusCode, Json<serde
     (StatusCode::OK, Json(serde_json::to_value(result).unwrap_or_default()))
 }
 
-/// GET /api/system/backup/{date}
-///
-/// Tries the archive dir first (newer / offsite copy), then the local SSD
-/// fallback. Returns the raw JSON with an `attachment` Content-Disposition.
+/// Tries the archive dir first (the newer offsite copy), then the local SSD.
+/// Returns raw JSON with an `attachment` Content-Disposition.
 pub async fn get_backup(
     State(_s): State<AppState>,
     AxPath(date): AxPath<String>,
@@ -563,11 +551,8 @@ fn write_with_mode(path: &str, contents: &str, _mode: u32) -> std::io::Result<()
     Ok(())
 }
 
-/// POST /api/system/restore
-///
-/// Body: the JSON envelope produced by `create_backup`. Writes all bundled
-/// credential files back to their standard locations with correct modes.
-/// Restore a backup envelope into config + DB.
+/// Body: the JSON envelope produced by `create_backup`. Writes every bundled
+/// credential file back to its standard location with the correct mode.
 pub async fn restore_backup(
     State(_s): State<AppState>,
     body: String,
@@ -615,12 +600,10 @@ pub async fn restore_backup(
                 std::fs::Permissions::from_mode(0o700),
             );
         }
-        // Pick the on-disk filename to match the embedded key type so the
-        // restored pubkey lines up with the privkey and `ssh-keygen -y`
-        // works as expected. Backups from the modern Rust wizard contain
-        // ed25519 keys (OPENSSH PRIVATE KEY); Go-era backups contain RSA
-        // (RSA PRIVATE KEY). Fall back to ed25519 for anything else
-        // because that's what new installs default to.
+        // Match the on-disk filename to the embedded key type, so the restored
+        // pubkey lines up with the privkey and `ssh-keygen -y` works. Only an
+        // "RSA PRIVATE KEY" header selects the RSA paths; anything else is
+        // treated as ed25519, the default for new installs.
         let priv_pem = backup.ssh_private_key.trim_start();
         let is_rsa = priv_pem.starts_with("-----BEGIN RSA PRIVATE KEY-----");
         let (priv_path, pub_path) = if is_rsa {

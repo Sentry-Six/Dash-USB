@@ -26,7 +26,7 @@ export function StorageStep({ data, onChange }: StepProps) {
 
   useEffect(() => { fetchDevices() }, [])
 
-  // Calculate dashcam warning — only meaningful for GB values
+  // The dashcam warning only applies to GB values.
   const camRaw = data.CAM_SIZE ?? ""
   const camIsGB = !/[mM]$/.test(camRaw)
   const camSize = parseInt(camRaw.replace(/[^0-9]/g, "") || "0")
@@ -62,7 +62,6 @@ export function StorageStep({ data, onChange }: StepProps) {
         />
       </div>
 
-      {/* Data Drive */}
       <div>
         <label className="mb-1 block text-sm font-medium text-slate-300">
           External Data Drive

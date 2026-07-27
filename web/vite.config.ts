@@ -16,7 +16,7 @@ export default defineConfig({
         // Named vendor chunks so an OTA update that only changes app
         // code doesn't bust the cache for libraries that haven't moved.
         // Each library lives in its own content-hashed file. Standard
-        // Rollup `manualChunks` function form — the prior `codeSplitting`
+        // Rollup `manualChunks` function form. The prior `codeSplitting`
         // key is a rolldown-vite-only API, but this build runs plain
         // vite@8, so it failed to build. Same vendor groups, working syntax.
         manualChunks(id: string) {
@@ -33,7 +33,7 @@ export default defineConfig({
     // That defeats lazy-loading for heavy vendors: leaflet/xterm/
     // recharts get preloaded on every page just because *some* lazy
     // route eventually pulls them in. Strip those from the initial
-    // preload list — they'll still be fetched on-demand when the
+    // preload list; they are still fetched on-demand when the
     // lazy chunk that needs them is loaded (one extra RTT at
     // navigation time, but only for users who actually visit that
     // chunk's route).

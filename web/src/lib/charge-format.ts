@@ -1,6 +1,6 @@
-// Display formatters for charge-session values. Each tolerates
-// null/undefined and renders an em dash so the UI never shows "NaN" or
-// "null" when a sample column was empty.
+// Display formatters for charge-session values. Each tolerates null and
+// undefined, rendering an em dash so an empty sample column never shows
+// up as "NaN" or "null".
 
 export function fmtEnergy(kwh: number | null | undefined): string {
   if (kwh == null) return "—"

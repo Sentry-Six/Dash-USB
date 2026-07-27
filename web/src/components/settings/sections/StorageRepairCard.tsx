@@ -56,18 +56,18 @@ const STATE_META: Record<HealthState, { label: string; tone: string }> = {
 }
 
 /**
- * Settings → System → Repair Storage.
+ * Settings > System > Repair Storage.
  *
  * Guided recovery for the external-SSD XFS partition behind `/backingfiles`
- * when it won't mount (CRC / dirty-log corruption after a power loss). The
- * card is always rendered, but blocked behind a disabled overlay when camera
- * storage isn't on a separate external drive — repair has nothing to act on
- * there, and the overlay doubles as a guard against aiming it at the SD card.
+ * when it won't mount (CRC or dirty-log corruption after a power loss).
+ *
+ * The card always renders, but stays behind a disabled overlay unless camera
+ * storage sits on a separate external drive. That overlay must not be
+ * removed: it is what stops repair being aimed at the SD card.
  *
  * The backend runs the non-destructive path automatically and HARD STOPS
- * before the destructive `xfs_repair -L`; this card surfaces that stop as an
- * explicit "Force repair" confirmation. On success it lands in a
- * reboot-required state — the user presses Reboot to finish.
+ * before the destructive `xfs_repair -L`. This card surfaces that stop as an
+ * explicit "Force repair" confirmation, then a reboot-required state.
  */
 export function StorageRepairCard() {
   const [health, setHealth] = useState<StorageHealth | null>(null)
@@ -104,8 +104,8 @@ export function StorageRepairCard() {
     refreshHealth()
   }, [refreshHealth])
 
-  // Auto-repair toggles (preferences). Values may be stored as booleans
-  // or "true"/"false" strings — accept both, default off.
+  // Auto-repair preferences are stored as either booleans or "true"/"false"
+  // strings. Accept both, default off.
   useEffect(() => {
     const isOn = (v: unknown) => v === true || v === "true"
     Promise.all([
@@ -197,12 +197,12 @@ export function StorageRepairCard() {
     try {
       await fetch("/api/system/reboot", { method: "POST" })
     } catch {
-      /* the box is going down — a failed fetch here is expected */
+      /* the box is going down, so a failed fetch here is expected */
     }
-    // Wait for the Pi to actually drop off and come back, then reload so the
-    // card re-fetches health (now mounted/healthy) instead of sitting on
-    // "Rebooting…" forever. We only reload after seeing it go DOWN first, so
-    // the still-up pre-reboot server doesn't trigger an immediate reload.
+    // Wait for the Pi to drop off and come back, then reload so the card
+    // re-fetches health instead of sitting on "Rebooting" forever. Reload
+    // only after seeing it go down, otherwise the still-up pre-reboot server
+    // triggers an immediate reload.
     let sawDown = false
     if (rebootPollRef.current) window.clearInterval(rebootPollRef.current)
     rebootPollRef.current = window.setInterval(async () => {
@@ -218,7 +218,7 @@ export function StorageRepairCard() {
     }, 3000)
   }
 
-  // ── Blocked state: storage isn't on a separate external drive. ──
+  // Blocked state: storage isn't on a separate external drive.
   if (health && !health.external) {
     return (
       <PrefCard
@@ -263,7 +263,6 @@ export function StorageRepairCard() {
         Use this if storage disappears after a power loss or update.
       </p>
 
-      {/* Device summary */}
       {health && (
         <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 text-[11px] text-slate-400">
           <div className="flex justify-between gap-3">
@@ -285,7 +284,6 @@ export function StorageRepairCard() {
         </div>
       )}
 
-      {/* Recent XFS kernel errors */}
       {health && health.dmesg_errors.length > 0 && phase === "idle" && (
         <details className="rounded-lg border border-red-500/15 bg-red-500/5 px-3 py-2">
           <summary className="cursor-pointer text-[11px] font-medium text-red-300">
@@ -298,7 +296,6 @@ export function StorageRepairCard() {
         </details>
       )}
 
-      {/* Healthy idle */}
       {health?.state === "healthy" && phase === "idle" && (
         <p className="flex items-center gap-1.5 text-[11px] text-emerald-300/90">
           <CheckCircle className="h-3.5 w-3.5" />
@@ -306,7 +303,6 @@ export function StorageRepairCard() {
         </p>
       )}
 
-      {/* Missing-images guidance (filesystem fine, disk images gone) */}
       {health?.state === "missing_images" && phase === "idle" && (
         <p className="text-[11px] text-amber-300/90">
           The filesystem is healthy but <span className="font-mono">cam_disk.bin</span> is
@@ -315,7 +311,6 @@ export function StorageRepairCard() {
         </p>
       )}
 
-      {/* Live transcript */}
       {(running || lines.length > 0) && (
         <div
           ref={logRef}
@@ -332,7 +327,6 @@ export function StorageRepairCard() {
         </div>
       )}
 
-      {/* Force-repair confirmation gate */}
       {phase === "needs_force" && (
         <div className="rounded-xl border border-red-500/25 bg-red-500/5 p-3">
           <div className="flex items-start gap-2.5">
@@ -362,7 +356,6 @@ export function StorageRepairCard() {
         </div>
       )}
 
-      {/* Success → user-initiated reboot */}
       {phase === "reboot_required" && (
         <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3">
           <div className="flex items-start gap-2.5">
@@ -390,7 +383,6 @@ export function StorageRepairCard() {
         </div>
       )}
 
-      {/* Error */}
       {phase === "error" && (
         <div className="flex items-start gap-2 rounded-lg bg-red-500/10 px-3 py-2 text-[11px] text-red-300">
           <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -398,7 +390,6 @@ export function StorageRepairCard() {
         </div>
       )}
 
-      {/* Primary actions */}
       <div className="flex flex-wrap items-center gap-2">
         {canRepair && phase !== "running" && phase !== "needs_force" && phase !== "reboot_required" && (
           <button
@@ -418,7 +409,6 @@ export function StorageRepairCard() {
         )}
       </div>
 
-      {/* Boot-time auto repair toggles */}
       <div className="space-y-3 border-t border-white/5 pt-3">
         <label className="flex cursor-pointer items-start justify-between gap-3">
           <div className="flex items-start gap-2">

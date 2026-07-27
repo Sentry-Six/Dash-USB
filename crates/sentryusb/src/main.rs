@@ -33,9 +33,8 @@ struct Args {
     ///
     /// Subcommands are invoked by the `/root/bin/{make,release}_snapshot.sh`,
     /// `enable/disable_gadget.sh`, and `manage_free_space.sh` wrappers
-    /// installed by the setup wizard — archiveloop calls those wrappers
-    /// every cycle, so keeping the subcommands working here keeps the
-    /// archive flow alive.
+    /// installed by the setup wizard. archiveloop calls those wrappers
+    /// every cycle, so these subcommands keep the archive flow alive.
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -63,8 +62,8 @@ enum Command {
 enum GadgetAction {
     /// Attach the USB mass-storage gadget + bind the UDC.
     Enable {
-        /// Ignored — the shim in `/root/bin/enable_gadget.sh` splats
-        /// `"$@"`, so callers may pass through args we don't use.
+        /// Ignored. The `/root/bin/enable_gadget.sh` shim splats `"$@"`,
+        /// so callers can pass through unused args.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -127,8 +126,8 @@ async fn main() {
     let args = Args::parse();
     phase!("args_parsed");
 
-    // Subcommand dispatch — the wrappers in /root/bin/ expect these to
-    // run to completion synchronously and exit with a status code.
+    // The /root/bin/ wrappers expect subcommands to run to completion
+    // synchronously and exit with a status code.
     if let Some(cmd) = args.command {
         std::process::exit(run_subcommand(cmd).await);
     }
@@ -147,11 +146,10 @@ async fn main() {
         sentryusb_setup::system::ensure_timezone_resolved().await;
     });
 
-    // Periodic malloc_trim — releases heap pages back to the kernel that
-    // glibc would otherwise keep cached in its per-arena free lists.
-    // Combined with MALLOC_ARENA_MAX=2 (set in the systemd unit) this
-    // keeps RSS bounded during/after burst workloads like clip ingest.
-    // No-op on non-glibc targets.
+    // Periodic malloc_trim releases heap pages glibc would otherwise keep
+    // cached in its per-arena free lists. With MALLOC_ARENA_MAX=2 from the
+    // systemd unit, this keeps RSS bounded across burst workloads like clip
+    // ingest. No-op on non-glibc targets.
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     tokio::spawn(async {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(300));
@@ -191,9 +189,9 @@ async fn main() {
     sentryusb_api::setup::auto_resume_setup(hub.clone());
 
     // Fire the anonymous install beacon once per install (gated by
-    // /mutable/.beaconed). No fingerprint, no identifier — just an
-    // incrementing counter on the support server. The opted-in update-
-    // check telemetry is handled separately in check_for_update().
+    // /mutable/.beaconed). No fingerprint and no identifier: just an
+    // incrementing counter on the support server. Opted-in update-check
+    // telemetry is separate, in check_for_update().
     sentryusb_api::update::spawn_install_beacon();
 
     // Boot-time storage auto repair (opt-in via the storage_auto_repair
@@ -220,44 +218,20 @@ async fn main() {
         info!("Running in development mode (no static file serving)");
     }
 
-    // Compression wraps everything *after* all routes are added. axum's
-    // `Router::layer` only wraps routes registered before the call, so we
-    // apply compression AFTER the api router + ServeDir nests + SPA fallback
-    // are in place. The predicate keeps already-compressed media bodies
-    // (MP4, MP3, JPEG, ZIP) and binary streams out of the gzip path:
-    //   - video/*  — dashcam MP4s under /Recordings/*; gzipping wastes CPU
-    //                and produces no size win on already-compressed H.264.
-    //   - image/*  — already-compressed JPEG/PNG/WebP.
-    //   - application/octet-stream — /api/files/download streams arbitrary
-    //                binary; without Content-Length the default predicate
-    //                would gzip-stream the whole download. Skip.
-    //   - application/zip — /api/files/download-zip; entries inside the zip
-    //                are already DEFLATE'd, re-gzipping gains nothing.
-    //   - application/grpc, text/event-stream — never compress these.
-    // Size floor raised from the tower-http default of 32 bytes to 1024 to
-    // match nginx/Cloudflare defaults — sub-1 KB JSON responses don't benefit
-    // from gzip and incur per-request compression CPU. JSON above 1 KB and
-    // the SPA JS/CSS bundle still compress normally (1.2 MB → ~280 KB).
-    // Explicitly enable brotli + gzip + deflate. tower-http's
-    // `compression-full` feature compiles all three in; the
-    // CompressionLayer default already enables them, but spelling it
-    // out makes the supported codecs obvious to anyone auditing the
-    // file. Brotli is preferred when the client supports it (15–25%
-    // smaller than gzip for JSON/HTML at comparable CPU).
+    // MUST be applied after every route is registered: axum's
+    // `Router::layer` only wraps routes that already exist at call time.
     //
-    // Embedded SPA assets that build.sh pre-compressed into
-    // .br/.gz siblings are served by embed.rs with a
-    // Content-Encoding header already set — tower-http detects that
-    // and skips re-compressing, so no per-request CPU is wasted on
-    // the bundle.
-    // Brotli quality 6 (not the default 11) on dynamic responses. Quality
-    // 11 is the compression algorithm's slowest setting — fine for the
-    // build-time pre-compressed assets (paid once, served forever) but
-    // wasteful per-request on a Pi Zero 2W where it can add 100-200 ms
-    // to a single big-JSON response. Quality 6 gets within ~5% of
-    // quality-11 size at ~15× the encode speed. Gzip and deflate use
-    // level 6 too, which is their normal default — no behavior change
-    // for those codecs.
+    // The predicate skips bodies that are already compressed (video, image,
+    // zip) and octet-stream, which has no Content-Length and would otherwise
+    // be gzip-streamed in full on every /api/files/download.
+    //
+    // Size floor is 1024 rather than tower-http's 32: sub-1 KB JSON costs
+    // more CPU to compress than it saves.
+    //
+    // Brotli quality 6, not the default 11. Quality 11 adds 100-200 ms per
+    // large JSON response on a Pi Zero 2W for ~5% more compression. Assets
+    // pre-compressed at build time already carry Content-Encoding, so
+    // tower-http skips them here.
     let compression = CompressionLayer::new()
         .br(true)
         .gzip(true)
@@ -306,8 +280,8 @@ async fn main() {
 }
 
 async fn shutdown_signal() {
-    // systemd stops the service with SIGTERM — without listening for it
-    // the graceful drain below only ever ran on interactive Ctrl+C.
+    // systemd stops the service with SIGTERM. Without handling it, the
+    // graceful drain below only ran on interactive Ctrl+C.
     #[cfg(unix)]
     {
         let mut sigterm =
@@ -377,10 +351,8 @@ async fn run_snapshot(action: SnapshotAction) -> i32 {
                 }
                 Ok(None) => {
                     // Snapshot was identical to the previous one and
-                    // discarded. Print nothing — callers that capture
-                    // stdout will see an empty string and know to
-                    // skip; archiveloop's only consumer of this output
-                    // is informational logging.
+                    // discarded. Print nothing: callers capturing stdout
+                    // see an empty string and skip.
                     0
                 }
                 Err(e) => {

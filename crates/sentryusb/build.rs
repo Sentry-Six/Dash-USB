@@ -11,7 +11,7 @@
 //! When `static/` has no `index.html` (a fresh checkout, or a
 //! backend-only `cargo build`/`check`/`test`), write an unmistakable
 //! placeholder so the resulting binary serves a clear "frontend not
-//! built" page — never a stale or empty one. CI's frontend step runs
+//! built" page, never a stale or empty one. CI's frontend step runs
 //! before the cargo build, so by then `static/index.html` already
 //! exists and this script is a no-op (it never clobbers a real build).
 

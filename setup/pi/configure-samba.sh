@@ -21,8 +21,8 @@ fi
 if ! hash smbd &> /dev/null
 then
   log_progress "Installing samba and dependencies..."
-  # before installing, move some of samba's folders off of the
-  # soon-to-be-readonly root partition
+  # Move samba's writable directories off the soon-to-be-readonly root
+  # partition before installing.
 
   mkdir -p /var/cache/samba
   mkdir -p /var/run/samba
@@ -63,8 +63,7 @@ fi
 # remove obsolete fstab entry
 sed -i '/^tmpfs \/mnt\/smbexport tmpfs nodev,nosuid 0 0$/d' /etc/fstab
 
-# move link folder from backingfiles to mutable if needed
-# always update smb.conf in case we're updating a previous install
+# Rewrite smb.conf unconditionally so an upgrade picks up the current share.
 cat <<- EOF > /etc/samba/smb.conf
 	[global]
 	   deadtime = 2

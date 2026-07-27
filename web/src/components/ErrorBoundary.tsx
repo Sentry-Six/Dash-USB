@@ -13,9 +13,9 @@ interface State {
 }
 
 /**
- * React unmounts the entire root when a render error reaches the top of the
- * tree — on the in-car browser that's a blank page with no way back short of
- * a manual reload. Boundaries turn that into a contained fallback.
+ * A render error that reaches the top of the tree unmounts the whole root. On
+ * the in-car browser that leaves a blank page with no way back short of a
+ * manual reload, so boundaries contain it to a fallback.
  */
 export class ErrorBoundary extends Component<Props, State> {
   state: State = { error: null }
@@ -37,8 +37,8 @@ export class ErrorBoundary extends Component<Props, State> {
 /**
  * Card-shaped boundary for the settings grids: a crashing section degrades
  * to one broken card (with the message and a retry) while the rest of the
- * page keeps working. Sections that render several cards in a fragment
- * collapse to a single fallback card — acceptable for an error state.
+ * page keeps working. A section that renders several cards in a fragment
+ * collapses to a single fallback card, which is fine for an error state.
  */
 export function SectionErrorBoundary({ children }: { children: ReactNode }) {
   return (
