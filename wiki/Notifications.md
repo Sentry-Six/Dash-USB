@@ -1,16 +1,14 @@
 # Notifications
 
-Sentry USB can send you push notifications when:
+Dash USB can send you push notifications when:
 
-- An archive succeeds or fails
-- A drive fills up
-- Sentry events fire
-- The BLE keep-awake loses pairing
-- The Pi reboots or loses WiFi
+- An archive run starts
+- An archive completes or fails (with file counts and duration)
+- The Pi's temperature crosses your Warning / Caution thresholds
 
-Configure providers in the [Setup Wizard](Setup-Wizard-Guide#8-notifications), or anytime later under **Settings** → **Notifications**.
+Configure providers in the [Setup Wizard](Setup-Wizard-Guide#6-notifications) — re-run it anytime from **Settings → System → Setup Wizard**. Mobile app push pairing lives in **Settings → Notifications**.
 
-You can enable as many providers as you want at once.
+You can enable as many providers as you want at once. A provider is enabled by filling in its fields — there's no separate on/off checkbox.
 
 ## Providers
 
@@ -104,13 +102,19 @@ Generic — POSTs a JSON payload to any URL. Useful for Home Assistant, n8n, Nod
 
 | Field | Example |
 |-------|---------|
-| Webhook URL | `http://homeassistant.local:8123/api/webhook/sentryusb` |
+| Webhook URL | `http://homeassistant.local:8123/api/webhook/dashusb` |
 
-### Mobile App (beta)
-Push notifications to the Sentry USB iOS companion app. Currently in beta. Toggle it on in the wizard if you've installed the app and paired it.
+### Mobile App
+Push notifications to your phone via the Sentry Connect push service.
+
+To pair: open **Settings → Notifications → Mobile Notifications** in the web UI, generate a pairing code, and enter it in the app under **Settings → Pair for Notifications**.
+
+> **Current status:** push notifications work today through the Sentry Connect app's notification pairing. The app's *device* pairing (discovering the Pi over Bluetooth) does **not** recognize Dash USB devices yet — a dedicated **Dash Connect** app is planned. You don't need device pairing for push notifications.
 
 ---
 
 ## Testing notifications
 
-After the wizard finishes, **Settings** → **Notifications** → **Send Test** fires a test message to every enabled provider so you can confirm setup.
+**Settings → Notifications → Mobile Notifications → Send Test Notification** fires a test push to your paired phone.
+
+For the other providers, the quickest end-to-end check is to trigger an archive run: click **Archive Sync** at the top of the **Settings** page and watch for the "Archiving started" message on every enabled provider.

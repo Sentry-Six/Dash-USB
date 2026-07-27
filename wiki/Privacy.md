@@ -1,22 +1,22 @@
 # Privacy
 
-This page documents every outbound data flow from a SentryUSB device,
+This page documents every outbound data flow from a Dash USB device,
 the legal basis it relies on under GDPR, how long the data is retained,
 and how to disable it. If anything you observe on the wire doesn't
 match what's listed here, it's a bug — please open an issue.
 
 ## Summary
 
-By default, SentryUSB sends **no device identifier** to our servers.
+By default, Dash USB sends **no device identifier** to our servers.
 The "opt-in for analytics" toggle in the setup wizard and in
-`Settings → Privacy` is the only switch that controls whether a
-device-derived identifier ever leaves your Pi.
+`Settings → System → Analytics opt-in` is the only switch that controls
+whether a device-derived identifier ever leaves your Pi.
 
 ## Per-flow disclosure
 
 ### 1. Daily update check
 
-- **Endpoint:** `POST https://api.sentry-six.com/sentryusb/telemetry`
+- **Endpoint:** `POST https://api.sentry-six.com/dashusb/telemetry`
 - **Sent:** `current_version`, `arch`, `model`, `update_available` flag,
   `new_version` (when relevant)
 - **Identifier:** None by default. **If you have opted in** to the
@@ -32,12 +32,12 @@ device-derived identifier ever leaves your Pi.
 - **Retention:** Opted-in rows kept until you toggle off or the row
   is purged manually. Non-fingerprinted calls are not stored — only
   rate-limit counters survive briefly in RAM.
-- **How to disable:** `Settings → Privacy → Analytics opt-in → Opted
+- **How to disable:** `Settings → System → Analytics opt-in → Opted
   out`. The toggle takes effect immediately.
 
 ### 2. Anonymous install beacon
 
-- **Endpoint:** `POST https://api.sentry-six.com/sentryusb/install-beacon`
+- **Endpoint:** `POST https://api.sentry-six.com/dashusb/install-beacon`
 - **Sent:** **Nothing.** Empty body, no headers beyond standard HTTP.
 - **Identifier:** None. The server only increments a daily counter.
 - **Purpose:** Tell us gross install volume independent of the opt-in
@@ -53,56 +53,9 @@ device-derived identifier ever leaves your Pi.
   before first boot: `sudo touch /mutable/.beaconed`. Network-block
   `api.sentry-six.com` if you want to be sure.
 
-### 3. Wraps / lock chime submissions
+### 3. Mobile push notification pairing (opt-in)
 
-- **Endpoint:** `POST https://api.sentry-six.com/wraps/upload`,
-  `POST https://api.sentry-six.com/lockchime/upload`
-- **Sent:** The file you uploaded, name, model (for wraps), and your
-  IP address (briefly, for rate-limiting and abuse moderation).
-- **Identifier:** **No device fingerprint.** Older versions sent an
-  `X-Fingerprint` header — that was removed. Abuse handling now goes
-  through the Discord moderation queue plus per-IP rate limits.
-- **Purpose:** Sharing your contribution with the community.
-- **Legal basis:** Contractual necessity under Art. 6(1)(b) — you
-  triggered the upload, so processing the upload is intrinsic to
-  the service you requested.
-- **Retention:** The uploaded file is retained as long as it's listed
-  in the community library. Your IP is retained in the row for
-  abuse-investigation purposes only; not exposed to the public
-  library view.
-- **How to disable:** Don't submit. Browsing/downloading the library
-  is anonymous (no headers needed) and rate-limited by IP only.
-
-### 4. Wraps / lock chime downloads
-
-- **Endpoint:** `GET https://api.sentry-six.com/wraps/download/<code>`,
-  `GET https://api.sentry-six.com/lockchime/download/<code>`
-- **Sent:** Standard HTTP request. No custom identifying headers.
-- **Identifier:** None.
-- **Purpose:** Fetch the requested asset.
-- **Legal basis:** Contractual necessity — you asked for the file.
-- **Retention:** A unique-download counter at the IP level was
-  previously kept; with `X-Fingerprint` removed it's no longer
-  meaningful and is effectively dormant.
-- **How to disable:** Don't download.
-
-### 5. Sentry Cloud (sync feature, opt-in)
-
-- **Endpoint:** Various `https://api.sentry-six.com/cloud/...` routes.
-- **Sent:** Your Sentry Cloud account credentials (signing in), then
-  the files and metadata you sync.
-- **Identifier:** Your Sentry Cloud account.
-- **Purpose:** Cloud sync requires it — the feature can't function
-  otherwise.
-- **Legal basis:** Contractual necessity (Art. 6(1)(b)) — you signed
-  up for the service.
-- **Retention:** See the Sentry Cloud terms of service.
-- **How to disable:** Don't sign in to Cloud. The feature is fully
-  opt-in.
-
-### 6. iOS push notification pairing (opt-in)
-
-- **Endpoint:** `POST https://api.sentry-six.com/register-code`
+- **Endpoint:** `POST https://notifications.sentry-six.com/register-code`
 - **Sent:** A `device_id` (random UUID generated on this Pi),
   `device_secret`, your chosen pairing code, and your Pi's hostname.
 - **Identifier:** The `device_id` — but it's a random value created
@@ -111,32 +64,31 @@ device-derived identifier ever leaves your Pi.
 - **Purpose:** Routing push notifications from your Pi to your phone.
 - **Legal basis:** Consent — you actively enabled this feature.
 - **Retention:** Kept until you unpair the device.
-- **How to disable:** Don't pair, or unpair in the iOS app + delete
-  the credentials on the Pi.
+- **How to disable:** Don't pair, or unpair in the app + delete
+  the credentials on the Pi
+  (`/root/.dashusb/notification-credentials.json`).
 
-## Things SentryUSB does **not** do
+## Things Dash USB does **not** do
 
 - Send a hardware fingerprint without explicit opt-in.
-- Phone home on every boot. (The old `spawn_startup_telemetry` was
-  removed entirely in the privacy overhaul.)
+- Phone home on every boot.
 - Send "diagnostics" or "crash reports" in the background. If a crash
   reporter is ever added, it will be its own opt-in.
 - Bundle multiple consents under one button. Each opt-in is a separate
   affirmative action.
 - Use pre-ticked checkboxes — explicit click required.
+- Touch your footage. Recordings only go where *you* point the archive
+  (your NAS, your server, your cloud account) — never to our servers.
 
 ## Source code references
 
 If you want to verify any of the above against the source:
 
 - Update-check telemetry: `crates/api/src/update.rs` → `send_telemetry()`.
-  Look for the `analytics_opt_in` read and confirm the `fingerprint`
+  Look for the analytics opt-in read and confirm the `fingerprint`
   key is only inserted when that pref is `true`.
 - Install beacon: same file → `spawn_install_beacon()`. The POST is
-  bodyless.
-- Wraps/chimes header forwarding: `crates/api/src/community.rs` →
-  `forward_headers()`. Should only forward `x-passcode`, never
-  `x-fingerprint`.
+  bodyless and gated on `/mutable/.beaconed`.
 - Notification pairing: `crates/api/src/notifications.rs` →
   `register_code_with_backend()`. Confirm the request body has no
   `fingerprint` field.
@@ -144,7 +96,7 @@ If you want to verify any of the above against the source:
 ## Reporting a privacy bug
 
 Open an issue at
-[github.com/Sentry-Six/Sentry-USB-Rusty/issues](https://github.com/Sentry-Six/Sentry-USB-Rusty/issues)
+[github.com/Sentry-Six/Dash-USB/issues](https://github.com/Sentry-Six/Dash-USB/issues)
 or email `privacy@sentry-six.com`. If the bug is "the client sent X
 even though the docs said it wouldn't" please include a `tcpdump` or
 the relevant journalctl line so we can fix it.
