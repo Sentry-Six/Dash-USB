@@ -840,7 +840,7 @@ const INSTALL_BEACON_MARKER: &str = "/mutable/.beaconed";
 /// carries `{current_version, update_available, new_version, arch, model}`.
 /// A device fingerprint is included **only** if the user has explicitly
 /// opted in via the `analytics_opt_in` preference (set by the setup wizard
-/// or Settings → Privacy). This is the GDPR Art. 6(1)(a) consent gate —
+/// or Settings → System). This is the GDPR Art. 6(1)(a) consent gate —
 /// without an opt-in, the backend treats the call as an opted-out heartbeat
 /// (no DB row, IP-rate-limited).
 ///
