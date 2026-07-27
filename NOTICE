@@ -29,13 +29,6 @@ substantial verbatim or lightly-adapted upstream content.
   tools/debian-resizefs.sh
   tools/resize-image.sh
 
-  run/disable_gadget.sh
-  run/enable_gadget.sh
-  run/force_sync.sh
-  run/make_snapshot.sh
-  run/manage_free_space.sh
-  run/release_snapshot.sh
-
   run/cifs_archive/archive-clips.sh
   run/cifs_archive/archive-is-reachable.sh
   run/cifs_archive/connect-archive.sh
@@ -62,23 +55,14 @@ substantial verbatim or lightly-adapted upstream content.
   run/rsync_archive/disconnect-archive.sh
   run/rsync_archive/verify-and-configure-archive.sh
 
-  setup/pi/configure.sh
   setup/pi/configure-ap.sh
   setup/pi/configure-automount.sh
   setup/pi/configure-samba.sh
   setup/pi/configure-ssh.sh
-  setup/pi/create-backingfiles.sh
   setup/pi/create-backingfiles-partition.sh
   setup/pi/envsetup.sh
   setup/pi/make-root-fs-readonly.sh
   setup/pi/verify-configuration.sh
-
-The "MUSIC_SHARE_NAME" rsync helpers below replace the upstream stub but
-remain under MIT alongside their sibling archive scripts:
-
-  run/cifs_archive/copy-music.sh
-  run/nfs_archive/copy-music.sh
-  run/rsync_archive/copy-music.sh
 
 ================================================================================
 2. Vendored npm dependencies  --  see web/node_modules
