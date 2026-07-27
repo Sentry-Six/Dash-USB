@@ -595,9 +595,8 @@ pub fn rebuild_all_snapshot_links() -> Result<()> {
     Ok(())
 }
 
-/// Check whether any symlink under `/mutable/Recordings/` already
-/// points at this snapshot. Used to skip rebuilds for snapshots that
-/// are already linked.
+/// Whether any symlink under `/mutable/Recordings/` already points at this
+/// snapshot, which means its rebuild can be skipped.
 fn has_existing_links_into_snapshot(snap_name: &str) -> bool {
     let needle = format!("/{}/", snap_name);
     walk_for_symlink_pointing_at(Path::new(RECORDINGS), &needle, 0)
