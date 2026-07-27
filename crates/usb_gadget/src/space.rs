@@ -1,25 +1,25 @@
-//! Free space management for the backing filesystem.
+//! Free space management for the backing filesystem: release old snapshots
+//! when space runs low.
 //!
-//! Monitors disk usage and releases old snapshots when space runs low.
-//! archiveloop's freespacemanager passes the reserve it computes
-//! (10 GB + 3% of the filesystem) through `manage_free_space.sh`; when
-//! no reserve is given (manual CLI use), the same formula is applied
-//! here so both paths agree.
+//! `run/archiveloop`'s freespacemanager computes the reserve (10 GB + 3% of
+//! the filesystem) and passes it through `manage_free_space.sh`. Manual CLI
+//! use passes none, so the same formula is duplicated in [`default_reserve`]
+//! and must stay in step with archiveloop.
 
 use anyhow::Result;
 use tracing::{info, warn};
 
 const BACKINGFILES: &str = "/backingfiles";
 
-/// Default reserve: 10 GB + 3% of the filesystem, matching the bash
-/// freespacemanager's computation.
+/// 10 GB + 3% of the filesystem. Must match `freespacemanager` in
+/// `run/archiveloop`.
 fn default_reserve(total: u64) -> u64 {
     10_737_418_240 + total / 33
 }
 
-/// Check if free space is below the reserve and release old snapshots
-/// if needed. `reserve_bytes` comes from the CLI (archiveloop passes
-/// its computed reserve); `None` falls back to [`default_reserve`].
+/// Release old snapshots while free space is below the reserve.
+/// `reserve_bytes` comes from the CLI (archiveloop passes its computed
+/// reserve); `None` falls back to [`default_reserve`].
 pub async fn manage_free_space(reserve_bytes: Option<u64>) -> Result<()> {
     let _lock = super::snapshot::acquire_mgmt_lock()?;
 
@@ -47,9 +47,9 @@ pub async fn manage_free_space(reserve_bytes: Option<u64>) -> Result<()> {
 
     // Oldest first, but NEVER the newest COMPLETED snapshot: it holds the
     // only captured copy of the most recent footage (the live drive rolls
-    // over), and make_snapshot's TOC diff needs a predecessor. "Completed"
-    // requires both snap.bin and its committed .toc; a dir abandoned by a
-    // crash mid-make protects nothing and stays releasable even when it
+    // over), and make_snapshot's TOC diff needs a predecessor. Completed
+    // means both snap.bin and its committed .toc exist; a directory left by
+    // a crash mid-make protects nothing and stays releasable even when it
     // sorts newest.
     let keep = snapshots.iter().rev().find(|s| snapshot_is_completed(s));
     let releasable: Vec<&String> = snapshots
@@ -91,16 +91,16 @@ pub async fn manage_free_space(reserve_bytes: Option<u64>) -> Result<()> {
     Ok(())
 }
 
-/// A snapshot is completed when both its disk image and committed TOC
-/// exist. `make_snapshot` renames `snap.bin.toc_` → `snap.bin.toc` as
-/// its final step, so a missing TOC means the snapshot was abandoned.
+/// Completed means both the disk image and the committed TOC exist.
+/// `make_snapshot` renames `snap.bin.toc_` to `snap.bin.toc` as its final
+/// step, so a missing TOC means the snapshot was abandoned.
 fn snapshot_is_completed(snap_name: &str) -> bool {
     let dir = format!("{}/snapshots/{}", BACKINGFILES, snap_name);
     std::path::Path::new(&format!("{}/snap.bin", dir)).exists()
         && std::path::Path::new(&format!("{}/snap.bin.toc", dir)).exists()
 }
 
-/// Get total and free bytes for a filesystem.
+/// Returns `(total_bytes, free_bytes)`.
 fn get_space(path: &str) -> Result<(u64, u64)> {
     let output = std::process::Command::new("stat")
         .args(["--file-system", "--format=%b %S %f", path])
@@ -128,7 +128,6 @@ mod tests {
 
     #[test]
     fn default_reserve_matches_bash_formula() {
-        // 10 GB + total/33 (≈3%)
         assert_eq!(default_reserve(0), 10_737_418_240);
         assert_eq!(default_reserve(330_000_000_000), 10_737_418_240 + 10_000_000_000);
     }

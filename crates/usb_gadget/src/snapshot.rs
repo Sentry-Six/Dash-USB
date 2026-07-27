@@ -83,7 +83,6 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
         bail!("cp --reflink failed: {}", e);
     }
 
-    // Optional fsck on the loop-mounted partition.
     if !skip_fsck {
         if let Err(e) = fsck_snapshot(&snap_file).await {
             warn!("fsck on {} failed (non-fatal): {}", snap_file, e);
@@ -140,10 +139,10 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
         warn!("make_links_for_snapshot failed: {}", e);
     }
 
-    // Commit the TOC.
+    // This rename is the commit point: slot reuse and free-space pruning
+    // both treat a snapshot without a `.toc` as abandoned.
     let _ = std::fs::rename(&toc_path_tmp, &toc_path);
 
-    // Rebuild all link trees when the flag file is present.
     if Path::new(REBUILD_FLAG).exists() {
         if let Err(e) = rebuild_all_snapshot_links() {
             warn!("rebuild_all_snapshot_links: {}", e);
@@ -158,10 +157,10 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
 ///
 /// Callers pass either a bare name (`snap-000001`, e.g. from autofs) or a
 /// full path under the snapshots dir (`/backingfiles/snapshots/snap-000001`,
-/// e.g. the WebUI delete handler and `make_snapshot.sh`'s discard path). We
-/// take the final path component so every form works. Taking the basename
-/// also neutralizes `..` traversal: only the last component is ever used,
-/// then appended to `SNAPSHOTS_DIR`.
+/// e.g. the WebUI delete handler and `make_snapshot.sh`'s discard path), so
+/// only the final path component is used. That also neutralizes `..`
+/// traversal: the last component is all that ever gets appended to
+/// `SNAPSHOTS_DIR`.
 fn normalize_snap_name(input: &str) -> Option<String> {
     let name = Path::new(input).file_name()?.to_str()?;
     if name.starts_with("snap-") && !name.contains("..") {
@@ -198,10 +197,10 @@ pub(crate) async fn release_snapshot_unlocked(snap_name: &str) -> Result<()> {
     }
 
     std::fs::remove_dir_all(&snap_dir)?;
-    // Parity with the bash release flow: drop every /mutable/Recordings
-    // symlink that pointed into this snapshot, then prune date folders
-    // left empty. Without this, released snapshots leave broken links
-    // that clutter the Viewer/Samba and slowly eat mutable's inodes.
+    // Drop every /mutable/Recordings symlink that pointed into this
+    // snapshot, then prune the date folders left empty. Without this,
+    // released snapshots leave broken links that clutter the Viewer and
+    // Samba and slowly eat mutable's inodes.
     prune_links_into(&name);
     info!("Released snapshot: {}", name);
     Ok(())
@@ -227,7 +226,7 @@ fn prune_links_into(snap_name: &str) {
                 }
             } else if ftype.is_dir() {
                 walk(&path, needle, depth + 1);
-                // Empty after pruning ⇒ remove (fails harmlessly if not).
+                // Remove if pruning emptied it (fails harmlessly otherwise).
                 let _ = std::fs::remove_dir(&path);
             }
         }
@@ -235,7 +234,6 @@ fn prune_links_into(snap_name: &str) {
     walk(Path::new(RECORDINGS), &needle, 0);
 }
 
-/// List all snapshots.
 pub fn list_snapshots() -> Vec<String> {
     let mut snaps = Vec::new();
     if let Ok(entries) = std::fs::read_dir(SNAPSHOTS_DIR) {
@@ -250,10 +248,9 @@ pub fn list_snapshots() -> Vec<String> {
     snaps
 }
 
-// Helpers
-
-/// Find the next free `snap-NNNNNN` slot. If the previous snapshot
-/// looks abandoned (no `.toc` file, snap.bin missing), reuse its number.
+/// Find the next free `snap-NNNNNN` slot. A previous snapshot with no
+/// `.toc` (or no snap.bin) was interrupted mid-run, so its number is
+/// wiped and reused.
 ///
 /// Returns `(snap_num, Option<previous_toc_path>)`. The previous TOC
 /// is `None` on a brand-new install (no completed snapshots yet).
@@ -298,15 +295,15 @@ fn pick_next_snapshot_slot() -> Result<(u32, Option<String>)> {
 }
 
 /// fsck the snapshot's filesystem partition via a temporary loop device.
-/// Failures are logged but non-fatal: `archive-clips` still runs. Losing
-/// strict verification beats
-/// of one snapshot than abort the whole archive cycle.
+/// Failures are logged but non-fatal so `archive-clips` still runs: losing
+/// strict verification of one snapshot beats aborting the whole archive
+/// cycle.
 async fn fsck_snapshot(snap_file: &str) -> Result<()> {
     let loop_dev = losetup_find_show(snap_file).await?;
     let part = format!("{}p1", loop_dev);
 
-    // `-p` works for both vfat and exfat. Output goes to stderr; we
-    // surface a non-zero exit but don't propagate it.
+    // `-p` works for both vfat and exfat. The exit status is discarded
+    // deliberately; see the doc comment.
     let _ = sentryusb_shell::run_with_timeout(
         Duration::from_secs(120),
         "fsck",
@@ -318,9 +315,7 @@ async fn fsck_snapshot(snap_file: &str) -> Result<()> {
     Ok(())
 }
 
-/// Wrapper around `losetup -f -P --show <file>` with a small retry
-/// loop, mirroring `losetup_find_show` in
-/// `Sentry-USB/setup/pi/envsetup.sh:232-254`. Some kernels race on
+/// `losetup -f -P --show <file>` with a retry loop: some kernels race on
 /// the partition probe and return a device that isn't ready yet.
 async fn losetup_find_show(file: &str) -> Result<String> {
     for attempt in 0..5 {
@@ -342,9 +337,8 @@ async fn losetup_find_show(file: &str) -> Result<String> {
     bail!("losetup did not produce a usable device for {}", file)
 }
 
-/// Wait for autofs to be active before we hand it work. Capped at
-/// 30 retries (~30s) so a misconfigured system doesn't hang archive
-/// indefinitely.
+/// Wait for autofs to become active, capped at 30 retries (~30s) so a
+/// misconfigured system doesn't hang the archive cycle indefinitely.
 async fn wait_for_autofs() {
     for _ in 0..30 {
         if sentryusb_shell::run("systemctl", &["--quiet", "is-active", "autofs"])
@@ -358,9 +352,8 @@ async fn wait_for_autofs() {
     warn!("autofs is not active after 30s; symlinks may dangle");
 }
 
-/// Run `find <root> -type f -printf '%s %P\n'` and write the result to
-/// `out_path`. Format is `<size> <relative-path>` per line, matching the
-/// bash TOC produced at line 309.
+/// Write a TOC to `out_path`: one `<size> <relative-path>` line per file
+/// under `root`.
 async fn generate_toc(root: &str, out_path: &str) -> Result<()> {
     let cmd = format!(
         "find {} -type f -printf '%s %P\\n' > {}",
@@ -374,7 +367,7 @@ async fn generate_toc(root: &str, out_path: &str) -> Result<()> {
 }
 
 fn shell_escape(s: &str) -> String {
-    // Just single-quote: snap paths are well-known and don't contain quotes.
+    // Single-quote, escaping any embedded quote.
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
@@ -425,15 +418,15 @@ fn make_links_for_snapshot(
 
 /// [`make_links_for_snapshot`] over an explicit recordings root (testable).
 ///
-/// Guard against archiving a segment the car is still writing (which
-/// would poison the dedup ledger with a permanently truncated offsite
-/// copy): per camera, every clip EXCEPT the newest links immediately.
-/// A successor proves the predecessor closed, with no
-/// dependence on any clock. The newest clip per camera links only when
-/// its size is unchanged versus the previous snapshot's TOC (snapshots
-/// are ≥ the segment length apart by default, so equal size means
-/// closed). First snapshot (no previous TOC) holds the newest back one
-/// cycle; the snapshot itself still preserves the bytes.
+/// Closed-segment guard, so a segment the car is still writing is never
+/// archived (a truncated offsite copy would poison the dedup ledger).
+/// Per camera, every clip EXCEPT the newest links immediately: a successor
+/// proves the predecessor closed, and that holds without reading the car's
+/// clock. The newest clip per camera links only once its size is unchanged
+/// versus the previous snapshot's TOC (snapshots are ≥ the segment length
+/// apart by default, so an equal size means closed). With no previous TOC
+/// the newest clip is held one cycle; the snapshot itself still preserves
+/// the bytes.
 fn make_links_in(
     recordings: &Path,
     profile: &sentryusb_vehicle_profile::Profile,
@@ -498,10 +491,10 @@ fn make_links_in(
     Ok(())
 }
 
-/// Recursive collection walk, depth-bounded. Today's GM layout is flat,
-/// but a firmware that starts date-bucketing must not break
-/// capture). Collects every file whose name matches the profile's clip
-/// pattern; linking decisions happen in [`make_links_in`].
+/// Collect every file under `dir` whose name matches the profile's clip
+/// pattern; linking decisions happen in [`make_links_in`]. The walk is
+/// depth-bounded: today's GM layout is flat, but a firmware that starts
+/// date-bucketing must not break capture.
 fn collect_clips_under(
     dir: &Path,
     profile: &sentryusb_vehicle_profile::Profile,
@@ -579,7 +572,7 @@ pub fn rebuild_all_snapshot_links() -> Result<()> {
             continue;
         }
 
-        // Verify the snapshot can mount before we ask make_links to walk it.
+        // Confirm the snapshot mounts before walking it.
         if std::fs::read_dir(&snap_mnt).is_err() {
             warn!("rebuild: snapshot {} not mountable, skipping", snap_name);
             continue;
@@ -651,10 +644,8 @@ mod tests {
 
     #[test]
     fn normalize_accepts_full_path() {
-        // The regression: the WebUI delete handler (and make_snapshot.sh's
-        // discard path) pass a full path. The old `contains('/')` guard
-        // rejected this outright, so deletes failed via the thin-wrapper
-        // `release_snapshot.sh` → `dashusb snapshot release "$@"` route.
+        // The WebUI delete handler and make_snapshot.sh's discard path
+        // pass a full path; a `contains('/')` guard here broke deletes.
         assert_eq!(
             normalize_snap_name("/backingfiles/snapshots/snap-000001").as_deref(),
             Some("snap-000001"),
