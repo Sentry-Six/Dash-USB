@@ -1,17 +1,15 @@
 #!/bin/bash -e
 
-# ── DashUSB Image Setup ──
-# This runs inside pi-gen's chroot during image build.
-# Goal: produce an image where the user flashes, boots, and gets a web UI.
+# Runs inside pi-gen's chroot during image build. Produces an image where
+# the user flashes, boots, and gets a web UI.
 
 touch "${ROOTFS_DIR}/boot/ssh"
 
-# Remove firstrun.sh and the firstboot init hook. WiFi/hostname setup is
-# handled by the DashUSB iOS app via BLE, so Raspberry Pi Imager
-# customization is not needed. Stripping the firstboot init= parameter
-# prevents the Bookworm initramfs from auto-expanding the root partition
-# to fill the entire disk. The setup script needs that free space for
-# backingfiles and mutable partitions.
+# Remove firstrun.sh and the firstboot init hook. WiFi/hostname setup goes
+# through the DashUSB iOS app over BLE, so Raspberry Pi Imager customization
+# is unused. Stripping the firstboot init= parameter also stops the Bookworm
+# initramfs auto-expanding the root partition to fill the disk; setup needs
+# that free space for the backingfiles and mutable partitions.
 rm -f "${ROOTFS_DIR}/boot/firmware/firstrun.sh"
 rm -f "${ROOTFS_DIR}/boot/firmware/userconf.txt"
 rm -f "${ROOTFS_DIR}/boot/firmware/custom.toml"
@@ -32,22 +30,17 @@ install -m 666 files/run_once                             "${ROOTFS_DIR}/boot/fi
 install -d "${ROOTFS_DIR}/root/bin"
 install -d "${ROOTFS_DIR}/opt/dashusb"
 
-# Create /dashusb symlink → /boot/firmware
 ln -sf /boot/firmware "${ROOTFS_DIR}/dashusb"
 
-# ensure dwc2 module is loaded for USB gadget
+# dwc2 overlay: required for USB gadget mode.
 echo "dtoverlay=dwc2" >> "${ROOTFS_DIR}/boot/firmware/config.txt"
 
-# ── Pre-install DashUSB binary variants + picker ──
-#
-# On aarch64 images we stage three per-CPU-tuned variants (a53/a72/a76).
-# The runtime picker (installed below) symlinks the right one to
-# dashusb-current at every service start. On armv7 images there's
-# a single variant, but the same picker handles both cases.
-#
-# armv6 (armel) is no longer supported. The original Pi Zero W and Pi 1
-# don't have the headroom to run the daemon; image builds for those
-# boards aren't produced anymore.
+# Pre-install the DashUSB binary variants and the picker.
+# aarch64 images stage three per-CPU-tuned variants (a53/a72/a76); armv7
+# stages one. The picker installed below symlinks the right one to
+# dashusb-current at every service start and covers both cases.
+# No armv6/armel variant: the original Pi Zero W and Pi 1 lack the headroom
+# to run the daemon.
 REPO="Sentry-Six/Dash-USB"
 case "$(dpkg --print-architecture 2>/dev/null || echo arm64)" in
     arm64|aarch64) SUFFIXES="linux-arm64-a53 linux-arm64-a72 linux-arm64-a76" ;;
@@ -57,11 +50,10 @@ esac
 
 for sfx in $SUFFIXES; do
     DEST="${ROOTFS_DIR}/opt/dashusb/dashusb-${sfx}"
-    # Three input paths, preferred order: env override > injected file >
-    # release download. The env override is only meaningful in CI, where
-    # the build script can point at a freshly-cross-compiled binary by
-    # setting DASHUSB_BINARY_LINUX_ARM64_A72 (etc.): uppercase, dashes
-    # to underscores.
+    # Preferred order: env override > injected file > release download.
+    # The env override only matters in CI, where the build script points at
+    # a freshly cross-compiled binary via DASHUSB_BINARY_LINUX_ARM64_A72
+    # (etc: the suffix uppercased, dashes to underscores).
     env_var="DASHUSB_BINARY_$(echo "$sfx" | tr 'a-z-' 'A-Z_')"
     env_val="${!env_var:-}"
     if [ -n "${env_val}" ] && [ -f "${env_val}" ]; then
@@ -70,9 +62,9 @@ for sfx in $SUFFIXES; do
         cp "files/dashusb-${sfx}" "${DEST}"
     elif [ -f "files/dashusb-binary" ] && [ "${sfx}" = "$(echo $SUFFIXES | awk '{print $1}')" ]; then
         # Back-compat: build-image.sh's pre-multi-binary path drops a single
-        # binary as files/dashusb-binary. Use it for the first suffix; the
-        # other variants will be missing (the picker's fallback chain handles
-        # this; the daemon still runs, just without the per-CPU optimization).
+        # files/dashusb-binary. Use it for the first suffix and leave the
+        # other variants missing; the picker's fallback chain covers that,
+        # so the daemon still runs, just without the per-CPU tuning.
         cp "files/dashusb-binary" "${DEST}"
     else
         URL="https://github.com/${REPO}/releases/latest/download/dashusb-${sfx}"
@@ -85,10 +77,9 @@ for sfx in $SUFFIXES; do
     chmod +x "${DEST}"
 done
 
-# Install the picker script (selects the right variant at every boot).
 install -m 755 "files/dashusb-pick-binary" "${ROOTFS_DIR}/usr/local/bin/dashusb-pick-binary"
 
-# Write version file
+# Record the latest release tag as the image version.
 RELEASE_TAG=$(curl -fsSL --max-time 10 "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
     | grep '"tag_name"' | head -1 \
     | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' || true)
@@ -97,7 +88,7 @@ if [ -n "${RELEASE_TAG:-}" ]; then
     echo "Version: $RELEASE_TAG"
 fi
 
-# ── Install remountfs_rw helper (needed by BLE daemon to save PIN on read-only rootfs) ──
+# remountfs_rw: the BLE daemon needs it to save the PIN on a read-only rootfs.
 if [ -f "../../run/remountfs_rw" ]; then
     install -m 755 "../../run/remountfs_rw" "${ROOTFS_DIR}/root/bin/remountfs_rw"
 else
@@ -115,10 +106,10 @@ RWEOF
     chmod +x "${ROOTFS_DIR}/root/bin/remountfs_rw"
 fi
 
-# ── /root/.bashrc reminder pointing at bin/remountfs_rw ──
-# Baked into the image so the tip prints on every `sudo -i` even before
-# setup-dashusb has run. setup-dashusb keeps an idempotent copy of
-# this block so upgrades to existing installs land it too.
+# /root/.bashrc reminder pointing at bin/remountfs_rw. Baked into the image
+# so the tip prints on every `sudo -i` even before setup-dashusb has run.
+# setup-dashusb keeps an idempotent copy of this block so upgrades to
+# existing installs land it too.
 if ! grep -q DASHUSB_TIP1 "${ROOTFS_DIR}/root/.bashrc" 2>/dev/null; then
     cat >> "${ROOTFS_DIR}/root/.bashrc" <<- 'EOC'
 	if [ -n "$PS1" ]; then
@@ -141,9 +132,9 @@ else
         -o "${BLE_SERVICE}" 2>/dev/null || echo "WARNING: Could not fetch BLE service file"
 fi
 
-# The daemon the unit executes, and its dbus policy. Without these the
-# enabled service just crash-loops and phone provisioning is dead on a
-# fresh image (no Ethernet fallback on a Zero 2 W).
+# The daemon the unit executes, plus its dbus policy. Without these the
+# enabled service crash-loops and phone provisioning is dead on a fresh
+# image (a Zero 2 W has no Ethernet fallback).
 mkdir -p "${ROOTFS_DIR}/root/bin" "${ROOTFS_DIR}/etc/dbus-1/system.d"
 for src_dir in files ../../server/ble; do
     [ -f "${src_dir}/dashusb-ble.py" ] && install -m 755 "${src_dir}/dashusb-ble.py" "${ROOTFS_DIR}/root/bin/dashusb-ble.py" && break

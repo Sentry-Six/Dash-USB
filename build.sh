@@ -1,16 +1,14 @@
 #!/bin/bash
-# Build script for DashUSB Rust binary
-# Usage: ./build.sh [target]
-#   target: arm64 (default), armv7, native
+# Usage: ./build.sh [arm64|armv7|native]   (default: arm64)
+# Builds the web UI into crates/sentryusb/static, then compiles dashusb.
 
 set -e
 
-# Build frontend. Prefer this repo's own web/ (current layout); fall back
-# to the legacy ../Sentry-USB/web sibling for old checkouts. static/ is
-# gitignored (never committed: a stale committed copy once silently
-# shipped an old UI), so this step is what populates it; without it a
-# bare cargo build embeds the "frontend not built" placeholder that
-# crates/sentryusb/build.rs writes.
+# Build the frontend. Prefer this repo's web/; fall back to the legacy
+# ../Sentry-USB/web sibling for old checkouts. static/ is gitignored, so
+# this step is the only thing that populates it: without it a bare cargo
+# build embeds the "frontend not built" placeholder from
+# crates/sentryusb/build.rs.
 WEB_DIR="$(dirname "$0")/web"
 if [ ! -f "$WEB_DIR/package.json" ]; then
     WEB_DIR="$(dirname "$0")/../Sentry-USB/web"
@@ -28,11 +26,10 @@ else
     echo "WARNING: no web/ found — binary will embed the 'frontend not built' placeholder."
 fi
 
-# Pre-compress static assets so embed.rs can serve raw .br / .gz bytes
-# without burning per-request CPU on the Pi Zero 2W. Skips already-
-# compressed formats (woff2, png, jpg, ico). Brotli is optional:
-# without it the server falls back to gzip, and without gzip it falls
-# back to identity + the tower-http CompressionLayer.
+# Pre-compress static assets so embed.rs serves raw .br/.gz bytes instead
+# of burning per-request CPU on the Pi Zero 2W. Brotli is optional: without
+# it the server falls back to gzip, then to identity plus the tower-http
+# CompressionLayer.
 if [ -d crates/sentryusb/static ]; then
     HAS_BROTLI=0
     if command -v brotli >/dev/null 2>&1; then
@@ -45,14 +42,12 @@ if [ -d crates/sentryusb/static ]; then
     echo "Pre-compressing static assets..."
     COUNT=0
     while IFS= read -r -d '' f; do
-        # Skip if the file is already a compressed sibling or already-
-        # compressed binary format. Anything passing this filter is
-        # text/SVG/JSON/JS/CSS/HTML.
+        # Skip compressed siblings and already-compressed binary formats;
+        # what survives is text/SVG/JSON/JS/CSS/HTML.
         case "$f" in
             *.br|*.gz|*.woff2|*.png|*.jpg|*.jpeg|*.webp|*.ico|*.gif|*.mp4|*.mp3|*.zip) continue ;;
         esac
-        # Only worth compressing files above ~1 KB. Smaller files have
-        # no compression win and just clutter the binary.
+        # Below ~1 KB there is no compression win, only binary bloat.
         SIZE=$(wc -c < "$f")
         if [ "$SIZE" -lt 1024 ]; then continue; fi
 
