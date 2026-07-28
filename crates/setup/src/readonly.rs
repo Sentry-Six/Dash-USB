@@ -329,7 +329,7 @@ pub async fn make_readonly(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
 
     // A oneshot service unblocks BT on every boot. The BT radio starts
     // soft-blocked by default on RPi, and on a read-only root the block never
-    // clears, breaking BLE (Tesla BLE key).
+    // clears, so the BLE peripheral daemon never comes up.
     emitter.progress("Installing Bluetooth rfkill-unblock boot service");
     std::fs::write(
         "/etc/systemd/system/rfkill-unblock-bluetooth.service",
@@ -635,7 +635,8 @@ fn update_fstab() -> Result<()> {
         ("/var/lib/dhcpcd", "tmpfs /var/lib/dhcpcd tmpfs nodev,nosuid 0 0"),
         // rfkill state on tmpfs so systemd-rfkill cannot restore the stale
         // soft-block frozen in at the moment root went read-only. Otherwise
-        // Bluetooth stays blocked on every boot and BLE (Tesla key) breaks.
+        // Bluetooth stays blocked on every boot and the BLE daemon never
+        // comes up.
         (
             "/var/lib/systemd/rfkill",
             "tmpfs /var/lib/systemd/rfkill tmpfs nodev,nosuid 0 0",

@@ -556,11 +556,9 @@ pub async fn configure_timezone(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
     // The wizard ships "auto" as the default timezone, but "auto" is NOT a
     // valid IANA zone: `timedatectl set-timezone auto` fails with "Invalid or
     // not installed time zone". Left unhandled it either loops the setup phase
-    // forever or silently leaves the Pi on UTC, and a UTC Pi mis-links drive
-    // telemetry, because clip filenames use the car's LOCAL clock while
-    // `telemetry_samples` are UTC epoch, so the odometer/battery/temps join
-    // pulls from a tz-offset window. Resolve "auto" via IP geolocation and
-    // fall back gracefully when that fails.
+    // forever or silently leaves the Pi on UTC, which date-buckets recordings
+    // by UTC while the car names them in local time. Resolve "auto" via IP
+    // geolocation and fall back gracefully when that fails.
     let tz = if raw.eq_ignore_ascii_case("auto") {
         match resolve_timezone_via_geoip().await {
             Some(z) => {

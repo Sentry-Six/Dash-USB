@@ -48,16 +48,16 @@ jobs:
         # assume the OPTIONAL ARMv8 Cryptographic Extension (+aes,+sha2)
         # — but Broadcom never licensed it: BCM2710 (Pi 3 / Zero 2 W,
         # A53) and BCM2711 (Pi 4, A72) have no crypto instructions.
-        # RustCrypto's sha1/sha2/aes skip runtime CPU detection when the
+        # RustCrypto's sha1/sha2 skip runtime CPU detection when the
         # feature is enabled at compile time, so a build with crypto
-        # baked in executes SHA/AES instructions unconditionally and
-        # dies with SIGILL on those boards the moment the BLE stack
-        # hashes the VIN (issue #88 — the real root cause; the binaries
-        # were illegal on the very CPUs they were tuned for). Strip the
-        # crypto features from a53/a72; software SHA/AES is microseconds
-        # at our message sizes. a76 keeps crypto — the Pi 5's BCM2712
-        # does implement it (and the picker requires the `aes` hwcap
-        # before selecting a76).
+        # baked in executes SHA instructions unconditionally and dies
+        # with SIGILL on those boards. The graph reaches that code on
+        # ordinary traffic: sha1 via axum/tungstenite on every WebSocket
+        # handshake, sha2 via rust-embed for asset ETags, and ring via
+        # rustls on every HTTPS request. Strip the crypto features from
+        # a53/a72; software SHA is microseconds at our message sizes.
+        # a76 keeps crypto, since the Pi 5's BCM2712 does implement it
+        # (and the picker requires the `aes` hwcap before selecting a76).
         include:
           - name: ARM64 a53 (Pi 3 / Pi Zero 2 W / Allwinner H618)
             runs_on: ubuntu-22.04-arm

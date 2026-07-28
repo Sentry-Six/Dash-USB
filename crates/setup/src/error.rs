@@ -1,9 +1,9 @@
 //! Setup error classification.
 //!
 //! `ConfigError` marks a failure caused by bad or contradictory user
-//! configuration (two keep-awake providers, an invalid `SENTRY_CASE`, a
-//! too-short `AP_PASS`, a missing required archive field), as distinct from a
-//! transient or hardware failure.
+//! configuration (a too-short `AP_PASS`, a `CAM_SIZE` below the profile
+//! minimum, a missing required archive field), as distinct from a transient
+//! or hardware failure.
 //!
 //! The web server downcasts to this type to decide whether to keep silently
 //! auto-resuming setup on every boot (safe for transient failures: a network

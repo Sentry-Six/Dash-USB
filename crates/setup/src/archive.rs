@@ -100,7 +100,7 @@ async fn trust_rsync_host_key(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
             // archive cycle reports a clearer error later, and the user can
             // re-run setup once the server is online.
             emitter.progress(&format!(
-                "ssh-keyscan {} failed: {}. Music sync may need a manual ssh-keyscan later.",
+                "ssh-keyscan {} failed: {}. Archiving may need a manual ssh-keyscan later.",
                 server, e
             ));
             return Ok(());
@@ -398,7 +398,7 @@ async fn configure_cifs_mount(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
     std::fs::create_dir_all("/mnt/archive").context("mkdir /mnt/archive")?;
 
     // fstab encodes spaces in paths as \040, which preserves share names like
-    // "Tesla Cam" without breaking the field split.
+    // "Dash Cam" without breaking the field split.
     let share_escaped = share.replace(' ', "\\040");
     let line = format!(
         "//{}/{} /mnt/archive cifs rw,noauto,credentials={},iocharset=utf8,file_mode=0777,dir_mode=0777,vers={} 0 0",

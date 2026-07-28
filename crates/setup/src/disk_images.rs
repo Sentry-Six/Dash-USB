@@ -71,9 +71,9 @@ async fn available_space_kb() -> Result<u64> {
 }
 
 /// True when an existing image file matches the requested size (within 10 MB)
-/// AND carries a FAT32 partition. A repurposed Tesla install can hold a
-/// same-sized exFAT image (`USE_EXFAT` era) that GM cannot read, so size alone
-/// must never let one survive.
+/// AND carries a FAT32 partition. A Pi reused from a Sentry USB install can
+/// hold a same-sized exFAT image (`USE_EXFAT` era) that GM cannot read, so
+/// size alone must never let one survive.
 fn image_matches(file: &str, requested_kb: u64) -> bool {
     if requested_kb == 0 {
         return !Path::new(file).exists();

@@ -26,7 +26,7 @@ You can also pass a pre-built binary:
 ### Manual Method
 
 1. Clone pi-gen: `git clone https://github.com/RPi-Distro/pi-gen`
-2. From the pi-gen folder, run: `bash /path/to/Sentry-USB/pi-gen-sources/prepare.sh`
+2. From the pi-gen folder, run: `bash /path/to/Dash-USB/pi-gen-sources/prepare.sh`
 3. Optionally set `DASHUSB_BINARY=/path/to/dashusb-linux-arm64` to inject a local binary
 4. Run `./build-docker.sh` (Docker recommended) or `./build.sh`
 5. Image will be in `deploy/`. Flash with Raspberry Pi Imager.

@@ -168,11 +168,10 @@ function balancedRuns(heights: number[], n: number): number[] {
  *    `column-width: min`.
  *
  * Do NOT switch this to CSS multi-column. Multicol is a fragmentation
- * context, and WebKit / older Chromium (the Tesla in-car browser) mis-paint
- * fragmented boxes combining `backdrop-filter`, `overflow: hidden` and
- * absolutely positioned children, all of which PrefCard uses. Symptoms were
- * blank "ghost" cards and the disabled-state overlay floating detached from
- * its card chrome.
+ * context, and WebKit plus older Chromium mis-paint fragmented boxes
+ * combining `backdrop-filter`, `overflow: hidden` and absolutely positioned
+ * children, all of which PrefCard uses. Symptoms were blank "ghost" cards and
+ * the disabled-state overlay floating detached from its card chrome.
  *
  * Layout is measured and absolutely positioned over the flattened DOM
  * children, so a section that renders several cards in a fragment

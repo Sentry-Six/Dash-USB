@@ -654,7 +654,7 @@ mod tests {
 
     #[test]
     fn classifies_config_error() {
-        let e: anyhow::Error = sentryusb_setup::ConfigError("two providers".into()).into();
+        let e: anyhow::Error = sentryusb_setup::ConfigError("AP_PASS too short".into()).into();
         assert_eq!(SetupFailure::from_error(&e).kind, "config");
     }
 
@@ -666,8 +666,8 @@ mod tests {
 
     #[test]
     fn from_error_keeps_the_message() {
-        let e: anyhow::Error = sentryusb_setup::ConfigError("SENTRY_CASE must be 1-3".into()).into();
-        assert!(SetupFailure::from_error(&e).message.contains("SENTRY_CASE"));
+        let e: anyhow::Error = sentryusb_setup::ConfigError("CAM_SIZE must be at least 64G".into()).into();
+        assert!(SetupFailure::from_error(&e).message.contains("CAM_SIZE"));
     }
 
     #[test]
