@@ -275,14 +275,7 @@ code, pre, .font-mono {
 }
 
 /* ── Progress bar animation ────────────────────────────────────── */
-@keyframes progress-stripe {
-  0% { background-position: 200% 0; }
-  100% { background-position: 0% 0; }
-}
 
-.animate-progress-stripe {
-  animation: progress-stripe 2s linear infinite;
-}
 
 /* Safe-area bottom padding for iOS notch devices */
 .pb-safe {
@@ -349,9 +342,7 @@ code, pre, .font-mono {
 .banner-body { flex: 1 1 auto; min-width: 0; }
 .banner-title { font-size: 13px; font-weight: 600; }
 .banner-sub   { font-size: 11px; color: #7a8294; }
-.banner--error { border-color: rgba(248,113,113,.25); background: rgba(248,113,113,.06); }
 .banner--warn  { border-color: rgba(251,191,36,.22); background: rgba(251,191,36,.05); }
-.banner--info  { border-color: rgba(56,189,248,.22); background: rgba(56,189,248,.05); }
 .banner--update{ border-color: color-mix(in srgb, var(--color-accent) 28%, transparent); background: color-mix(in srgb, var(--color-accent) 5%, transparent); }
 
 /* Settings header strip + actions rail */
@@ -400,10 +391,8 @@ code, pre, .font-mono {
 .halo-accent  { background: color-mix(in srgb, var(--color-accent) 15%, transparent); color: var(--color-accent); }
 .halo-amber   { background: rgba(251,191,36,.15); color: #fbbf24; }
 .halo-red     { background: rgba(248,113,113,.15); color: #f87171; }
-.halo-rose    { background: rgba(251,113,133,.15); color: #fb7185; }
 .halo-blue    { background: rgba(56,189,248,.15); color: #38bdf8; }
 .halo-violet  { background: rgba(196,181,253,.15); color: #c4b5fd; }
-.halo-purple  { background: rgba(192,132,252,.15); color: #c084fc; }
 .halo-slate   { background: rgba(122,130,148,.12); color: #b8bfcf; }
 
 /* Mini segmented progress bar (Storage tile) */
@@ -419,9 +408,6 @@ code, pre, .font-mono {
 /* Pill chip */
 .pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; letter-spacing: .04em; }
 .pill--accent { background: color-mix(in srgb, var(--color-accent) 15%, transparent); color: var(--color-accent); }
-.pill--amber  { background: rgba(251,191,36,.15); color: #fbbf24; }
-.pill--rose   { background: rgba(251,113,133,.15); color: #fb7185; }
-.pill--sky    { background: rgba(56,189,248,.15); color: #38bdf8; }
 .pill--slate  { background: rgba(122,130,148,.15); color: #b8bfcf; }
 
 /* Small text helpers */

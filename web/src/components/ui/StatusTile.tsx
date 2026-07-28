@@ -5,10 +5,8 @@ export type Halo =
   | "accent"
   | "amber"
   | "red"
-  | "rose"
   | "blue"
   | "violet"
-  | "purple"
   | "slate"
 
 interface StatusTileProps {
