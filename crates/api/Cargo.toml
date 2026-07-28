@@ -13,7 +13,7 @@ chrono = { workspace = true }
 axum = { version = "0.8", features = ["ws", "multipart"] }
 ring = "0.17"
 rand = "0.10"
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 portable-pty = "0.9"
 crc32fast = "1"
 hex = "0.4"
@@ -33,4 +33,4 @@ sentryusb-gadget = { path = "../usb_gadget", package = "sentryusb-gadget" }
 [dev-dependencies]
 tempfile = "3"
 # Only used by tests to read archives back and validate the hand-rolled writer.
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false }
