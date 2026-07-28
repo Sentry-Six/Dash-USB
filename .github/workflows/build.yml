@@ -30,9 +30,9 @@ jobs:
     #
     # aarch64 jobs run on `ubuntu-22.04-arm` (native arm64, ~10-15% faster
     # link + no cross-toolchain to install). 32-bit ARM jobs stay on
-    # x86 `ubuntu-22.04` because (a) the libdbus / sources patching dance
-    # is already tested there, and (b) cross-compile aarch64→armhf has
-    # the same complexity as x86→armhf with no payoff.
+    # x86 `ubuntu-22.04` because (a) the sources-patching dance is already
+    # tested there, and (b) cross-compile aarch64→armhf has the same
+    # complexity as x86→armhf with no payoff.
     runs-on: ${{ matrix.runs_on }}
     strategy:
       matrix:
@@ -105,23 +105,21 @@ jobs:
           # target:
           #
           #   1. aarch64-* targets on `ubuntu-22.04-arm` → NATIVE build.
-          #      Just install the basic build tools + libdbus host arch.
-          #      No foreign architectures, no cross-toolchain, no
-          #      sources patching.
+          #      Basic build tools only. No foreign architectures, no
+          #      cross-toolchain, no sources patching.
           #
           #   2. armv7-* / arm-* targets on `ubuntu-22.04` (x86) →
           #      CROSS-compile. The default Ubuntu sources are x86-only,
           #      so we wholesale-rewrite sources.list to put amd64,i386
           #      on archive.ubuntu.com and arm64,armhf on
           #      ports.ubuntu.com (the only mirror that serves them).
-          #      Then enable foreign archs + install cross gcc + the
-          #      target-arch libdbus headers.
+          #      Then enable foreign archs + install cross gcc.
           case "${{ matrix.target }}" in
             aarch64-*)
               # Native build path.
               sudo apt-get update -qq
               sudo apt-get install -y -qq \
-                brotli mold pkg-config libdbus-1-dev
+                brotli mold pkg-config
               ;;
             armv7-*|arm-*)
               # Cross-compile path (x86 host → 32-bit ARM target).
@@ -144,24 +142,9 @@ jobs:
               sudo dpkg --add-architecture armhf
               sudo apt-get update -qq
               sudo apt-get install -y -qq \
-                ${{ matrix.gcc }} brotli mold pkg-config \
-                libdbus-1-dev libdbus-1-dev:armhf
+                ${{ matrix.gcc }} brotli mold pkg-config
               ;;
           esac
-
-      - name: Configure pkg-config for cross-compile
-        # Only needed on cross builds — native aarch64 uses the system
-        # libdbus and pkg-config defaults work as-is.
-        if: startsWith(matrix.target, 'armv7-') || startsWith(matrix.target, 'arm-')
-        run: |
-          # pkg-config needs to be pointed at the target arch's .pc
-          # directory AND told that cross-compilation is OK (default
-          # refuses, on the theory that mixing host + target libs causes
-          # link-time disasters — which is exactly why we installed
-          # libdbus-1-dev:armhf separately above).
-          echo "PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_SYSROOT_DIR=/" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
 
       - name: Cache cargo registry
         uses: actions/cache@v6
@@ -290,13 +273,6 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - name: Install bluez build deps
-        # `bluer`/`btleplug` (used by crates/tesla_ble) need libdbus-1
-        # headers + pkg-config to compile. Without these `cargo test
-        # --workspace` fails to build libdbus-sys.
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libdbus-1-dev pkg-config
       - name: Ensure static dir exists
         run: |
           mkdir -p crates/sentryusb/static
