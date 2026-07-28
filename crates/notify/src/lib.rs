@@ -3,7 +3,6 @@
 //! out concurrently over one shared HTTP client.
 
 use anyhow::Result;
-use async_trait::async_trait;
 use tracing::{info, warn};
 
 pub mod discord;
@@ -18,12 +17,6 @@ pub mod slack;
 pub mod sns;
 pub mod telegram;
 pub mod webhook;
-
-#[async_trait]
-pub trait NotificationProvider: Send + Sync {
-    async fn send(&self, title: &str, message: &str) -> Result<()>;
-    fn name(&self) -> &str;
-}
 
 /// Provider settings, loaded from dashusb.conf.
 pub struct NotifyConfig {

@@ -8,7 +8,6 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-async-trait = "0.1"
 # Concurrent provider fan-out in send_to_all_with_context.
 futures = "0.3"
 ring = "0.17"
