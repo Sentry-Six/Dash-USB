@@ -97,32 +97,12 @@ function read_setup_variables {
     fi
   done
 
-  # Defaults for anything the config didn't set.
-  REPO=${REPO:-Sentry-Six}
-  SNAPSHOTS_ENABLED=${SNAPSHOTS_ENABLED:-true}
-  if [ "$SNAPSHOTS_ENABLED" != "true" ]
-  then
-    BRANCH="no-snapshots"
-    if declare -F setup_progress > /dev/null
-    then
-      setup_progress "WARNING: using '$BRANCH' branch because SNAPSHOTS_ENABLED is not true"
-    else
-      echo "WARNING: using '$BRANCH' branch because SNAPSHOTS_ENABLED is not true"
-    fi
-  else
-    BRANCH=${BRANCH:-main}
-  fi
-  CONFIGURE_ARCHIVING=${CONFIGURE_ARCHIVING:-true}
-  UPGRADE_PACKAGES=${UPGRADE_PACKAGES:-false}
+  # Defaults for anything the config didn't set. Only variables a script
+  # that sources this file actually reads belong here; the Rust side reads
+  # the conf file directly and never consults this environment.
   export DASHUSB_HOSTNAME=${DASHUSB_HOSTNAME:-dashusb}
   export NOTIFICATION_TITLE=${NOTIFICATION_TITLE:-${DASHUSB_HOSTNAME}}
-  SAMBA_ENABLED=${SAMBA_ENABLED:-false}
-  SAMBA_GUEST=${SAMBA_GUEST:-false}
-  INCREASE_ROOT_SIZE=${INCREASE_ROOT_SIZE:-0}
-  export CAM_SIZE=${CAM_SIZE:-0}
-  export DATA_DRIVE=${DATA_DRIVE:-''}
   export RTC_BATTERY_ENABLED=${RTC_BATTERY_ENABLED:-false}
-  export RTC_TRICKLE_CHARGE=${RTC_TRICKLE_CHARGE:-false}
 }
 
 read_setup_variables
@@ -144,7 +124,6 @@ then
     function log { echo "$@"; }
     export -f log
   fi
-  complete -W "diagnose upgrade install" setup-dashusb
 fi
 
 function isPi5 {

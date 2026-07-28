@@ -121,7 +121,7 @@ jobs:
               sudo apt-get install -y -qq \
                 brotli mold
               ;;
-            armv7-*|arm-*)
+            armv7-*)
               # Cross-compile path (x86 host → 32-bit ARM target).
               UBUNTU_CODENAME=$(lsb_release -cs)
               echo "Ubuntu codename: $UBUNTU_CODENAME"
@@ -142,7 +142,7 @@ jobs:
               sudo dpkg --add-architecture armhf
               sudo apt-get update -qq
               sudo apt-get install -y -qq \
-                ${{ matrix.gcc }} brotli mold
+                ${{ matrix.gcc }} brotli
               ;;
           esac
 
@@ -231,9 +231,7 @@ jobs:
         # keeps GNU ld; the aarch64 trio dominates total CI wall-clock
         # so the bulk of the link-time win still lands.
         run: |
-          if [ -n "${{ matrix.cpu }}" ]; then
-              export RUSTFLAGS="-C target-cpu=${{ matrix.cpu }} ${{ matrix.cpu_features }}"
-          fi
+          export RUSTFLAGS="-C target-cpu=${{ matrix.cpu }} ${{ matrix.cpu_features }}"
           case "${{ matrix.target }}" in
             aarch64-*) BUILD_WRAPPER="mold -run" ;;
             *)         BUILD_WRAPPER="" ;;
@@ -273,10 +271,6 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - name: Ensure static dir exists
-        run: |
-          mkdir -p crates/sentryusb/static
-          echo '<!DOCTYPE html><html><body>test</body></html>' > crates/sentryusb/static/index.html
       - name: Run tests
         run: cargo test --workspace
 
@@ -306,8 +300,6 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
-
       - name: Download all binaries
         uses: actions/download-artifact@v8
         with:
@@ -321,4 +313,6 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: release/*
-          generate_release_notes: true
+          # Release notes are written by hand; the generated body is only a
+          # "Full Changelog" compare link, which we never ship.
+          generate_release_notes: false
