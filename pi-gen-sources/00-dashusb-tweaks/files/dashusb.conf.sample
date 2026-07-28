@@ -282,12 +282,6 @@ export TEMPERATURE_POSTARCHIVE=true
 # reboot. Sizes can be specified as for example "500M" or "2G"
 # export INCREASE_ROOT_SIZE=500M
 
-# Uncomment if you want to have DashUSB automatically install some
-# additional packages during setup. This only works if there is enough
-# free space available on the root partition to install the requested packages.
-# Requested packages should be space delineated
-# export INSTALL_USER_REQUESTED_PACKAGES="iftop mosh sysstat"
-
 # Uncomment if you want to use different vm/cpu parameters.
 # Leave commented to use DashUSB's defaults, or set to 'default'
 # to use the system defaults.

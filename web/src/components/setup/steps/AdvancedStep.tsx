@@ -459,8 +459,6 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
           />
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Additional Packages" field="INSTALL_USER_REQUESTED_PACKAGES" placeholder="iftop mosh sysstat"
-            data={data} onChange={onChange} hint="Space-separated list of apt packages" />
           <Field label="CPU Governor" field="CPU_GOVERNOR" placeholder="conservative"
             data={data} onChange={onChange} hint="Leave empty for Dash USB defaults" />
         </div>
