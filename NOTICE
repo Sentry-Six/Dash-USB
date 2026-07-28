@@ -25,9 +25,6 @@ substantial verbatim or lightly-adapted upstream content.
 
   check.sh
   pi-gen-sources/prepare.sh
-  setup/generic/install.sh
-  tools/debian-resizefs.sh
-  tools/resize-image.sh
 
   run/archiveloop
   run/remountfs_rw

@@ -9,9 +9,8 @@
 ######################################################################
 
 # Wifi setup information.
-# You do not need to set these variables if networking is already configured
-# and you ran the "install.sh" script.
-# Note that some devices, like Raspberry Pi Zero W, only support 2.4 GHz wifi.
+# You do not need to set these variables if networking is already configured.
+# Note that some devices only support 2.4 GHz wifi.
 #export SSID='your_ssid'
 #export WIFIPASS='your_pass'
 
