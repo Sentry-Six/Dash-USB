@@ -117,9 +117,9 @@ pub async fn make_readonly(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
     // Swap is off (noswap above); reclaim the swap file's space.
     let _ = std::fs::remove_file("/var/swap");
 
-    // fake-hwclock must stay functional during setup (configure-rtc.sh may run
-    // later and replace it with real hwclock). Without this migration a reboot
-    // mid-setup has no time source at all.
+    // fake-hwclock must stay functional during setup (system::configure_rtc
+    // may run later and replace it with real hwclock). Without this migration
+    // a reboot mid-setup has no time source at all.
     ensure_mutable_mounted(emitter).await;
     let _ = std::fs::create_dir_all("/mutable/etc");
 

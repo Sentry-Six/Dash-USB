@@ -44,12 +44,6 @@ then
   exit 1
 fi
 
-if findmnt /mnt/music > /dev/null
-then
-  echo "music drive is mounted. Please ensure no music sync operation is in progress"
-  exit 1
-fi
-
 # remove device from any attached host
 /root/bin/disable_gadget.sh
 

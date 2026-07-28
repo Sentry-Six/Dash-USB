@@ -955,11 +955,8 @@ async fn update_image_fstab_entries() -> Result<()> {
 
     let mut fstab = std::fs::read_to_string("/etc/fstab").unwrap_or_default();
 
-    // Always strip any pre-migration wraps_disk.bin line so reruns don't
-    // leave a stale fstab entry pointing at a deleted backing file.
     let fstab_lines: Vec<&str> = fstab.lines()
         .filter(|l| !images.iter().any(|(img, _)| l.starts_with(img)))
-        .filter(|l| !l.starts_with("/backingfiles/wraps_disk.bin"))
         .collect();
     fstab = fstab_lines.join("\n");
 

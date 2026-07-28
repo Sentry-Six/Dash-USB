@@ -22,15 +22,6 @@ const DRIVE_SPECS: &[DriveSpec] = &[
     DriveSpec { name: "cam", config_key: "CAM_SIZE" },
 ];
 
-/// One-time cleanup for installs that predate the move of Wraps and
-/// LicensePlate to folders on the cam drive. Reclaims the 4 GB the dedicated
-/// wraps image occupies, on the next setup re-run.
-fn purge_legacy_wraps_disk() {
-    let _ = std::fs::remove_file(format!("{}/wraps_disk.bin", BACKINGFILES));
-    let _ = std::fs::remove_file(format!("{}/wraps_disk.bin.opts", BACKINGFILES));
-    let _ = std::fs::remove_dir("/mnt/wraps");
-}
-
 /// Parse a human-readable size like "30G", "4G", "100M" into KB.
 pub fn dehumanize(s: &str) -> Result<u64> {
     let s = s.trim().to_uppercase()
@@ -183,11 +174,7 @@ async fn get_partition_offset(filename: &str) -> Result<u64> {
 async fn release_all_images() {
     let _ = sentryusb_shell::run("bash", &["-c", "killall archiveloop 2>/dev/null"]).await;
     let _ = sentryusb_gadget::disable();
-    // /mnt/wraps stays in the list to drain any leftover mount from a
-    // pre-migration install before purge_legacy_wraps_disk runs.
-    for mount in &["/mnt/cam", "/mnt/wraps"] {
-        let _ = sentryusb_shell::run("umount", &["-d", mount]).await;
-    }
+    let _ = sentryusb_shell::run("umount", &["-d", "/mnt/cam"]).await;
     let _ = sentryusb_shell::run(
         "bash", &["-c", "umount -d /backingfiles/snapshots/snap*/mnt 2>/dev/null"],
     ).await;
@@ -236,18 +223,7 @@ pub async fn create_disk_images(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
         ));
     }
 
-    // Runs before the all-match early exit so a pre-migration install is
-    // cleaned up even when no sizes changed.
-    let legacy_wraps_path = format!("{}/wraps_disk.bin", BACKINGFILES);
-    let legacy_wraps = Path::new(&legacy_wraps_path).exists();
-    if legacy_wraps {
-        emitter.progress("Removing legacy wraps disk image — using cam drive folders now...");
-        let _ = sentryusb_shell::run("umount", &["-d", "/mnt/wraps"]).await;
-        purge_legacy_wraps_disk();
-    }
-
-    let all_match = sizes.iter().all(|(_, _, sz, f)| image_matches(f, *sz));
-    if all_match && !legacy_wraps {
+    if sizes.iter().all(|(_, _, sz, f)| image_matches(f, *sz)) {
         return Ok(false);
     }
 
