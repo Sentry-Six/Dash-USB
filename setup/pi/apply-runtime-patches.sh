@@ -23,11 +23,6 @@ err()  { echo -e "${RED}[patches]${NC} $1" >&2; }
 
 # ── Detection helpers ────────────────────────────────────────────────────
 
-is_rock_4cplus() {
-    grep -qai 'rock-4c-plus\|rockpi4c-plus\|ROCK 4C+' \
-        /proc/device-tree/model /proc/device-tree/compatible 2>/dev/null
-}
-
 # Broadcom chips where BlueZ's extended advertising fails or defaults to
 # non-connectable parameters, so SC's BLE pair fails without the raw-HCI
 # ADV_IND helper. Detected from the chip family ID the kernel logs on first BT

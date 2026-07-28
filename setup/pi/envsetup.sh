@@ -99,7 +99,6 @@ function read_setup_variables {
 
   # Defaults for anything the config didn't set.
   REPO=${REPO:-Sentry-Six}
-  REPO_NAME=${REPO_NAME:-Dash-USB}
   SNAPSHOTS_ENABLED=${SNAPSHOTS_ENABLED:-true}
   if [ "$SNAPSHOTS_ENABLED" != "true" ]
   then
@@ -148,39 +147,10 @@ then
   complete -W "diagnose upgrade install" setup-dashusb
 fi
 
-function isRaspberryPi {
-  grep -q "Raspberry Pi" /sys/firmware/devicetree/base/model
-}
-
 function isPi5 {
   grep -q "Raspberry Pi 5" /sys/firmware/devicetree/base/model
 }
 export -f isPi5
-
-function isPi4 {
-  grep -q "Raspberry Pi 4" /sys/firmware/devicetree/base/model
-}
-export -f isPi4
-
-function isPi2 {
-  grep -q "Raspberry Pi Zero 2" /sys/firmware/devicetree/base/model
-}
-export -f isPi2
-
-function isPi3 {
-  grep -q "Raspberry Pi 3" /sys/firmware/devicetree/base/model
-}
-export -f isPi3
-
-function isRockPi4 {
-  grep -q "ROCK Pi 4" /sys/firmware/devicetree/base/model
-}
-export -f isRockPi4
-
-function isRadxaZero {
-  grep -q "Radxa Zero" /sys/firmware/devicetree/base/model
-}
-export -f isRadxaZero
 
 STATUSLED=/tmp/fakeled
 
@@ -199,20 +169,6 @@ done < <(find /sys/class/leds -type l)
 if [ ! -d "$STATUSLED" ]
 then
   mkdir -p "$STATUSLED"
-fi
-
-if [ -f /dashusb/cmdline.txt ]
-then
-  export CMDLINE_PATH=/dashusb/cmdline.txt
-else
-  export CMDLINE_PATH=/dev/null
-fi
-
-if [ -f /dashusb/config.txt ]
-then
-  export PICONFIG_PATH=/dashusb/config.txt
-else
-  export PICONFIG_PATH=/dev/null
 fi
 
 # losetup can fail on a kernel/userland mismatch

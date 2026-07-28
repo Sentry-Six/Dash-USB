@@ -54,11 +54,6 @@ const MANAGE_FREE_SPACE: &str = r#"#!/bin/bash -eu
 dashusb space manage "$@"
 "#;
 
-const FORCE_SYNC: &str = r#"#!/bin/bash -eu
-# Force an immediate archive sync by sending SIGUSR1 to archiveloop.
-pkill -USR1 -f archiveloop || echo "archiveloop not running"
-"#;
-
 const ENABLE_GADGET: &str = r#"#!/bin/bash -eu
 dashusb gadget enable "$@"
 "#;
@@ -133,7 +128,6 @@ pub async fn install_runtime_scripts(emitter: &crate::SetupEmitter) -> Result<bo
         ("make_snapshot.sh", MAKE_SNAPSHOT),
         ("release_snapshot.sh", RELEASE_SNAPSHOT),
         ("manage_free_space.sh", MANAGE_FREE_SPACE),
-        ("force_sync.sh", FORCE_SYNC),
         ("enable_gadget.sh", ENABLE_GADGET),
         ("disable_gadget.sh", DISABLE_GADGET),
         ("auto.dashusb", AUTO_SENTRYUSB),
