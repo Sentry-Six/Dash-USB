@@ -21,30 +21,19 @@ export default defineConfig({
         // vite@8, so it failed to build. Same vendor groups, working syntax.
         manualChunks(id: string) {
           if (/[\\/]node_modules[\\/](react|react-dom|react-router|react-router-dom)[\\/]/.test(id)) return 'vendor-react'
-          if (/[\\/]node_modules[\\/]recharts[\\/]/.test(id)) return 'vendor-charts'
-          if (/[\\/]node_modules[\\/]leaflet[\\/]/.test(id)) return 'vendor-maps'
           if (/[\\/]node_modules[\\/]@xterm[\\/]/.test(id)) return 'vendor-term'
           if (/[\\/]node_modules[\\/]lucide-react[\\/]/.test(id)) return 'vendor-icons'
         },
       },
     },
     // Vite's default modulepreload walks every transitively-reachable
-    // async chunk and bakes a <link rel="modulepreload"> for each.
-    // That defeats lazy-loading for heavy vendors: leaflet/xterm/
-    // recharts get preloaded on every page just because *some* lazy
-    // route eventually pulls them in. Strip those from the initial
-    // preload list; they are still fetched on-demand when the
-    // lazy chunk that needs them is loaded (one extra RTT at
-    // navigation time, but only for users who actually visit that
-    // chunk's route).
+    // async chunk and emits a <link rel="modulepreload"> for each, so
+    // xterm would preload on every page just because the Terminal
+    // route eventually pulls it in. Excluding it costs one extra RTT
+    // when that route is actually visited.
     modulePreload: {
       resolveDependencies: (_filename, deps) =>
-        deps.filter(
-          (d) =>
-            !d.includes('vendor-charts') &&
-            !d.includes('vendor-maps') &&
-            !d.includes('vendor-term'),
-        ),
+        deps.filter((d) => !d.includes('vendor-term')),
     },
   },
   server: {
