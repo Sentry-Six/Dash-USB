@@ -11,8 +11,6 @@ use tracing::{info, warn};
 
 const VERSION_FILE: &str = "/opt/dashusb/version";
 const MIGRATE_DIR: &str = "/opt/dashusb";
-const MIGRATE_REPO: &str = "Sentry-Six/Dash-USB";
-const MIGRATE_BRANCH: &str = "main";
 
 pub async fn run_startup_migration() {
     // Unconditional idempotent heals run first. They MUST NOT sit behind the
@@ -36,18 +34,31 @@ pub async fn run_startup_migration() {
 
     info!("[migrate] Running startup migration for {}...", current_version);
 
-    // Prefer the exact version tag; fall back to the tracking branch if missing.
+    // Prefer the exact version tag so the refreshed scripts match the
+    // installed binary; the configured branch is only the fallback ref.
+    let source = sentryusb_config::github_source();
     let script_ref = if current_version == "unknown" {
-        MIGRATE_BRANCH.to_string()
+        source.branch.clone()
     } else {
         current_version.clone()
     };
     let tarball_url = format!(
         "https://github.com/{}/archive/{}.tar.gz",
-        MIGRATE_REPO, script_ref
+        source.repo_slug, script_ref
+    );
+    let fallback_url = format!(
+        "https://github.com/{}/archive/{}.tar.gz",
+        source.repo_slug, source.branch
+    );
+    let patches_url = format!(
+        "https://raw.githubusercontent.com/{}/{}/setup/pi/apply-runtime-patches.sh",
+        source.repo_slug, source.branch
     );
 
-    let script = build_migration_script(&tarball_url);
+    // Config-derived values reach the script as positional arguments, never
+    // interpolated into shell source. The resolver also charset-validates
+    // them; both guards stay.
+    let script = build_migration_script();
 
     // Retry up to 3 times, backing off a further 5 s each attempt. The script
     // fails fast on `curl: Could not resolve host: github.com`, exactly the
@@ -64,7 +75,7 @@ pub async fn run_startup_migration() {
         match sentryusb_shell::run_with_timeout(
             Duration::from_secs(180),
             "bash",
-            &["-c", &script],
+            &["-c", &script, "dashusb-migrate", &tarball_url, &fallback_url, &patches_url],
         )
         .await
         {
@@ -82,8 +93,12 @@ pub async fn run_startup_migration() {
                 if std::path::Path::new("/usr/local/bin/dashusb-apply-runtime-patches").exists() {
                     match sentryusb_shell::run_with_timeout(
                         Duration::from_secs(30),
-                        "/usr/local/bin/dashusb-apply-runtime-patches",
-                        &[],
+                        "env",
+                        &[
+                            &format!("DASHUSB_REPO_SLUG={}", source.repo_slug),
+                            &format!("DASHUSB_REF={}", source.branch),
+                            "/usr/local/bin/dashusb-apply-runtime-patches",
+                        ],
                     )
                     .await
                     {
@@ -158,9 +173,15 @@ fn heal_temperature_unit_key() {
     }
 }
 
-fn build_migration_script(tarball_url: &str) -> String {
+fn build_migration_script() -> String {
+    // $1 = primary tarball URL (version tag), $2 = fallback tarball URL
+    // (configured branch), $3 = raw URL of apply-runtime-patches.sh on the
+    // configured branch.
     format!(
         r#"set -e
+TARBALL_URL="$1"
+FALLBACK_URL="$2"
+PATCHES_URL="$3"
 
 # Remount filesystem as read-write (no-op if already rw)
 /root/bin/remountfs_rw 2>/dev/null || mount -o remount,rw / 2>/dev/null || true
@@ -173,9 +194,8 @@ TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
 
 # Download repo tarball — try version tag first, fall back to tracking branch
-if ! curl -fsSL "{tarball_url}" | tar xz --strip-components=1 -C "$TMPDIR" 2>/dev/null; then
-  FALLBACK="https://github.com/{repo}/archive/{branch}.tar.gz"
-  curl -fsSL "$FALLBACK" | tar xz --strip-components=1 -C "$TMPDIR" 2>/dev/null || exit 1
+if ! curl -fsSL "$TARBALL_URL" | tar xz --strip-components=1 -C "$TMPDIR" 2>/dev/null; then
+  curl -fsSL "$FALLBACK_URL" | tar xz --strip-components=1 -C "$TMPDIR" 2>/dev/null || exit 1
 fi
 
 # ── Update run/ scripts ──
@@ -311,22 +331,22 @@ if [ -f "$TMPDIR/pi-gen-sources/00-dashusb-tweaks/files/dashusb-pick-binary" ]; 
   install -m 755 "$TMPDIR/pi-gen-sources/00-dashusb-tweaks/files/dashusb-pick-binary" /usr/local/bin/dashusb-pick-binary
 fi
 
-# ── Refresh the runtime-patches helper from the tarball ──
-# Without this, new patches we add to apply-runtime-patches.sh never reach
-# existing installs — the OTA invocation (the Rust caller after this shell
-# script exits) would re-run the OLD on-disk version. Bootstrap pre-v3.11
-# installs that never had the helper at all (the file just appears).
-if [ -f "$TMPDIR/setup/pi/apply-runtime-patches.sh" ]; then
+# ── Refresh the runtime-patches helper ──
+# Prefer the configured-branch copy so a device tracking a branch keeps the
+# script the updater selected; fall back to the tag-tarball copy. Without
+# either, existing installs would re-run the OLD on-disk version forever.
+PATCHES_STAGE="$TMPDIR/patches.new"
+if curl -fsSL --max-time 15 -o "$PATCHES_STAGE" "$PATCHES_URL" 2>/dev/null \
+   && [ -s "$PATCHES_STAGE" ] && bash -n "$PATCHES_STAGE" 2>/dev/null; then
+  install -m 755 "$PATCHES_STAGE" /usr/local/bin/dashusb-apply-runtime-patches
+elif [ -f "$TMPDIR/setup/pi/apply-runtime-patches.sh" ]; then
   install -m 755 "$TMPDIR/setup/pi/apply-runtime-patches.sh" /usr/local/bin/dashusb-apply-runtime-patches
 fi
 
 # ── Restart the phone-app BLE daemon ──
 systemctl enable dashusb-ble 2>/dev/null || true
 systemctl restart dashusb-ble 2>/dev/null || true
-"#,
-        tarball_url = tarball_url,
-        repo = MIGRATE_REPO,
-        branch = MIGRATE_BRANCH
+"#
     )
 }
 
@@ -339,13 +359,15 @@ mod tests {
     /// on every user's Pi. Render it and let bash parse it.
     #[test]
     fn migration_script_parses() {
-        let script = build_migration_script(
-            "https://github.com/Sentry-Six/Dash-USB/archive/v0.0.0.tar.gz",
-        );
-        // Placeholders must all have been substituted.
+        let script = build_migration_script();
+        // No config-derived text may be interpolated into shell source: the
+        // URLs arrive as positional arguments only.
         assert!(!script.contains("{repo}"), "unsubstituted {{repo}}");
         assert!(!script.contains("{branch}"), "unsubstituted {{branch}}");
         assert!(!script.contains("{tarball_url}"), "unsubstituted {{tarball_url}}");
+        assert!(script.contains("TARBALL_URL=\"$1\""), "primary URL must come from $1");
+        assert!(script.contains("FALLBACK_URL=\"$2\""), "fallback URL must come from $2");
+        assert!(script.contains("PATCHES_URL=\"$3\""), "patches URL must come from $3");
 
         let dir = std::env::temp_dir().join("dashusb-migrate-test");
         std::fs::create_dir_all(&dir).unwrap();

@@ -292,9 +292,12 @@ export TEMPERATURE_POSTARCHIVE=true
 #export DIRTY_RATIO=80
 #export CPU_GOVERNOR=conservative
 
-# Uncomment and change if you want setup scripts to be pulled
-# from a different repo than github.com/Sentry-Six/Dash-USB
+# GitHub source for OTA updates and their supporting scripts. REPO overrides
+# the owner only (the repo name stays Dash-USB); release binaries always come
+# from that repo's tagged GitHub Releases.
 # export REPO=Sentry-Six
 
-# Uncomment and change if you want a different branch than main-dev
-# export BRANCH=main-dev
+# Tracking branch for non-binary support files: the runtime-patches refresh
+# and the migration tarball fallback. OTA binaries are never selected by
+# branch. Advanced; leave at main unless you maintain your own branch.
+# export BRANCH=main

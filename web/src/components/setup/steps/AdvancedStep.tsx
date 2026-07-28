@@ -473,15 +473,15 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
           </h3>
         </div>
         <p className="mb-2 text-xs text-slate-500">
-          GitHub source used for both initial setup tarball downloads and OTA
-          updates. Forks must keep the original repo name (Dash-USB)
-          and use semver-compatible release tags (e.g. v1.2.3).
+          GitHub source for OTA updates and their supporting scripts. Forks
+          must keep the original repo name (Dash-USB) and use
+          semver-compatible release tags (e.g. v1.2.3).
         </p>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="GitHub Repo" field="REPO" placeholder="Sentry-Six"
-            data={data} onChange={onChange} hint="GitHub user/org. Used for both setup downloads and OTA updates." />
+            data={data} onChange={onChange} hint="GitHub user/org. Release binaries and support scripts come from here." />
           <Field label="Branch" field="BRANCH" placeholder="main"
-            data={data} onChange={onChange} hint="Setup-time tarball downloads only. OTA updates always use GitHub Releases." />
+            data={data} onChange={onChange} hint="Tracking branch for non-binary support files (runtime patches, migration fallback). OTA binaries always come from tagged Releases. Advanced; leave at main unless you maintain a branch." />
         </div>
       </div>
     </div>

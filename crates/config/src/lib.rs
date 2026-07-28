@@ -253,9 +253,96 @@ pub fn get_config_value(active: &SetupConfig, commented: &SetupConfig, key: &str
     active.get(key).or_else(|| commented.get(key)).cloned()
 }
 
+/// GitHub source for repository-sourced support files: the migration tarball
+/// fallback and the runtime-patches refresh. Release binaries are NEVER
+/// selected by this; they always come from tagged GitHub Releases.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitHubSource {
+    /// `owner/Dash-USB`. `REPO` in the active conf overrides the owner so a
+    /// fork can serve its own support files; the repo name stays fixed.
+    pub repo_slug: String,
+    /// Tracking ref for non-binary fetches. `BRANCH` in the active conf,
+    /// defaulting to `main`. Invalid values fall back to `main`.
+    pub branch: String,
+}
+
+const DEFAULT_GITHUB_OWNER: &str = "Sentry-Six";
+const GITHUB_REPO_NAME: &str = "Dash-USB";
+const DEFAULT_GITHUB_BRANCH: &str = "main";
+
+/// Conservative git-ref charset. Values from dashusb.conf end up in URLs and
+/// as arguments to root-run shell, so anything outside this set falls back to
+/// the default rather than flowing onward.
+fn valid_ref_component(s: &str, allow_slash: bool) -> bool {
+    !s.is_empty()
+        && s.len() <= 100
+        && !s.starts_with(['-', '.', '/'])
+        && !s.ends_with('/')
+        && !s.contains("..")
+        && s.chars().all(|c| {
+            c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' || (allow_slash && c == '/')
+        })
+}
+
+fn resolve_github_source(active: &SetupConfig) -> GitHubSource {
+    let owner = active
+        .get("REPO")
+        .map(|s| s.trim())
+        .filter(|s| valid_ref_component(s, false))
+        .unwrap_or(DEFAULT_GITHUB_OWNER);
+    let branch = active
+        .get("BRANCH")
+        .map(|s| s.trim())
+        .filter(|s| valid_ref_component(s, true))
+        .unwrap_or(DEFAULT_GITHUB_BRANCH);
+    GitHubSource {
+        repo_slug: format!("{}/{}", owner, GITHUB_REPO_NAME),
+        branch: branch.to_string(),
+    }
+}
+
+/// Resolve from the active conf on disk. See [`GitHubSource`].
+pub fn github_source() -> GitHubSource {
+    let (active, _commented) = parse_file(find_config_path()).unwrap_or_default();
+    resolve_github_source(&active)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn github_source_defaults() {
+        let src = resolve_github_source(&SetupConfig::new());
+        assert_eq!(src.repo_slug, "Sentry-Six/Dash-USB");
+        assert_eq!(src.branch, "main");
+    }
+
+    #[test]
+    fn github_source_overrides() {
+        let mut c = SetupConfig::new();
+        c.insert("REPO".into(), "ForkOwner".into());
+        c.insert("BRANCH".into(), "feature/gm-test".into());
+        let src = resolve_github_source(&c);
+        assert_eq!(src.repo_slug, "ForkOwner/Dash-USB");
+        assert_eq!(src.branch, "feature/gm-test");
+    }
+
+    #[test]
+    fn github_source_rejects_bad_values() {
+        for bad in ["", "  ", "-lead", "..", "a b", "x;rm -rf /", "$(id)", "a/../b", "/abs", "trail/"] {
+            let mut c = SetupConfig::new();
+            c.insert("BRANCH".into(), bad.into());
+            c.insert("REPO".into(), bad.into());
+            let src = resolve_github_source(&c);
+            assert_eq!(src.branch, "main", "branch {:?} must fall back", bad);
+            assert_eq!(src.repo_slug, "Sentry-Six/Dash-USB", "owner {:?} must fall back", bad);
+        }
+        // slash allowed in branch, not owner
+        let mut c = SetupConfig::new();
+        c.insert("REPO".into(), "a/b".into());
+        assert_eq!(resolve_github_source(&c).repo_slug, "Sentry-Six/Dash-USB");
+    }
 
     #[test]
     fn test_unquote_single_quotes() {

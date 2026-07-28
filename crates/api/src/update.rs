@@ -148,23 +148,13 @@ pub async fn run_update(
     (StatusCode::OK, Json(serde_json::json!({"status": "started"})))
 }
 
-/// Default GitHub source for OTA updates when the config doesn't override it.
-const DEFAULT_UPDATE_OWNER: &str = "Sentry-Six";
-const DEFAULT_UPDATE_REPO_NAME: &str = "Dash-USB";
-
 /// Resolve the `owner/repo` slug for OTA updates. `REPO` in the active
 /// dashusb.conf overrides the owner, so a fork can point self-update at its own
-/// releases from the wizard's Advanced Update Source field. `REPO_NAME` stays
-/// hardcoded: a fork must keep the original repo name.
+/// releases from the wizard's Advanced Update Source field. The repo name
+/// stays hardcoded: a fork must keep the original repo name. Release binaries
+/// are always selected by tag; the configured BRANCH never enters these URLs.
 fn update_repo() -> String {
-    let path = sentryusb_config::find_config_path();
-    let (active, _commented) = sentryusb_config::parse_file(path).unwrap_or_default();
-    let owner = active
-        .get("REPO")
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .unwrap_or(DEFAULT_UPDATE_OWNER);
-    format!("{}/{}", owner, DEFAULT_UPDATE_REPO_NAME)
+    sentryusb_config::github_source().repo_slug
 }
 
 /// Detect the release suffix matching the currently-running CPU variant.
@@ -408,13 +398,17 @@ async fn self_update(target_version: Option<String>) -> anyhow::Result<String> {
     // Downloading only when absent leaves anyone with a stale on-disk copy
     // running the old script forever, so new patches never reach them. A failed
     // download falls back to whatever is on disk, warning only. The script
-    // lives at a stable URL (main branch, setup/pi/).
+    // lives at a stable path on the configured tracking branch (BRANCH in
+    // dashusb.conf, default main).
+    let source = sentryusb_config::github_source();
     let patches_path = "/usr/local/bin/dashusb-apply-runtime-patches";
     let patches_url = format!(
-        "https://raw.githubusercontent.com/{}/main/setup/pi/apply-runtime-patches.sh",
-        repo
+        "https://raw.githubusercontent.com/{}/{}/setup/pi/apply-runtime-patches.sh",
+        source.repo_slug, source.branch
     );
-    let patches_tmp = "/tmp/dashusb-apply-runtime-patches.new";
+    // Staged beside the destination so the final rename cannot cross
+    // filesystems (/tmp is a tmpfs; rename() would fail EXDEV).
+    let patches_tmp = "/usr/local/bin/.dashusb-apply-runtime-patches.new";
     tracing::info!(
         "update.rs: refreshing runtime-patches script from {}",
         patches_url
@@ -436,13 +430,23 @@ async fn self_update(target_version: Option<String>) -> anyhow::Result<String> {
         Ok(_) => {
             // Only swap the live script when the download produced a non-empty
             // file, catching the rare GitHub "200 OK with empty body".
-            if std::fs::metadata(patches_tmp)
+            let staged_ok = std::fs::metadata(patches_tmp)
                 .map(|m| m.len() > 0)
                 .unwrap_or(false)
-            {
-                let _ = std::fs::rename(patches_tmp, patches_path);
-                let _ = sentryusb_shell::run("chmod", &["+x", patches_path]).await;
-                tracing::info!("update.rs: runtime-patches script refreshed");
+                && sentryusb_shell::run("bash", &["-n", patches_tmp]).await.is_ok();
+            if staged_ok {
+                match std::fs::rename(patches_tmp, patches_path) {
+                    Ok(()) => {
+                        let _ = sentryusb_shell::run("chmod", &["+x", patches_path]).await;
+                        tracing::info!("update.rs: runtime-patches script refreshed");
+                    }
+                    Err(e) => {
+                        let _ = std::fs::remove_file(patches_tmp);
+                        tracing::warn!(
+                            "update.rs: staged runtime-patches rename failed ({e}); keeping existing script"
+                        );
+                    }
+                }
             } else {
                 let _ = std::fs::remove_file(patches_tmp);
                 if !std::path::Path::new(patches_path).exists() {
@@ -473,8 +477,12 @@ async fn self_update(target_version: Option<String>) -> anyhow::Result<String> {
     if std::path::Path::new(patches_path).exists() {
         match sentryusb_shell::run_with_timeout(
             std::time::Duration::from_secs(30),
-            patches_path,
-            &[],
+            "env",
+            &[
+                &format!("DASHUSB_REPO_SLUG={}", source.repo_slug),
+                &format!("DASHUSB_REF={}", source.branch),
+                patches_path,
+            ],
         )
         .await
         {

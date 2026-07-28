@@ -65,7 +65,7 @@ Leave both empty to disable web auth entirely — only do this if your network i
 - **Temperature Monitoring** — optional Warning and Caution thresholds (push-notified), a fixed log interval, and a post-archive temperature log toggle.
 - **RTC Battery** (Pi 5 only) — enable the Pi 5's built-in real-time clock if you've fitted a battery on the J5 header; trickle charging is offered behind an explicit "my battery is rechargeable" acknowledgement.
 - **System Tuning** — Increase Root Size (fresh installs only), CPU Governor.
-- **Update Source** — GitHub repo/branch used for setup downloads and OTA updates. Leave at the defaults unless you run a fork.
+- **Update Source** — GitHub repo for OTA updates, plus the tracking branch for non-binary support files (runtime patches, migration fallback). Binaries always come from tagged Releases. Leave at the defaults unless you run a fork.
 
 ## 9. Review
 

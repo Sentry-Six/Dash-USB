@@ -180,8 +180,11 @@ apply_ble_adv_helper() {
     # ext-adv works, don't get the raw-HCI helper overriding it. See
     # is_known_broken_ble_chip above for the list.
     is_known_broken_ble_chip || { log "BLE adv: chip not in known-broken list — skipping helper install"; return 0; }
-    local repo="${REPO:-Sentry-Six/Dash-USB}"
-    local base="https://raw.githubusercontent.com/${repo}/main/setup/pi"
+    # Rust callers export DASHUSB_REPO_SLUG and DASHUSB_REF (the conf's
+    # REPO/BRANCH, validated). A bare manual run falls back to the defaults.
+    local repo="${DASHUSB_REPO_SLUG:-Sentry-Six/Dash-USB}"
+    local ref="${DASHUSB_REF:-main}"
+    local base="https://raw.githubusercontent.com/${repo}/${ref}/setup/pi"
     local changed=0
 
     install_one() {
