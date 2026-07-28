@@ -145,10 +145,16 @@ pub fn enable() -> Result<()> {
                     continue;
                 }
                 let _ = fs::write(&lun_file, "\n");
-                // Enforce nofua while the medium is detached: a gadget dir
-                // built by an older version predates the nofua=1 policy (the
-                // fresh-build path below explains why the car needs it).
-                let _ = fs::write(func_dir.join(format!("lun.{}/nofua", i)), "1");
+                // Re-apply the profile's nofua setting while the medium is
+                // detached: a gadget dir built by an older version predates
+                // this policy (the fresh-build path below explains why the
+                // car needs it).
+                let nofua = if sentryusb_vehicle_profile::Profile::active().features.nofua {
+                    "1"
+                } else {
+                    "0"
+                };
+                let _ = fs::write(func_dir.join(format!("lun.{}/nofua", i)), nofua);
                 std::thread::sleep(std::time::Duration::from_secs(1));
                 let _ = fs::write(&lun_file, &current);
             }
@@ -222,7 +228,12 @@ pub fn enable() -> Result<()> {
             // nofua attribute must not fail the whole enable. Missing nofua
             // only leaves FUA stalls possible; failing here would leave the
             // car with no drive at all.
-            if let Err(e) = write_file(&lun_dir.join("nofua"), "1") {
+            let nofua = if sentryusb_vehicle_profile::Profile::active().features.nofua {
+                "1"
+            } else {
+                "0"
+            };
+            if let Err(e) = write_file(&lun_dir.join("nofua"), nofua) {
                 tracing::warn!("could not set nofua on lun.{lun}: {e:#}");
             }
             write_file(&lun_dir.join("file"), image_path)?;

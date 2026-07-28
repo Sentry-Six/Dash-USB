@@ -119,7 +119,7 @@ jobs:
               # Native build path.
               sudo apt-get update -qq
               sudo apt-get install -y -qq \
-                brotli mold pkg-config
+                brotli mold
               ;;
             armv7-*|arm-*)
               # Cross-compile path (x86 host → 32-bit ARM target).
@@ -142,7 +142,7 @@ jobs:
               sudo dpkg --add-architecture armhf
               sudo apt-get update -qq
               sudo apt-get install -y -qq \
-                ${{ matrix.gcc }} brotli mold pkg-config
+                ${{ matrix.gcc }} brotli mold
               ;;
           esac
 

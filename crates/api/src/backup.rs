@@ -1,8 +1,8 @@
 //! Config backup and restore.
 //!
 //! A backup is a JSON envelope holding `dashusb.conf`, the user preferences,
-//! SSH keys, rclone config, BLE pairing keys and notification-device
-//! credentials: everything a user would otherwise re-enter after an SD-card
+//! SSH keys, rclone config and notification-device credentials:
+//! everything a user would otherwise re-enter after an SD-card
 //! reflash. A SHA-256 over that content gates rewrites so the backup dir
 //! doesn't fill with identical copies.
 
@@ -34,8 +34,6 @@ const SSH_ED25519_PUBLIC_KEY: &str = "/root/.ssh/id_ed25519.pub";
 const SSH_RSA_PRIVATE_KEY: &str = "/root/.ssh/id_rsa";
 const SSH_RSA_PUBLIC_KEY: &str = "/root/.ssh/id_rsa.pub";
 const RCLONE_CONFIG: &str = "/root/.config/rclone/rclone.conf";
-const BLE_PRIVATE_KEY: &str = "/root/.ble/key_private.pem";
-const BLE_PUBLIC_KEY: &str = "/root/.ble/key_public.pem";
 const NOTIFICATION_CREDS: &str = "/root/.dashusb/notification-credentials.json";
 
 /// Read whichever SSH keypair exists on disk. ed25519 wins when both are
@@ -72,10 +70,6 @@ struct BackupData {
     ssh_public_key: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     rclone_config: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    ble_private_key: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    ble_public_key: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     notification_credentials: String,
 }
@@ -135,8 +129,6 @@ async fn build_backup_data_async() -> Result<BackupData, String> {
         ssh_private_key,
         ssh_public_key,
         rclone_config: read_file_if_exists(RCLONE_CONFIG),
-        ble_private_key: read_file_if_exists(BLE_PRIVATE_KEY),
-        ble_public_key: read_file_if_exists(BLE_PUBLIC_KEY),
         notification_credentials: read_file_if_exists(NOTIFICATION_CREDS),
     })
 }
@@ -159,8 +151,6 @@ fn compute_backup_hash(data: &BackupData) -> String {
     ctx.update(data.ssh_private_key.as_bytes());
     ctx.update(data.ssh_public_key.as_bytes());
     ctx.update(data.rclone_config.as_bytes());
-    ctx.update(data.ble_private_key.as_bytes());
-    ctx.update(data.ble_public_key.as_bytes());
     ctx.update(data.notification_credentials.as_bytes());
     hex::encode(ctx.finish().as_ref())
 }
@@ -627,29 +617,6 @@ pub async fn restore_backup(
         match write_with_mode(RCLONE_CONFIG, &backup.rclone_config, 0o600) {
             Ok(()) => info!("[backup] Restored rclone config"),
             Err(e) => warn!("[backup] Failed to restore rclone config: {}", e),
-        }
-    }
-
-    if !backup.ble_private_key.is_empty() {
-        let _ = std::fs::create_dir_all("/root/.ble");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(
-                "/root/.ble",
-                std::fs::Permissions::from_mode(0o700),
-            );
-        }
-        match write_with_mode(BLE_PRIVATE_KEY, &backup.ble_private_key, 0o600) {
-            Ok(()) => {
-                info!("[backup] Restored BLE private key");
-                if !backup.ble_public_key.is_empty() {
-                    let _ = write_with_mode(BLE_PUBLIC_KEY, &backup.ble_public_key, 0o644);
-                }
-                // Mark as paired so the app doesn't prompt for re-pair.
-                let _ = std::fs::write("/root/.ble/paired", "1");
-            }
-            Err(e) => warn!("[backup] Failed to restore BLE private key: {}", e),
         }
     }
 

@@ -122,8 +122,13 @@ async fn create_drive(
     sentryusb_shell::run("truncate", &["--size", &format!("{}K", size_kb), &filename]).await
         .context("truncate failed")?;
 
-    // FAT32 always: the GM head unit requires it and the vehicle profile pins
-    // `filesystem = "fat32"`.
+    // Only FAT32 is implemented below. Reject anything else rather than
+    // silently formatting FAT32 and leaving the profile author to discover
+    // the mismatch on a car that will not read the drive.
+    let fs = &sentryusb_vehicle_profile::Profile::active().virtual_drive.filesystem;
+    if !fs.eq_ignore_ascii_case("fat32") {
+        anyhow::bail!("vehicle profile requests unsupported filesystem {fs:?}; only fat32 is implemented");
+    }
     sentryusb_shell::run(
         "bash", &["-c", &format!("echo 'type=c' | sfdisk '{}'", filename)],
     ).await.context("sfdisk failed on disk image")?;
