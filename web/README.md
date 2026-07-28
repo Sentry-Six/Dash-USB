@@ -1,59 +1,62 @@
-# Sentry USB Web Frontend
+# Dash USB Web Frontend
 
-The Sentry USB web interface — a React single-page application with a dark glassmorphism design.
+React single-page app served by the `dashusb` Rust daemon on the Pi.
 
-## Tech Stack
+## Tech stack
 
 - **React 19** + TypeScript
-- **Vite** — build tooling and dev server
-- **TailwindCSS** — utility-first styling
-- **Lucide React** — icons
-- **Leaflet** — drive map visualization
+- **Vite** for build tooling and the dev server
+- **TailwindCSS** for styling
+- **Lucide React** for icons
+- **xterm.js** for the Terminal page
 
 ## Development
 
 ```bash
 npm install
-npm run dev     # Starts dev server on http://localhost:5173
+npm run dev
 ```
 
-The dev server proxies `/api/*` requests to the Go backend at `localhost:8788`. Start the backend in dev mode:
+The dev server listens on `http://localhost:5173` and proxies `/api/*` and
+`/Recordings/*` to `http://localhost:8788`. Point it at a live Pi instead of a
+local daemon with `DASHUSB_API=http://dashusb.local npm run dev`.
+
+## Production build
+
+Build through the repo root, not from here. `../build.sh` runs `npm run build`,
+wipes `crates/sentryusb/static`, copies `dist/` into it, and pre-compresses the
+assets; `rust-embed` then bakes that directory into the binary. A bare
+`cargo build` without that step embeds the "frontend not built" placeholder from
+`crates/sentryusb/build.rs`.
 
 ```bash
-cd ../server
-make dev        # Starts Go API on :8788
-```
-
-## Production Build
-
-```bash
-npm run build   # Outputs to dist/
-```
-
-The built files are embedded into the Go binary via `go:embed`. After building the frontend:
-
-```bash
-cd ../server
-make copy-static build-arm64   # Copies dist/ → static/, cross-compiles
+cd .. && ./build.sh arm64
 ```
 
 ## Pages
 
 | Page | Description |
 |------|-------------|
-| **Dashboard** | System status, CPU temp, WiFi, disk space, snapshots, drive map |
-| **Viewer** | Multi-camera clip viewer with synced playback (6 cameras) |
-| **Files** | Browse/upload/delete Music, LightShow, and Boombox files |
-| **Logs** | Live-tailing of archiveloop, setup, and diagnostics logs |
-| **Settings** | Setup Wizard, quick actions, system update, reboot |
+| **Dashboard** | System status, CPU temperature, WiFi, disk space, snapshot and archive state |
+| **Viewer** | Multi-camera clip viewer with synced playback. Camera list and grid come from `GET /api/profile`, so they follow the vehicle profile rather than being hardcoded |
+| **Files** | Browse, upload, and delete under `/mutable` and `/mutable/Recordings` |
+| **Snapshots** | List, create, and release reflink snapshots |
+| **Logs** | Live tail of archiveloop, setup, and diagnostics logs |
+| **Notifications** | Notification history and per-channel test sends |
+| **Terminal** | Shell session over WebSocket |
+| **Support** | Support tickets, raised and read in-app |
+| **Settings** | Setup wizard, device/network/notifications/system tabs, health check, OTA update, reboot |
 
 ## Structure
 
 ```
 src/
 ├── components/
-│   ├── layout/        # AppShell, Sidebar, MobileNav
-│   └── setup/         # SetupWizard + 9 step components
-├── pages/             # Dashboard, Viewer, Files, Logs, Settings
-└── lib/               # API client, WebSocket hook, utilities
+│   ├── layout/        # AppShell, Sidebar, MobileNav, ConnectionBanner
+│   ├── settings/      # Settings sections and cards
+│   ├── setup/         # SetupWizard + 9 step components
+│   ├── ui/            # Shared primitives
+│   └── upload/        # Upload widgets
+├── pages/             # Top-level routes, plus pages/settings/ tabs
+└── lib/               # api.ts, ws.ts (WebSocket hook), units.ts, utils.ts
 ```
