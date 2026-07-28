@@ -23,24 +23,6 @@ struct ClipEntry {
     date: String,
     path: String,
     files: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    event: Option<EventMeta>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct EventMeta {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    timestamp: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    city: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    camera: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    latitude: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    longitude: Option<String>,
 }
 
 /// Dated subfolders of a category directory (today just `Continuous/`), newest
@@ -64,8 +46,7 @@ fn enumerate_event_dirs(base: &Path) -> Vec<String> {
 }
 
 /// Build the `[{ name, clips, hasMore }]` JSON the Viewer expects for one
-/// category. Each clip group is a dated subfolder of `.mp4` files plus an
-/// optional `event.json` (unused by GM, kept for profiles with event folders).
+/// category. Each clip group is a dated subfolder of `.mp4` files.
 fn list_clips_in(
     teslacam_dir: &Path,
     category: &str,
@@ -102,15 +83,10 @@ fn list_clips_in(
         }
         files.sort();
 
-        let event = std::fs::read_to_string(dir_path.join("event.json"))
-            .ok()
-            .and_then(|s| serde_json::from_str::<EventMeta>(&s).ok());
-
         entries.push(ClipEntry {
             date: dir_name.clone(),
             path: format!("/Recordings/{}/{}", category, dir_name),
             files,
-            event,
         });
     }
 
@@ -200,7 +176,6 @@ mod tests {
                 "REAR_2026_07_17_T_19_34_53.mp4",
             ],
         );
-        // Continuous folders carry no event.json, so `event` is skipped.
         assert!(clips[0].get("event").is_none());
     }
 

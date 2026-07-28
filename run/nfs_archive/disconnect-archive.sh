@@ -34,8 +34,7 @@ unmount_if_set() {
 # can't wedge the return to archiveloop the way an uncapped unmount
 # once could. Fail-closed on lock timeout: unmounting without the lock
 # is exactly the mid-write teardown the lock exists to prevent — skip,
-# and the next cycle's disconnect gets another chance. Music has no
-# API writer, so it keeps the old backgrounded, lock-free path.
+# and the next cycle's disconnect gets another chance.
 (
   if ! flock -w 300 210
   then

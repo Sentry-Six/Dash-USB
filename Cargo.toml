@@ -26,10 +26,10 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Drop default `wasmbind` (we never target wasm) and the deprecated
-# `oldtime` shim. `clock` pulls in `std` + `now` for Utc::now() /
-# Local::now() which the API + telemetry code uses; `serde` is needed
-# by the DriveStore serialization paths.
-chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+# `oldtime` shim. `clock` pulls in `std` + `now` for the Utc::now() calls in
+# backup, update checks, and notification timestamps. No chrono type is
+# serialized, so the `serde` feature stays off.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [profile.release]
 opt-level = "s"

@@ -208,14 +208,17 @@ pub async fn ble_reset_pair(State(_s): State<AppState>) -> (StatusCode, Json<ser
     })))
 }
 
-/// Remove every BlueZ phone-client bond, preserving the Tesla peer.
+/// Remove every BlueZ phone-client bond, leaving keyless cache entries alone.
 ///
 /// Phone bonds carry an LTK/LinkKey that goes stale after a Pi rebuild or a
-/// phone reset, the desync behind #324. The Tesla advertises as `S<hex>C` and
-/// is stored keyless (vehicle BLE doesn't LE-bond), so skip any peer whose name
-/// matches that shape OR that carries no bond key. `bluetoothctl remove` drops
-/// the bond from the live daemon and deletes the on-disk dir without restarting
-/// bluetoothd, leaving the car link untouched.
+/// phone reset, the desync behind #324. Skip any peer that carries no bond key,
+/// since those are not the stale-LTK problem. `bluetoothctl remove` drops the
+/// bond from the live daemon and deletes the on-disk dir without restarting
+/// bluetoothd.
+///
+/// The `is_tesla_peer` name-shape filter is inherited from the upstream Tesla
+/// product and cannot match on a GM install. Kept because it is free and a Pi
+/// reused from a Sentry USB build could still hold such an entry.
 async fn remove_phone_bonds() -> Vec<String> {
     let mut removed = Vec::new();
     let adapters = match std::fs::read_dir("/var/lib/bluetooth") {
@@ -239,7 +242,7 @@ async fn remove_phone_bonds() -> Vec<String> {
             }
             let info = std::fs::read_to_string(ppath.join("info")).unwrap_or_default();
             if is_tesla_peer(&info) || !has_bond_key(&info) {
-                continue; // preserve the car + keyless cache entries
+                continue; // keyless cache entries are not stale-LTK
             }
             let _ = sentryusb_shell::run_with_timeout(
                 Duration::from_secs(10),
@@ -270,9 +273,9 @@ fn info_name(info: &str) -> Option<&str> {
     info.lines().find_map(|l| l.strip_prefix("Name=").map(str::trim))
 }
 
-/// True when the peer is a Tesla, advertised name `S<hex>C` (for example
-/// `Se04d38788e92e221C`). Protects the car's BlueZ entry from the phone-bond
-/// cleanup.
+/// True when the peer advertises a Tesla-shaped name, `S<hex>C` (for example
+/// `Se04d38788e92e221C`). No GM vehicle advertises this; see
+/// `remove_phone_bonds` for why the check survives.
 fn is_tesla_peer(info: &str) -> bool {
     match info_name(info) {
         Some(name) => {
@@ -287,7 +290,7 @@ fn is_tesla_peer(info: &str) -> bool {
 }
 
 /// True when the peer's `info` carries an actual pairing key. Keyless cache
-/// entries (e.g. the Tesla) aren't the stale-LTK problem and are left alone.
+/// entries aren't the stale-LTK problem and are left alone.
 fn has_bond_key(info: &str) -> bool {
     info.contains("[LinkKey]")
         || info.contains("[LongTermKey]")
@@ -349,17 +352,16 @@ pub async fn get_rtc_status(State(_s): State<AppState>) -> impl IntoResponse {
     )
 }
 
-/// Whether the Pi's system clock can be trusted for timestamping samples and
-/// matching them to drives later. The BLE pair card shows a short "clock not
-/// synced" hint only when both hold:
+/// Whether the Pi's system clock can be trusted. Snapshot pruning and archive
+/// dedup both key off dated folder names, so a bogus clock buckets recordings
+/// under the wrong date. The UI shows a short "clock not synced" hint only when
+/// both hold:
 ///   * The system clock looks bogus (year < 2025, so unset or a Jan-1-2000
 ///     style fallback, and no NTP sync yet)
 ///   * No RTC battery is installed, so the clock can't survive reboots
 ///
-/// The telemetry sampler self-corrects the system clock from any successful
-/// BLE state-poll response (Tesla embeds a GPS-derived timestamp in every state
-/// reply), so even without RTC or WiFi the clock comes good once the car
-/// answers. The warning is informational, not blocking.
+/// NTP fixes it as soon as WiFi is up. The warning is informational, not
+/// blocking.
 ///
 /// Response shape:
 /// ```json

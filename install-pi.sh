@@ -662,7 +662,7 @@ echo ""
 if [ "${NEEDS_REBOOT:-0}" = "1" ]; then
     warn "Rock 4C+: a REBOOT is required to activate the USB gadget (dwc3 → peripheral)"
     warn "          and load the BT/WiFi firmware."
-    echo -e "  Run:  ${BLUE}reboot${NC}  — afterward /sys/class/udc/ shows fe800000.usb (Tesla"
-    echo -e "        sees the dashcam) and SC can discover + BLE-pair the 4C+."
+    echo -e "  Run:  ${BLUE}reboot${NC}  — afterward /sys/class/udc/ shows fe800000.usb, so"
+    echo -e "        the car sees the drive and the BLE daemon can advertise."
     echo ""
 fi

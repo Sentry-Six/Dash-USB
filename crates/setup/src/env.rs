@@ -177,12 +177,11 @@ impl SetupEnv {
 
     /// True when `key` is present AND non-empty after trimming.
     ///
-    /// Must match the runtime's bash `${VAR:+x}` test (run/awake_start) and
-    /// the wizard frontend's JS-falsy check. The wizard clears a deselected
-    /// keep-awake provider by writing `export KEY=''`, and that empty value
-    /// must read as "not configured", not as a second provider. Use this
-    /// rather than `config.contains_key` anywhere a config value's presence
-    /// gates behavior.
+    /// Must match the runtime's bash `${VAR:+x}` test and the wizard
+    /// frontend's JS-falsy check. The wizard clears a deselected option by
+    /// writing `export KEY=''`, and that empty value must read as "not
+    /// configured". Use this rather than `config.contains_key` anywhere a
+    /// config value's presence gates behavior.
     pub fn is_set(&self, key: &str) -> bool {
         self.config.get(key).is_some_and(|v| !v.trim().is_empty())
     }
@@ -208,9 +207,6 @@ fn migrate_legacy_config_keys(config: &mut std::collections::HashMap<String, Str
         ("sharename", "SHARE_NAME"),
         ("shareuser", "SHARE_USER"),
         ("sharepassword", "SHARE_PASSWORD"),
-        ("tesla_email", "TESLA_EMAIL"),
-        ("tesla_password", "TESLA_PASSWORD"),
-        ("tesla_vin", "TESLA_VIN"),
         ("timezone", "TIME_ZONE"),
         ("usb_drive", "DATA_DRIVE"),
         ("USB_DRIVE", "DATA_DRIVE"),

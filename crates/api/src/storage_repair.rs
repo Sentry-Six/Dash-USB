@@ -38,7 +38,7 @@ const BACKINGFILES: &str = "/backingfiles";
 const XFS_LABEL: &str = "backingfiles";
 /// Bind/autofs mount points archiveloop exposes from inside `/backingfiles`.
 /// All must be released before the device can be unmounted.
-const SUBMOUNTS: &[&str] = &["/mnt/cam", "/mnt/music", "/mnt/lightshow", "/mnt/boombox"];
+const SUBMOUNTS: &[&str] = &["/mnt/cam"];
 /// Writable partition where the human-readable repair transcript is kept.
 const REPAIR_LOG_DIR: &str = "/mutable";
 /// Per-command ceiling. `xfs_repair` on a large multi-TB SSD can take minutes;

@@ -4,11 +4,6 @@
 # and disconnect-archive.sh.
 ARCHIVE_MOUNT_LOCK=/tmp/sentryusb_archive_mount.lock
 
-function mount_if_set() {
-  local mount_point=$1
-  [ -z "$mount_point" ] || ensure_mountpoint_is_mounted_with_retry "$mount_point"
-}
-
 # The archive mount is shared with the API's backup path, which may
 # mount /mnt/archive itself for a Backup Now and unmount it when done.
 # Take the shared flock around the transition so we can't adopt a

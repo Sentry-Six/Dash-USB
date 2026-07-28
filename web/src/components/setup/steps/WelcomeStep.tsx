@@ -12,8 +12,7 @@ const CONFIG_GROUPS: Record<string, { label: string; keys: string[] }> = {
   storage: {
     label: "Storage",
     keys: [
-      "camsize", "musicsize", "lightshowsize", "boomboxsize",
-      "USE_NVME", "NVME_DEVICE", "USB_DRIVE",
+      "camsize", "USE_NVME", "NVME_DEVICE", "USB_DRIVE",
     ],
   },
   archive: {
@@ -23,13 +22,6 @@ const CONFIG_GROUPS: Record<string, { label: string; keys: string[] }> = {
       "sharepassword", "sharepath", "RCLONE_DRIVE", "RCLONE_PATH",
       "RSYNC_USER", "RSYNC_SERVER", "RSYNC_PATH",
       "NFS_SERVER", "NFS_PATH",
-    ],
-  },
-  keepawake: {
-    label: "Keep Awake",
-    keys: [
-      "TESLA_BLE_VIN", "TESLA_BLE_RETRY", "TESLAFI_TOKEN",
-      "TESSIE_ACCESS_TOKEN", "WEBHOOK_URL",
     ],
   },
   notifications: {
@@ -58,25 +50,18 @@ const CONFIG_GROUPS: Record<string, { label: string; keys: string[] }> = {
 
 /** Map legacy lowercase config keys to canonical names. Must stay in sync with
  *  `migrate_legacy_config_keys` in crates/setup/src/env.rs: wizard inputs read
- *  CAM_SIZE, ARCHIVE_SERVER, etc., so without this an imported teslausb-era
- *  .conf drops every legacy key into an unread keyspace and the user sees blank
- *  inputs despite an "Imported N keys" toast.
+ *  CAM_SIZE, ARCHIVE_SERVER, etc., so without this an imported legacy .conf
+ *  drops every old key into an unread keyspace and the user sees blank inputs
+ *  despite an "Imported N keys" toast.
  *  New name wins when both old and new are present.
  */
 const LEGACY_KEY_MAP: Record<string, string> = {
   archiveserver: "ARCHIVE_SERVER",
   camsize: "CAM_SIZE",
-  musicsize: "MUSIC_SIZE",
-  lightshowsize: "LIGHTSHOW_SIZE",
-  boomboxsize: "BOOMBOX_SIZE",
   sharename: "SHARE_NAME",
-  musicsharename: "MUSIC_SHARE_NAME",
   shareuser: "SHARE_USER",
   sharepassword: "SHARE_PASSWORD",
   sharepath: "SHARE_PATH",
-  tesla_email: "TESLA_EMAIL",
-  tesla_password: "TESLA_PASSWORD",
-  tesla_vin: "TESLA_VIN",
   timezone: "TIME_ZONE",
   usb_drive: "DATA_DRIVE",
   USB_DRIVE: "DATA_DRIVE",
@@ -156,16 +141,12 @@ function friendlyLabel(key: string): string {
     WIFIPASS: "WiFi Password",
     DASHUSB_HOSTNAME: "Hostname",
     camsize: "Dashcam Size",
-    musicsize: "Music Size",
-    lightshowsize: "Light Show Size",
-    boomboxsize: "Boombox Size",
     ARCHIVE_SYSTEM: "Archive Method",
     archiveserver: "Archive Server",
     sharename: "Share Name",
     shareuser: "Share User",
     sharepassword: "Share Password",
     sharepath: "Share Path",
-    TESLA_BLE_VIN: "Tesla BLE VIN",
     timezone: "Timezone",
   }
   return labels[key] || key
