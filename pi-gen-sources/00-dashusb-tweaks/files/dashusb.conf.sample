@@ -30,7 +30,7 @@ export SHARE_PASSWORD='password'
 
 # Variables for rsync archiving
 # For instructions setting up SSH Public Key authentication, view:
-# https://github.com/Sentry-Six/Dash-USB/blob/main-dev/doc/SetupRSync.md#step-1-authentication
+# https://github.com/Sentry-Six/Dash-USB/wiki/Archive-Methods
 #export ARCHIVE_SYSTEM=rsync
 #export RSYNC_USER=username
 #export RSYNC_SERVER=hostname_or_ip

@@ -14,8 +14,8 @@ export function DisplayUnitsSection() {
       halo="violet"
       title="Display & Units"
       badge={
-        // Connected pill reusing the Keep Awake SegPicker's selected-state
-        // classes: border-blue-500/40 bg-blue-500/10 text-blue-400.
+        // Connected pill. Selected state is
+        // border-blue-500/40 bg-blue-500/10 text-blue-400.
         <span
           role="tablist"
           aria-label="Units"

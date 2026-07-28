@@ -55,8 +55,7 @@ src/
 │   ├── layout/        # AppShell, Sidebar, MobileNav, ConnectionBanner
 │   ├── settings/      # Settings sections and cards
 │   ├── setup/         # SetupWizard + 9 step components
-│   ├── ui/            # Shared primitives
-│   └── upload/        # Upload widgets
+│   └── ui/            # Shared primitives
 ├── pages/             # Top-level routes, plus pages/settings/ tabs
 └── lib/               # api.ts, ws.ts (WebSocket hook), units.ts, utils.ts
 ```

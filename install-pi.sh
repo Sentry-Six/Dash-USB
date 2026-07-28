@@ -529,21 +529,6 @@ if is_known_broken_ble_chip; then
     fi
 fi
 
-# ── Step 3z: clean up a previous Sentry USB (Tesla) install ─────────
-# Installing Dash USB onto a repurposed Sentry USB board must not leave the old
-# product's services fighting this one. Idempotent; silent on fresh systems.
-for unit in sentryusb sentryusb-archive sentryusb-ble sentryusb-telemetry sentryusb-ble-adv; do
-    systemctl disable --now "$unit" >/dev/null 2>&1 || true
-    rm -f "/etc/systemd/system/${unit}.service" "/lib/systemd/system/${unit}.service"
-done
-rm -f /root/bin/sentryusb* /root/bin/awake_start /root/bin/awake_stop \
-      /root/bin/post-archive-process.sh /root/bin/copy-music.sh \
-      /usr/local/bin/sentryusb* /etc/dbus-1/system.d/com.sentryusb.ble.conf \
-      /etc/udev/rules.d/99-sentryusb-ble-hci.rules \
-      /usr/local/bin/dashusb-ap-resurrect /etc/systemd/system/dashusb-ap-resurrect.service
-rm -rf /opt/sentryusb /root/.ble
-systemctl daemon-reload >/dev/null 2>&1 || true
-
 # ── Step 4: Sample Config ───────────────────────────────────────────
 
 if [ ! -f /root/dashusb.conf ]; then

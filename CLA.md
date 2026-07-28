@@ -1,6 +1,6 @@
-# Sentry USB Contributor License Agreement
+# Dash USB Contributor License Agreement
 
-Thank you for contributing to Sentry-USB-Rusty (the "Project"), maintained by
+Thank you for contributing to Dash-USB (the "Project"), maintained by
 Jhoan Romero, Scott Vandereems, and Jason Perez (the "Maintainers").
 
 This Contributor License Agreement ("Agreement") sets the terms under which you

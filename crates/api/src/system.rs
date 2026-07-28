@@ -170,10 +170,6 @@ fn remount_root_rw() {
 ///
 /// MUST NOT restart `bluetooth.service`, so archiving keeps running. The app
 /// pushes a fresh PIN on the re-claim.
-///
-/// The non-phone peer filter (see `is_tesla_peer`) is inherited from the
-/// upstream Tesla product. GM exposes no BLE interface, so no such peer
-/// exists here and the filter never matches. Harmless, but dead.
 pub async fn ble_reset_pair(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
     // 1) Remove phone bonds, preserving keyless entries.
     let removed = remove_phone_bonds().await;
@@ -215,10 +211,6 @@ pub async fn ble_reset_pair(State(_s): State<AppState>) -> (StatusCode, Json<ser
 /// since those are not the stale-LTK problem. `bluetoothctl remove` drops the
 /// bond from the live daemon and deletes the on-disk dir without restarting
 /// bluetoothd.
-///
-/// The `is_tesla_peer` name-shape filter is inherited from the upstream Tesla
-/// product and cannot match on a GM install. Kept because it is free and a Pi
-/// reused from a Sentry USB build could still hold such an entry.
 async fn remove_phone_bonds() -> Vec<String> {
     let mut removed = Vec::new();
     let adapters = match std::fs::read_dir("/var/lib/bluetooth") {
@@ -241,7 +233,7 @@ async fn remove_phone_bonds() -> Vec<String> {
                 continue;
             }
             let info = std::fs::read_to_string(ppath.join("info")).unwrap_or_default();
-            if is_tesla_peer(&info) || !has_bond_key(&info) {
+            if !has_bond_key(&info) {
                 continue; // keyless cache entries are not stale-LTK
             }
             let _ = sentryusb_shell::run_with_timeout(
@@ -266,27 +258,6 @@ fn is_mac_dir(s: &str) -> bool {
         && parts
             .iter()
             .all(|p| p.len() == 2 && p.bytes().all(|b| b.is_ascii_hexdigit()))
-}
-
-/// The peer's advertised `Name=` from its BlueZ `info` file, if present.
-fn info_name(info: &str) -> Option<&str> {
-    info.lines().find_map(|l| l.strip_prefix("Name=").map(str::trim))
-}
-
-/// True when the peer advertises a Tesla-shaped name, `S<hex>C` (for example
-/// `Se04d38788e92e221C`). No GM vehicle advertises this; see
-/// `remove_phone_bonds` for why the check survives.
-fn is_tesla_peer(info: &str) -> bool {
-    match info_name(info) {
-        Some(name) => {
-            let b = name.as_bytes();
-            b.len() >= 10
-                && b[0] == b'S'
-                && b[b.len() - 1] == b'C'
-                && b[1..b.len() - 1].iter().all(u8::is_ascii_hexdigit)
-        }
-        None => false,
-    }
 }
 
 /// True when the peer's `info` carries an actual pairing key. Keyless cache

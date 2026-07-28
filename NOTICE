@@ -97,28 +97,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-================================================================================
-2. Vendored xfuse XFS parser  --  BSD 2-Clause License
-================================================================================
-
-The files under crates/disk_reader/src/xfs/ (except fs.rs, reader.rs,
-shim.rs, and volume.rs, which are original Sentry-USB-Rusty work) are
-vendored from the xfuse project, version 0.7.1
-(https://github.com/KhaledEmaraDev/xfuse), Copyright (c) 2021 Khaled Emara,
-and remain under the BSD 2-Clause License reproduced in each file's header.
-Local modifications: fuser/libc/nix dependencies replaced with a portability
-shim (see shim.rs) and the FUSE server replaced with a path-based read-only
-API (fs.rs).
-
-================================================================================
-3. Vendored exfat crate  --  MIT License
-================================================================================
-
-The files under crates/disk_reader/vendor/exfat/ are vendored from the
-exfat crate, version 0.1.0 (https://github.com/obhq/exfat), Copyright (c)
-Obliteration contributors, MIT License (see COPYING in that directory).
-Local modifications: unused (deleted) directory entries are skipped per the
-exFAT specification instead of ending the directory scan, and benign
-primary entries (e.g. Volume GUID) are ignored instead of failing — both
-required to read Tesla-written filesystems.

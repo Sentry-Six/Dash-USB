@@ -425,7 +425,7 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
                           }}
                           className="mt-0.5 h-4 w-4 rounded border-white/20 bg-white/5 accent-red-500" />
                         <span className="text-xs text-slate-300">
-                          I confirm my RTC battery is rechargeable and accept all risk. Sentry-USB assumes no
+                          I confirm my RTC battery is rechargeable and accept all risk. Dash USB assumes no
                           responsibility for damage caused by enabling trickle charging with an incompatible battery.
                         </span>
                       </label>

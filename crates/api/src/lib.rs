@@ -27,11 +27,6 @@ pub use router::build_router;
 
 use axum::Json;
 use axum::http::StatusCode;
-use serde::Serialize;
-
-pub fn json_response<T: Serialize>(status: StatusCode, data: T) -> (StatusCode, Json<serde_json::Value>) {
-    (status, Json(serde_json::to_value(data).unwrap_or_default()))
-}
 
 pub fn json_error(status: StatusCode, msg: &str) -> (StatusCode, Json<serde_json::Value>) {
     (status, Json(serde_json::json!({"error": msg})))

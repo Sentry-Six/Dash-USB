@@ -524,16 +524,9 @@ const DIAGNOSTICS_SCRIPT: &str = r#"{
   tail -50 /mutable/archiveloop.log 2>/dev/null || echo "no archiveloop log"
   echo ""
 
-  echo "====== drive-import history (persisted, last 20) ======"
+  echo "====== archive status (current) ======"
   curl -fsS --max-time 5 http://[::1]/api/archive/status 2>/dev/null \
     || echo "could not reach /api/archive/status"
-  echo ""
-
-  echo "====== drive-import logs (journalctl, last 7 days) ======"
-  journalctl -u dashusb --since "7 days ago" --no-pager 2>/dev/null \
-    | grep -E "import_json|group_clips|hide_tessie_overlapping_sei|upload_data|drive cache:" \
-    | tail -200 \
-    || echo "no matching journalctl entries"
   echo ""
 
   echo "====== temperatures ======"
