@@ -29,6 +29,12 @@ substantial verbatim or lightly-adapted upstream content.
   tools/debian-resizefs.sh
   tools/resize-image.sh
 
+  run/archiveloop
+  run/remountfs_rw
+  run/send-push-message
+  run/temperature_monitor
+  run/waitforidle
+
   run/cifs_archive/archive-clips.sh
   run/cifs_archive/archive-is-reachable.sh
   run/cifs_archive/connect-archive.sh
