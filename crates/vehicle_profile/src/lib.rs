@@ -107,11 +107,6 @@ impl ClipInfo {
     pub fn date_str(&self) -> String {
         self.timestamp.format("%Y-%m-%d").to_string()
     }
-
-    /// Cross-camera grouping key: all cameras of one segment share it.
-    pub fn group_key(&self) -> String {
-        self.timestamp.format("%Y-%m-%d_%H-%M-%S").to_string()
-    }
 }
 
 impl Profile {
@@ -290,7 +285,10 @@ mod tests {
         let info = p.parse_clip_filename("FRONT_2026_07_17_T_19_34_53.mp4").unwrap();
         assert_eq!(info.camera, "FRONT");
         assert_eq!(info.date_str(), "2026-07-17");
-        assert_eq!(info.group_key(), "2026-07-17_19-34-53");
+        assert_eq!(
+            info.timestamp.format("%Y-%m-%d_%H-%M-%S").to_string(),
+            "2026-07-17_19-34-53"
+        );
 
         for name in [
             "LEFT_2026_07_17_T_19_04_53.mp4",

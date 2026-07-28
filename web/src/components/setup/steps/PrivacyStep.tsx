@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react"
 import { ShieldCheck, Check, X, Loader2 } from "lucide-react"
-import type { StepProps } from "../SetupWizard"
 import { cn } from "@/lib/utils"
 
 /**
@@ -20,7 +19,7 @@ import { cn } from "@/lib/utils"
  * the wizard's Apply flow, so the choice survives backing out of the wizard
  * and the next update check already honours it.
  */
-export function PrivacyStep(_props: StepProps) {
+export function PrivacyStep() {
   const [choice, setChoice] = useState<boolean | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)

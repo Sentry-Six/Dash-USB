@@ -90,8 +90,6 @@ fn dt_compatible_contains(needle: &str) -> bool {
 #[derive(Debug, Clone)]
 pub struct SetupEnv {
     pub pi_model: PiModel,
-    /// Boot partition (/dashusb -> /boot/firmware or /boot).
-    pub boot_path: String,
     /// Path to cmdline.txt if it exists.
     pub cmdline_path: Option<String>,
     /// Path to config.txt if it exists.
@@ -111,10 +109,6 @@ impl SetupEnv {
         let pi_model = PiModel::detect();
 
         ensure_sentryusb_symlink()?;
-
-        let boot_path = fs::read_link("/dashusb")
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| "/boot".to_string());
 
         // /dashusb first, preserving the user's chosen boot dir, then the
         // canonical locations so a broken symlink left by a prior install
@@ -161,7 +155,6 @@ impl SetupEnv {
 
         Ok(SetupEnv {
             pi_model,
-            boot_path,
             cmdline_path,
             piconfig_path,
             boot_disk,

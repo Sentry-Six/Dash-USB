@@ -9,7 +9,7 @@ import { SectionErrorBoundary } from "@/components/ErrorBoundary"
  * normally; only the body is blurred and inerted, so the card stays
  * identifiable.
  */
-export interface DisabledConfig {
+interface DisabledConfig {
   /** Centered text explaining what the user needs to enable. */
   reason: string
   /** Optional "go enable this" affordance. */

@@ -160,7 +160,7 @@ interface BackupEntry {
   filename: string
 }
 
-export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }: StepProps) {
+export function WelcomeStep({ onBatchChange }: StepProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [imported, setImported] = useState<Record<string, string> | null>(null)
   const [fileName, setFileName] = useState<string | null>(null)

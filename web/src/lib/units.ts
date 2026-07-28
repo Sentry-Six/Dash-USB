@@ -5,7 +5,7 @@ import { useSyncExternalStore } from "react"
 // System tile, temperature-alert notifications, health checks, log
 // entries. SYSTEM_TEMPERATURE_UNIT is a legacy key, migrated away at
 // daemon startup.
-export type UnitState = {
+type UnitState = {
   tempF: boolean // TEMPERATURE_UNIT === "F"
   loaded: boolean
 }

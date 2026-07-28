@@ -382,7 +382,6 @@ mod tests {
             .collect();
         SetupEnv {
             pi_model: PiModel::Other,
-            boot_path: String::new(),
             cmdline_path: None,
             piconfig_path: None,
             boot_disk: None,

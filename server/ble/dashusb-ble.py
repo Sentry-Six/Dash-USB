@@ -111,7 +111,6 @@ LE_ADVERTISEMENT_IFACE = 'org.bluez.LEAdvertisement1'
 GATT_MANAGER_IFACE = 'org.bluez.GattManager1'
 GATT_SERVICE_IFACE = 'org.bluez.GattService1'
 GATT_CHRC_IFACE = 'org.bluez.GattCharacteristic1'
-GATT_DESC_IFACE = 'org.bluez.GattDescriptor1'
 DBUS_OM_IFACE = 'org.freedesktop.DBus.ObjectManager'
 DBUS_PROP_IFACE = 'org.freedesktop.DBus.Properties'
 
@@ -513,13 +512,6 @@ def proxy_api_request(method, path, body=None, retries=2, retry_delay=1.5):
 class InvalidArgsException(dbus.exceptions.DBusException):
     _dbus_error_name = 'org.freedesktop.DBus.Error.InvalidArgs'
 
-class NotSupportedException(dbus.exceptions.DBusException):
-    _dbus_error_name = 'org.bluez.Error.NotSupported'
-
-class NotPermittedException(dbus.exceptions.DBusException):
-    _dbus_error_name = 'org.bluez.Error.NotPermitted'
-
-
 class Application(dbus.service.Object):
     """BlueZ GATT Application."""
 
@@ -544,9 +536,6 @@ class Application(dbus.service.Object):
             chrcs = service.get_characteristics()
             for chrc in chrcs:
                 response[chrc.get_path()] = chrc.get_properties()
-                descs = chrc.get_descriptors()
-                for desc in descs:
-                    response[desc.get_path()] = desc.get_properties()
         log.info(f'GetManagedObjects called — returning {len(response)} objects: {list(response.keys())}')
         return response
 
@@ -556,7 +545,6 @@ class Service(dbus.service.Object):
 
     def __init__(self, bus, index, uuid, primary):
         self.path = self.PATH_BASE + str(index)
-        self.bus = bus
         self.uuid = uuid
         self.primary = primary
         self.characteristics = []
@@ -595,7 +583,6 @@ class Characteristic(dbus.service.Object):
 
     def __init__(self, bus, index, uuid, flags, service):
         self.path = service.path + '/char' + str(index)
-        self.bus = bus
         self.uuid = uuid
         self.service = service
         self.flags = flags
@@ -618,14 +605,8 @@ class Characteristic(dbus.service.Object):
     def get_path(self):
         return dbus.ObjectPath(self.path)
 
-    def add_descriptor(self, descriptor):
-        self.descriptors.append(descriptor)
-
     def get_descriptor_paths(self):
         return [desc.get_path() for desc in self.descriptors]
-
-    def get_descriptors(self):
-        return self.descriptors
 
     @dbus.service.method(DBUS_PROP_IFACE, in_signature='s', out_signature='a{sv}')
     def GetAll(self, interface):
@@ -1099,7 +1080,6 @@ class Advertisement(dbus.service.Object):
     def __init__(self, bus, index, advertising_type, ad_manager,
                  service_manager=None, app=None, local_name=None):
         self.path = self.PATH_BASE + str(index)
-        self.bus = bus
         self.ad_type = advertising_type
         self.ad_manager = ad_manager
         self.service_manager = service_manager

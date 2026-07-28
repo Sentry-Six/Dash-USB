@@ -12,7 +12,7 @@ import { SecurityStep } from "./steps/SecurityStep"
 import { AdvancedStep } from "./steps/AdvancedStep"
 import { ReviewStep } from "./steps/ReviewStep"
 
-export interface SetupFormData {
+interface SetupFormData {
   [key: string]: string
 }
 
