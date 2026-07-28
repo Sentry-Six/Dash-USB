@@ -26,7 +26,6 @@ export SHARE_PASSWORD='password'
 # the cifs options below usually don't need to be specified
 # export SHARE_DOMAIN=domain
 # export CIFS_VERSION="3.0"
-# export CIFS_SEC="ntlm"
 
 # Variables for rsync archiving
 # For instructions setting up SSH Public Key authentication, view:
