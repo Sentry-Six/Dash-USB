@@ -64,28 +64,6 @@ function setup_progress () {
   echo "$1"
 }
 
-function get_script () {
-  local local_path="$1"
-  local name="$2"
-  local remote_path="${3:-}"
-
-  IFS=". " read -r start_time _ < /proc/uptime
-
-  while ! curl -o "$local_path/$name" https://raw.githubusercontent.com/"$REPO"/"$REPO_NAME"/"$BRANCH"/"$remote_path"/"$name"
-  do
-    setup_progress "get_script failed, retrying"
-    sntp -S time.google.com 2>/dev/null || ntpdig -S time.google.com 2>/dev/null || true
-    sleep 3
-    IFS=". " read -r now _ < /proc/uptime
-    if [ $((now - start_time)) -gt 60 ]
-    then
-      setup_progress "failed to get script after 60 seconds, exiting"
-      return 1
-    fi
-  done
-  chmod +x "$local_path/$name"
-}
-
 function nm_connect_wifi () {
   IFS=". " read -r start_time _ < /proc/uptime
 

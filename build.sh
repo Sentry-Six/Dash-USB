@@ -4,15 +4,10 @@
 
 set -e
 
-# Build the frontend. Prefer this repo's web/; fall back to the legacy
-# ../Sentry-USB/web sibling for old checkouts. static/ is gitignored, so
-# this step is the only thing that populates it: without it a bare cargo
-# build embeds the "frontend not built" placeholder from
-# crates/sentryusb/build.rs.
+# Build the frontend. static/ is gitignored, so this step is the only thing
+# that populates it: without it a bare cargo build embeds the "frontend not
+# built" placeholder from crates/sentryusb/build.rs.
 WEB_DIR="$(dirname "$0")/web"
-if [ ! -f "$WEB_DIR/package.json" ]; then
-    WEB_DIR="$(dirname "$0")/../Sentry-USB/web"
-fi
 if [ -d "$WEB_DIR" ] && [ -f "$WEB_DIR/package.json" ]; then
     echo "Building frontend from $WEB_DIR..."
     (cd "$WEB_DIR" && npm run build)

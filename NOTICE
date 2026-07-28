@@ -58,7 +58,6 @@ substantial verbatim or lightly-adapted upstream content.
   setup/pi/configure-ap.sh
   setup/pi/configure-automount.sh
   setup/pi/configure-samba.sh
-  setup/pi/configure-ssh.sh
   setup/pi/create-backingfiles-partition.sh
   setup/pi/envsetup.sh
   setup/pi/make-root-fs-readonly.sh

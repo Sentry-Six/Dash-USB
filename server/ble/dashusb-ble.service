@@ -16,13 +16,6 @@ StartLimitIntervalSec=120
 
 [Service]
 Type=simple
-# Clean up stale keep-awake locks only (older than 24 h).  Matches the
-# BLE_LOCK_MAX_AGE check in run/awake_start.  Unconditionally removing
-# the lock here would break mid-session service restarts: if an archive
-# cycle is active, awake_stop's GATT-restore flow depends on the lock
-# being present.  Wiping a fresh lock leaves the GATT daemon down until
-# the next Pi reboot.
-ExecStartPre=-/bin/bash -c 'f=/tmp/ble_keep_awake_active; [ -e "$f" ] && [ $(( $(date +%s) - $(stat -c %Y "$f" 2>/dev/null || echo 0) )) -gt 86400 ] && rm -f "$f"; exit 0'
 ExecStartPre=/usr/sbin/rfkill unblock bluetooth
 # Bring up all detected hci adapters (onboard + any USB dongles), not
 # just hci0 — when the user has configured BLE_ADAPTER=hci1 in

@@ -55,10 +55,6 @@ if $BUILD_32BIT; then
     SUFFIXES=("linux-armv7")
     CPUS=("cortex-a7")
     RUST_TARGET="armv7-unknown-linux-gnueabihf"
-    # GO_ARCH and GO_ARM are not read anywhere in this script; nothing here
-    # builds a Go component.
-    GO_ARCH="arm"
-    GO_ARM="7"
     CONFIG_FILE="pi-gen-config-32bit"
 else
     ARCH_LABEL="64-bit (arm64 — Pi 3/4/5/Zero 2)"
@@ -67,8 +63,6 @@ else
     SUFFIXES=("linux-arm64-a53" "linux-arm64-a72" "linux-arm64-a76")
     CPUS=("cortex-a53" "cortex-a72" "cortex-a76")
     RUST_TARGET="aarch64-unknown-linux-gnu"
-    GO_ARCH="arm64"
-    GO_ARM=""
     CONFIG_FILE="pi-gen-config"
 fi
 
@@ -176,12 +170,9 @@ cp "$SCRIPT_DIR/pi-gen-sources/00-dashusb-tweaks/files/dashusb-pick-binary" \
 chmod +x "$STAGE_FILES/dashusb-pick-binary"
 
 info "Injecting BLE daemon files..."
-cp "$SCRIPT_DIR/server/ble/dashusb-ble.py" "$WORK_DIR/stage_dashusb/00-dashusb-tweaks/files/dashusb-ble.py" 2>/dev/null \
-    || cp "$SCRIPT_DIR/../Sentry-USB/server/ble/dashusb-ble.py" "$WORK_DIR/stage_dashusb/00-dashusb-tweaks/files/dashusb-ble.py"
-cp "$SCRIPT_DIR/server/ble/dashusb-ble.service" "$WORK_DIR/stage_dashusb/00-dashusb-tweaks/files/dashusb-ble.service" 2>/dev/null \
-    || cp "$SCRIPT_DIR/../Sentry-USB/server/ble/dashusb-ble.service" "$WORK_DIR/stage_dashusb/00-dashusb-tweaks/files/dashusb-ble.service"
-cp "$SCRIPT_DIR/server/ble/com.dashusb.ble.conf" "$WORK_DIR/stage_dashusb/00-dashusb-tweaks/files/com.dashusb.ble.conf" 2>/dev/null \
-    || cp "$SCRIPT_DIR/../Sentry-USB/server/ble/com.dashusb.ble.conf" "$WORK_DIR/stage_dashusb/00-dashusb-tweaks/files/com.dashusb.ble.conf"
+cp "$SCRIPT_DIR/server/ble/dashusb-ble.py" "$WORK_DIR/stage_dashusb/00-dashusb-tweaks/files/dashusb-ble.py"
+cp "$SCRIPT_DIR/server/ble/dashusb-ble.service" "$WORK_DIR/stage_dashusb/00-dashusb-tweaks/files/dashusb-ble.service"
+cp "$SCRIPT_DIR/server/ble/com.dashusb.ble.conf" "$WORK_DIR/stage_dashusb/00-dashusb-tweaks/files/com.dashusb.ble.conf"
 
 # Trixie's apt indices are much larger, so raise the export image margin.
 if [[ "$OSTYPE" == darwin* ]]; then

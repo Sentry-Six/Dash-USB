@@ -353,11 +353,6 @@ apply_archive_mount_lock_scripts() {
 # and disconnect-archive.sh.
 ARCHIVE_MOUNT_LOCK=/tmp/sentryusb_archive_mount.lock
 
-function mount_if_set() {
-  local mount_point=$1
-  [ -z "$mount_point" ] || ensure_mountpoint_is_mounted_with_retry "$mount_point"
-}
-
 # The archive mount is shared with the API's backup path, which may
 # mount /mnt/archive itself for a Backup Now and unmount it when done.
 # Take the shared flock around the transition so we can't adopt a
@@ -380,7 +375,6 @@ function mount_archive_locked() {
 }
 
 mount_archive_locked "${ARCHIVE_MOUNT:-}"
-mount_if_set "${MUSIC_ARCHIVE_MOUNT:-}"
 CONNECT_EOF
 
     cat > /root/bin/disconnect-archive.sh.new <<'DISCONNECT_EOF'
@@ -420,8 +414,7 @@ unmount_if_set() {
 # can't wedge the return to archiveloop the way an uncapped unmount
 # once could. Fail-closed on lock timeout: unmounting without the lock
 # is exactly the mid-write teardown the lock exists to prevent — skip,
-# and the next cycle's disconnect gets another chance. Music has no
-# API writer, so it keeps the old backgrounded, lock-free path.
+# and the next cycle's disconnect gets another chance.
 (
   if ! flock -w 300 210
   then
@@ -430,7 +423,6 @@ unmount_if_set() {
   fi
   unmount_if_set "${ARCHIVE_MOUNT:-}"
 ) 210>"$ARCHIVE_MOUNT_LOCK"
-unmount_if_set "${MUSIC_ARCHIVE_MOUNT:-}" &
 DISCONNECT_EOF
 
     chmod 755 /root/bin/connect-archive.sh.new /root/bin/disconnect-archive.sh.new
