@@ -336,9 +336,12 @@ else
     warn "Could not fetch runtime-patches script — OTA updates won't re-apply BLE patches"
 fi
 # Run it now so a first install gets the patches without waiting for an OTA
-# update. Per-patch detection gates make this a no-op on other boards.
+# update. Per-patch detection gates make this a no-op on other boards. The
+# helper's own downloads must follow the same source this installer used, so
+# a custom-REPO install doesn't fetch root-run artifacts from upstream.
 if [ -x "$PATCHES_DST" ]; then
-    "$PATCHES_DST" || warn "runtime-patches first-run reported issues — see output above"
+    DASHUSB_REPO_SLUG="$REPO" DASHUSB_REF=main "$PATCHES_DST" \
+        || warn "runtime-patches first-run reported issues — see output above"
 fi
 
 # ── Step 3f: Rock Pi 4C+ (RK3399 / dwc3) hardware setup ────────────────────

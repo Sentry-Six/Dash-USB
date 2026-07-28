@@ -264,6 +264,12 @@ pub struct GitHubSource {
     /// Tracking ref for non-binary fetches. `BRANCH` in the active conf,
     /// defaulting to `main`. Invalid values fall back to `main`.
     pub branch: String,
+    /// True only when the conf carries a valid BRANCH other than the
+    /// default. Callers that would otherwise prefer the branch copy of a
+    /// support file over the release-tag copy MUST check this: a device
+    /// that never chose a branch must keep tag-matched files rather than
+    /// silently tracking the default branch's tip.
+    pub branch_explicit: bool,
 }
 
 const DEFAULT_GITHUB_OWNER: &str = "Sentry-Six";
@@ -298,6 +304,7 @@ fn resolve_github_source(active: &SetupConfig) -> GitHubSource {
     GitHubSource {
         repo_slug: format!("{}/{}", owner, GITHUB_REPO_NAME),
         branch: branch.to_string(),
+        branch_explicit: branch != DEFAULT_GITHUB_BRANCH,
     }
 }
 
@@ -316,6 +323,12 @@ mod tests {
         let src = resolve_github_source(&SetupConfig::new());
         assert_eq!(src.repo_slug, "Sentry-Six/Dash-USB");
         assert_eq!(src.branch, "main");
+        assert!(!src.branch_explicit);
+
+        // An explicit "main" is not an override.
+        let mut c = SetupConfig::new();
+        c.insert("BRANCH".into(), "main".into());
+        assert!(!resolve_github_source(&c).branch_explicit);
     }
 
     #[test]
@@ -326,6 +339,7 @@ mod tests {
         let src = resolve_github_source(&c);
         assert_eq!(src.repo_slug, "ForkOwner/Dash-USB");
         assert_eq!(src.branch, "feature/gm-test");
+        assert!(src.branch_explicit);
     }
 
     #[test]

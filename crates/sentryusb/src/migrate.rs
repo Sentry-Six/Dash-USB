@@ -50,10 +50,21 @@ pub async fn run_startup_migration() {
         "https://github.com/{}/archive/{}.tar.gz",
         source.repo_slug, source.branch
     );
-    let patches_url = format!(
-        "https://raw.githubusercontent.com/{}/{}/setup/pi/apply-runtime-patches.sh",
-        source.repo_slug, source.branch
-    );
+    // Empty unless the user explicitly chose a branch: a default device
+    // must keep the tag-tarball copy of the patches helper, matching its
+    // binary, instead of tracking the default branch's tip.
+    let patches_url = if source.branch_explicit {
+        tracing::info!(
+            "[migrate] explicit BRANCH={} set — support files track that branch",
+            source.branch
+        );
+        format!(
+            "https://raw.githubusercontent.com/{}/{}/setup/pi/apply-runtime-patches.sh",
+            source.repo_slug, source.branch
+        )
+    } else {
+        String::new()
+    };
 
     // Config-derived values reach the script as positional arguments, never
     // interpolated into shell source. The resolver also charset-validates
@@ -332,11 +343,13 @@ if [ -f "$TMPDIR/pi-gen-sources/00-dashusb-tweaks/files/dashusb-pick-binary" ]; 
 fi
 
 # ── Refresh the runtime-patches helper ──
-# Prefer the configured-branch copy so a device tracking a branch keeps the
-# script the updater selected; fall back to the tag-tarball copy. Without
-# either, existing installs would re-run the OLD on-disk version forever.
+# $PATCHES_URL is non-empty only when the conf explicitly sets BRANCH; then
+# the branch copy wins so the updater's selection survives this migration.
+# Default devices take the tag-tarball copy, which matches their binary.
+# Without either, existing installs would re-run the OLD on-disk version.
 PATCHES_STAGE="$TMPDIR/patches.new"
-if curl -fsSL --max-time 15 -o "$PATCHES_STAGE" "$PATCHES_URL" 2>/dev/null \
+if [ -n "$PATCHES_URL" ] \
+   && curl -fsSL --max-time 15 -o "$PATCHES_STAGE" "$PATCHES_URL" 2>/dev/null \
    && [ -s "$PATCHES_STAGE" ] && bash -n "$PATCHES_STAGE" 2>/dev/null; then
   install -m 755 "$PATCHES_STAGE" /usr/local/bin/dashusb-apply-runtime-patches
 elif [ -f "$TMPDIR/setup/pi/apply-runtime-patches.sh" ]; then
