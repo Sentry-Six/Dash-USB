@@ -181,6 +181,10 @@ export function UpdateSection({ onInstallStart }: Props) {
     // Track the target version locally: /api/system/version is answered by
     // the OLD daemon until the reboot fires, so it can return a stale tag.
     const preUpdateVersion = version
+    // Kernel boot id before the update. A changed boot_id is the only real
+    // proof the device rebooted; the version file is not, because the OLD
+    // daemon rewrites it before `reboot` fires and keeps answering requests.
+    let preUpdateBootId: string | null = null
     let newVersion: string | null = targetVersion ?? null
     setInstalledVersion(newVersion)
 
@@ -227,6 +231,18 @@ export function UpdateSection({ onInstallStart }: Props) {
         return
       }
 
+      // Snapshot boot_id before kicking off the update. Failure leaves it
+      // null and the poll falls back to the version heuristic.
+      try {
+        const vr = await fetch("/api/system/version")
+        if (vr.ok) {
+          const vd = await vr.json()
+          preUpdateBootId = typeof vd.boot_id === "string" && vd.boot_id ? vd.boot_id : null
+        }
+      } catch {
+        /* boot_id unavailable — version heuristic below still applies */
+      }
+
       const res = await fetch("/api/system/update", {
         method: "POST",
         headers: targetVersion ? { "Content-Type": "application/json" } : {},
@@ -246,14 +262,27 @@ export function UpdateSection({ onInstallStart }: Props) {
             if (r.ok) {
               const data = await r.json()
               // Reject stale responses: the old daemon stays responsive
-              // until `reboot` fires and may answer before
-              // /opt/dashusb/version is rewritten. Accept only the expected
-              // new version, or any version differing from the pre-update
-              // one.
+              // until `reboot` fires.
               const polled = (data.version || "").trim()
-              const matchesNew = newVersion && polled === newVersion
-              const differsFromOld = preUpdateVersion && polled && polled !== preUpdateVersion
-              if (!matchesNew && !differsFromOld) return
+              const polledBootId =
+                typeof data.boot_id === "string" && data.boot_id ? data.boot_id : null
+              if (preUpdateBootId && polledBootId) {
+                // Authoritative. The version file is NOT proof of a reboot:
+                // the old daemon rewrites /opt/dashusb/version before
+                // `reboot` fires and keeps serving, so a version-only check
+                // reports "complete" while the old binary is still running
+                // — and the page then reloads into a device that is only
+                // just going down.
+                if (polledBootId === preUpdateBootId) return
+              } else {
+                // boot_id unverifiable (missing on either side). Fall back
+                // to the version heuristic: the expected new version, or
+                // any version differing from the pre-update one.
+                const matchesNew = newVersion && polled === newVersion
+                const differsFromOld =
+                  preUpdateVersion && polled && polled !== preUpdateVersion
+                if (!matchesNew && !differsFromOld) return
+              }
               reconnected = true
               clearInterval(pollInterval)
               setStableUpdate(null)
