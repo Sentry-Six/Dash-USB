@@ -2,7 +2,10 @@
 # Package/crate name stays `sentryusb` for upstream merge-friendliness;
 # the shipped binary is renamed below.
 name = "sentryusb"
-version = "1.0.0"
+# Kept in step with the release tag. Reported as `binary_version` on
+# /api/system/version; the user-facing version is the installed tag in
+# /opt/dashusb/version.
+version = "1.0.6"
 edition = "2024"
 
 [dependencies]

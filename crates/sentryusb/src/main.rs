@@ -376,13 +376,27 @@ async fn run_snapshot(action: SnapshotAction) -> i32 {
 async fn run_space(action: SpaceAction) -> i32 {
     match action {
         SpaceAction::Manage { args } => {
-            let reserve = args.first().and_then(|a| a.parse::<u64>().ok());
-            match sentryusb_gadget::space::manage_free_space(reserve).await {
-                Ok(()) => 0,
-                Err(e) => {
-                    eprintln!("space manage: {}", e);
-                    1
+            // A present-but-unparseable reserve must NOT silently fall back to
+            // the built-in default: archiveloop and this path would then be
+            // enforcing different reserves, with nothing in the log to say so.
+            // Fail loudly instead.
+            let reserve = match args.first().map(|a| (a, a.parse::<u64>())) {
+                None => Ok(None),
+                Some((_, Ok(v))) => Ok(Some(v)),
+                Some((a, Err(e))) => Err(format!("invalid reserve {a:?} (expected bytes): {e}")),
+            };
+            match reserve {
+                Err(msg) => {
+                    eprintln!("space manage: {msg}");
+                    2
                 }
+                Ok(reserve) => match sentryusb_gadget::space::manage_free_space(reserve).await {
+                    Ok(()) => 0,
+                    Err(e) => {
+                        eprintln!("space manage: {}", e);
+                        1
+                    }
+                },
             }
         }
     }
