@@ -474,9 +474,17 @@ const BACKUP_LIST_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 static BACKUP_LIST_CACHE: std::sync::Mutex<Option<(std::time::Instant, serde_json::Value)>> =
     std::sync::Mutex::new(None);
 
+/// Bumped on every invalidation. A scan that started before an invalidation
+/// must not publish its now-stale result: without this, a listing already in
+/// flight when a backup completes could store its pre-create snapshot with a
+/// fresh timestamp and hide the new backup for the whole TTL.
+static BACKUP_LIST_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// Called by the backup-creation paths so a fresh backup appears immediately
 /// instead of after the TTL.
 pub(crate) fn invalidate_backup_list() {
+    BACKUP_LIST_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     *BACKUP_LIST_CACHE.lock().unwrap() = None;
 }
 
@@ -492,6 +500,8 @@ pub async fn list_backups(State(_s): State<AppState>) -> (StatusCode, Json<serde
         }
     }
 
+    let started_at = BACKUP_LIST_GENERATION.load(std::sync::atomic::Ordering::SeqCst);
+
     // The directory walks are synchronous and can touch a network mount, so
     // keep them off the async worker — this endpoint being slow used to stall
     // unrelated requests on the same runtime thread.
@@ -504,7 +514,11 @@ pub async fn list_backups(State(_s): State<AppState>) -> (StatusCode, Json<serde
             );
         }
     };
-    *BACKUP_LIST_CACHE.lock().unwrap() = Some((std::time::Instant::now(), body.clone()));
+    // Only publish if nothing invalidated while we scanned. The caller still
+    // gets this response; it just does not become the cached answer.
+    if BACKUP_LIST_GENERATION.load(std::sync::atomic::Ordering::SeqCst) == started_at {
+        *BACKUP_LIST_CACHE.lock().unwrap() = Some((std::time::Instant::now(), body.clone()));
+    }
     (StatusCode::OK, Json(body))
 }
 

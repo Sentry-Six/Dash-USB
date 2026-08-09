@@ -69,9 +69,11 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
         // queue time here too, so a shorter deadline reports a healthy
         // device as gone.
         const timeout = setTimeout(() => controller.abort(), 15000)
+        // No `priority: "low"` hint: under heavy streaming or download
+        // traffic the browser defers it, which manufactures exactly the slow
+        // response the hysteresis and timeout above exist to absorb.
         const res = await fetch("/api/status", {
           signal: controller.signal,
-          priority: "low",
         } as RequestInit)
         clearTimeout(timeout)
         if (mounted) {

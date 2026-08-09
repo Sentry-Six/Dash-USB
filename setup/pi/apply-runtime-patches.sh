@@ -239,6 +239,7 @@ apply_ble_adv_helper() {
 # default, ignores I/O priorities. Ship a udev rule so every sd disk gets bfq
 # at hotplug/boot, and apply it to the live backingfiles disk when that is safe.
 apply_backingfiles_bfq() {
+    local rc=0
     local rule=/etc/udev/rules.d/60-dashusb-bfq.rules
     local want='ACTION=="add|change", KERNEL=="sd[a-z]|mmcblk[0-9]", SUBSYSTEM=="block", ATTR{queue/scheduler}="bfq"'
 
@@ -251,6 +252,10 @@ apply_backingfiles_bfq() {
             log "bfq: installed $rule"
         else
             err "bfq: failed to write $rule (read-only fs? check remountfs_rw)"
+            # Persisted scheduler policy is the point of this patch; without
+            # the rule it reverts at the next boot. Report the failure instead
+            # of exiting 0 further down.
+            rc=1
         fi
     else
         log "bfq: udev rule already current"
@@ -264,13 +269,13 @@ apply_backingfiles_bfq() {
     # the next boot.
     if [ -n "$(cat /sys/kernel/config/usb_gadget/dashusb/UDC 2>/dev/null)" ]; then
         log "bfq: gadget is presented to the car — deferring live scheduler switch to next boot (udev rule covers it)"
-        return 0
+        return $rc
     fi
     # Resolve the disk backing /backingfiles (e.g. /dev/sda2 -> sda) rather
     # than assuming sda.
     local src disk sched
     src="$(findmnt -n -o SOURCE /backingfiles 2>/dev/null)" || true
-    [ -n "${src:-}" ] || { log "bfq: /backingfiles not mounted — udev rule will cover next boot"; return 0; }
+    [ -n "${src:-}" ] || { log "bfq: /backingfiles not mounted — udev rule will cover next boot"; return $rc; }
     disk="$(lsblk -n -o PKNAME "$src" 2>/dev/null | head -1)"
     # Fallback when lsblk can't resolve the parent. mmcblk/nvme name their
     # partitions <disk>p<N>, so stripping only trailing digits leaves
@@ -293,7 +298,7 @@ apply_backingfiles_bfq() {
         sd[a-z]|mmcblk[0-9]) ;;
         *)
             log "bfq: $disk is not sd*/mmcblk* (NVMe?) — excluded by design, leaving its scheduler alone"
-            return 0
+            return $rc
             ;;
     esac
     sched="/sys/block/$disk/queue/scheduler"
@@ -306,7 +311,9 @@ apply_backingfiles_bfq() {
             warn "bfq: could not activate on $disk (kernel without bfq?) — ionice will be a no-op"
         fi
     fi
-    return 0
+    # A failed LIVE switch stays advisory (the udev rule still applies at the
+    # next boot); a failed RULE write does not, and is carried in $rc.
+    return $rc
 }
 
 # ── systemd hardware watchdog (all boards) ──────────────────────────────
@@ -481,18 +488,23 @@ apply_4cplus_wifi_nvram_fix() {
         return 0
     fi
     # Re-lock only if we unlocked (leave root as found).
-    local ro_before=no
+    local ro_before=no rc=0
     findmnt -no OPTIONS / 2>/dev/null | grep -qE '(^|,)ro(,|$)' && ro_before=yes
     [ -x /root/bin/remountfs_rw ] && /root/bin/remountfs_rw >/dev/null 2>&1 || true
     if rm -f "$link" 2>/dev/null; then
         log "4c+ wifi nvram: removed AP6256 relink → generic fallback (REBOOT to apply)"
     else
         err "4c+ wifi nvram: could not remove $link (read-only fs? check remountfs_rw)"
+        rc=1
     fi
     if [ "$ro_before" = yes ]; then
         sync
         mount -o remount,ro / 2>/dev/null || true
     fi
+    # Return the real result: the remount above used to be the last command,
+    # so a failed removal still exited 0 and the updater reported a successful
+    # heal while the TX-collapsing link was still in place.
+    return $rc
 }
 
 # ── Run all patches ─────────────────────────────────────────────────────

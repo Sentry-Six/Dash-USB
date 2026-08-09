@@ -11,6 +11,9 @@ use tracing::{info, warn};
 
 const VERSION_FILE: &str = "/opt/dashusb/version";
 const MIGRATE_DIR: &str = "/opt/dashusb";
+/// Where the migration script reports the ref its support files actually came
+/// from. Written by the shell, read back here; see `build_migration_script`.
+const USED_REF_FILE: &str = "/opt/dashusb/.migrate-used-ref";
 
 pub async fn run_startup_migration() {
     // Unconditional idempotent heals run first. They MUST NOT sit behind the
@@ -65,15 +68,15 @@ pub async fn run_startup_migration() {
     } else {
         String::new()
     };
-    // The ref the installed helper actually came from: the configured branch
-    // when the user set one explicitly (that copy wins below), otherwise the
-    // version tag whose tarball supplied it. Must match update.rs's
-    // patches_ref so pre- and post-reboot runs agree.
-    let effective_ref = if source.branch_explicit {
+    // Best guess at the ref the helper will come from. The script overwrites
+    // this via USED_REF_FILE if a fallback actually fires, because only the
+    // shell knows whether the tag tarball or the branch tarball won.
+    let mut effective_ref = if source.branch_explicit {
         source.branch.clone()
     } else {
         script_ref.clone()
     };
+    let _ = std::fs::remove_file(USED_REF_FILE);
 
     // Config-derived values reach the script as positional arguments, never
     // interpolated into shell source. The resolver also charset-validates
@@ -95,11 +98,38 @@ pub async fn run_startup_migration() {
         match sentryusb_shell::run_with_timeout(
             Duration::from_secs(180),
             "bash",
-            &["-c", &script, "dashusb-migrate", &tarball_url, &fallback_url, &patches_url],
+            &[
+                "-c",
+                &script,
+                "dashusb-migrate",
+                &tarball_url,
+                &fallback_url,
+                &patches_url,
+                &script_ref,
+                &source.branch,
+                USED_REF_FILE,
+            ],
         )
         .await
         {
             Ok(_) => {
+                // Adopt the ref the script reports it actually installed from.
+                // Only the shell knows whether the tag tarball or the branch
+                // fallback won, and running a branch helper with DASHUSB_REF
+                // set to the tag is the mixed-source state this pinning
+                // exists to prevent.
+                if let Ok(reported) = std::fs::read_to_string(USED_REF_FILE) {
+                    let reported = reported.trim();
+                    if !reported.is_empty() && reported != effective_ref {
+                        info!(
+                            "[migrate] support files came from {} (not {}) — using it for DASHUSB_REF",
+                            reported, effective_ref
+                        );
+                        effective_ref = reported.to_string();
+                    }
+                }
+                let _ = std::fs::remove_file(USED_REF_FILE);
+
                 // Re-apply runtime patches AFTER the migration. The migration
                 // script unconditionally rewrites /root/bin/dashusb-ble.py
                 // from the upstream tarball, silently undoing board-specific
@@ -203,12 +233,19 @@ fn heal_temperature_unit_key() {
 fn build_migration_script() -> String {
     // $1 = primary tarball URL (version tag), $2 = fallback tarball URL
     // (configured branch), $3 = raw URL of apply-runtime-patches.sh on the
-    // configured branch.
+    // configured branch, $4 = tag ref, $5 = branch ref, $6 = path to write
+    // the ref the helper was ACTUALLY installed from.
     format!(
         r#"set -e
 TARBALL_URL="$1"
 FALLBACK_URL="$2"
 PATCHES_URL="$3"
+TAG_REF="$4"
+BRANCH_REF="$5"
+USED_REF_FILE="$6"
+# Assume the tag until a fallback actually fires. The caller runs the helper
+# with this ref, so guessing wrong yields a branch helper fed tag payloads.
+USED_REF="$TAG_REF"
 
 # Remount filesystem as read-write (no-op if already rw)
 /root/bin/remountfs_rw 2>/dev/null || mount -o remount,rw / 2>/dev/null || true
@@ -223,6 +260,8 @@ trap "rm -rf $TMPDIR" EXIT
 # Download repo tarball — try version tag first, fall back to tracking branch
 if ! curl -fsSL "$TARBALL_URL" | tar xz --strip-components=1 -C "$TMPDIR" 2>/dev/null; then
   curl -fsSL "$FALLBACK_URL" | tar xz --strip-components=1 -C "$TMPDIR" 2>/dev/null || exit 1
+  # The tag tarball lost; everything unpacked below is branch content.
+  USED_REF="$BRANCH_REF"
 fi
 
 # ── Update run/ scripts ──
@@ -368,9 +407,15 @@ if [ -n "$PATCHES_URL" ] \
    && curl -fsSL --max-time 15 -o "$PATCHES_STAGE" "$PATCHES_URL" 2>/dev/null \
    && [ -s "$PATCHES_STAGE" ] && bash -n "$PATCHES_STAGE" 2>/dev/null; then
   install -m 755 "$PATCHES_STAGE" /usr/local/bin/dashusb-apply-runtime-patches
+  # Explicit-BRANCH copy won, whatever the tarball was.
+  USED_REF="$BRANCH_REF"
 elif [ -f "$TMPDIR/setup/pi/apply-runtime-patches.sh" ]; then
   install -m 755 "$TMPDIR/setup/pi/apply-runtime-patches.sh" /usr/local/bin/dashusb-apply-runtime-patches
 fi
+
+# Report the ref the helper actually came from so the caller runs it with a
+# matching DASHUSB_REF instead of assuming the tag.
+printf '%s' "$USED_REF" > "$USED_REF_FILE" 2>/dev/null || true
 
 # ── Restart the phone-app BLE daemon ──
 systemctl enable dashusb-ble 2>/dev/null || true
@@ -397,6 +442,18 @@ mod tests {
         assert!(script.contains("TARBALL_URL=\"$1\""), "primary URL must come from $1");
         assert!(script.contains("FALLBACK_URL=\"$2\""), "fallback URL must come from $2");
         assert!(script.contains("PATCHES_URL=\"$3\""), "patches URL must come from $3");
+        assert!(script.contains("TAG_REF=\"$4\""), "tag ref must come from $4");
+        assert!(script.contains("BRANCH_REF=\"$5\""), "branch ref must come from $5");
+        assert!(
+            script.contains("USED_REF_FILE=\"$6\""),
+            "used-ref report path must come from $6"
+        );
+        // The caller runs the helper with whatever this reports, so a script
+        // that never writes it would silently keep the tag guess.
+        assert!(
+            script.contains("> \"$USED_REF_FILE\""),
+            "script must report the ref it actually installed from"
+        );
 
         let dir = std::env::temp_dir().join("dashusb-migrate-test");
         std::fs::create_dir_all(&dir).unwrap();

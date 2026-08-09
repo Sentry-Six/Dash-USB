@@ -511,9 +511,23 @@ async fn self_update(
     let patches_path = "/usr/local/bin/dashusb-apply-runtime-patches";
     let patches_ref = if source.branch_explicit {
         source.branch.clone()
+    } else if tag.trim().is_empty() {
+        // Never pass an empty ref onward: the helper's own
+        // `${DASHUSB_REF:-main}` would silently resolve to main, which is the
+        // branch drift this pinning exists to stop.
+        tracing::warn!(
+            "update.rs: empty release tag; using {} for support files",
+            source.branch
+        );
+        source.branch.clone()
     } else {
         tag.clone()
     };
+    // The ref the helper ACTUALLY came from. Reassigned if the branch
+    // fallback below wins, so the script is never run with a ref that
+    // disagrees with its own source — a branch helper executed with
+    // DASHUSB_REF=<tag> would fetch tag payloads into branch logic.
+    let mut effective_ref = patches_ref.clone();
     let patches_url = format!(
         "https://raw.githubusercontent.com/{}/{}/setup/pi/apply-runtime-patches.sh",
         source.repo_slug, patches_ref
@@ -544,6 +558,12 @@ async fn self_update(
             fallback_url
         );
         staged_ok = stage_patches_script(&fallback_url, patches_tmp).await;
+        if staged_ok {
+            // The helper is now the BRANCH copy, so it must run with the
+            // branch ref. Leaving the tag here produced a mixed-source state:
+            // branch helper, tag payloads.
+            effective_ref = source.branch.clone();
+        }
     }
 
     if staged_ok {
@@ -594,8 +614,9 @@ async fn self_update(
             "env",
             &[
                 &format!("DASHUSB_REPO_SLUG={}", source.repo_slug),
-                // Same effective ref the helper itself was fetched from.
-                &format!("DASHUSB_REF={}", patches_ref),
+                // The ref the helper on disk actually came from, which is not
+                // necessarily patches_ref once the branch fallback has run.
+                &format!("DASHUSB_REF={}", effective_ref),
                 patches_path,
             ],
         )
