@@ -465,6 +465,29 @@ function check_if_usb_gadget_is_mounted () {
   connect_usb_drives_to_host
 }
 
+# Present the drive only if it isn't already presented.
+#
+# connect_usb_drives_to_host is NOT idempotent: it tears the gadget down and
+# re-presents it. A single archive cycle used to call it twice — once after
+# archive_clips and again in the outer loop — so on a zero-clip cycle at home
+# the car saw a pointless USB re-enumeration, the recorder briefly lost its
+# drive, and the vehicle could raise a storage alert. The state is checked
+# INSIDE the gadget lock so a concurrent cycler can't flip it between the
+# test and the connect.
+function ensure_usb_drives_connected () {
+  with_gadget_lock ensure_usb_drives_connected_locked
+}
+
+function ensure_usb_drives_connected_locked () {
+  if usb_gadget_is_active
+  then
+    log "USB gadget already active; skipping redundant reconnect"
+  else
+    log "USB gadget inactive; synchronising and re-presenting once"
+    connect_usb_drives_to_host_locked
+  fi
+}
+
 function trim_free_space() {
   local mount_point="$1"
 
@@ -954,8 +977,11 @@ function archive_clips () {
   # Reconnect the cam drive first so the car can resume recording immediately.
   # Nothing below touches the cam disk. In Travel Mode the gadget was never
   # disconnected (cleanup was deferred above), so skip the cycle entirely.
+  # `ensure_` rather than `connect_`: on a cycle that never disconnected (no
+  # clips to archive) the gadget is still up, and a full connect would
+  # re-enumerate it for nothing.
   if ! travel_mode_active; then
-    connect_usb_drives_to_host
+    ensure_usb_drives_connected
   fi
   /root/bin/send-live-activity end complete || true
   /root/bin/disconnect-archive.sh 2>> "$LOG_FILE" || true
@@ -1236,9 +1262,11 @@ then
 
   # Skip the gadget cycle if the user drove away during archive: the gadget is
   # still presented to the car, and re-cycling it would interrupt recording.
-  # Travel Mode never disconnects it, so skip the cycle there too.
+  # Travel Mode never disconnects it, so skip the cycle there too. This is the
+  # second half of the old double-connect — run_archive_cycle above has
+  # already re-presented the drive, so this is a no-op in the common case.
   if [ "$reachable_now" = 1 ] && ! travel_mode_active; then
-    connect_usb_drives_to_host
+    ensure_usb_drives_connected
   fi
 
   # Without the Travel Mode branch this boot cycle would block here forever on
@@ -1295,9 +1323,10 @@ do
 
   # Skip the gadget cycle if the user drove away during archive: the gadget is
   # still presented to the car, and re-cycling it would interrupt recording.
-  # Travel Mode never disconnects it, so skip the cycle there too.
+  # Travel Mode never disconnects it, so skip the cycle there too. As in the
+  # boot path, run_archive_cycle has already re-presented the drive.
   if [ "$reachable_now" = 1 ] && ! travel_mode_active; then
-    connect_usb_drives_to_host
+    ensure_usb_drives_connected
   fi
 
   if travel_mode_active; then

@@ -196,6 +196,16 @@ pub(crate) async fn release_snapshot_unlocked(snap_name: &str) -> Result<()> {
         let _ = sentryusb_shell::run("umount", &[&mnt_dir]).await;
     }
 
+    // Fail closed: the umount above covers only `<snap>/mnt`, and its result
+    // was discarded. A loop image mounted elsewhere under the snapshot, or a
+    // live autofs mount at /tmp/snapshots/<name>, would otherwise be torn out
+    // from under a reader by remove_dir_all — while the archive may still be
+    // copying footage out of it. Refusing costs one eviction candidate; the
+    // caller moves on to the next and retries this one next cycle.
+    if snapshot_slot_has_mounts(&name) {
+        bail!("snapshot {} still has mounts under it; refusing to remove", name);
+    }
+
     std::fs::remove_dir_all(&snap_dir)?;
     // Drop every /mutable/Recordings symlink that pointed into this
     // snapshot, then prune the date folders left empty. Without this,
@@ -234,18 +244,39 @@ fn prune_links_into(snap_name: &str) {
     walk(Path::new(RECORDINGS), &needle, 0);
 }
 
+/// Snapshots in ascending slot order.
+///
+/// This list feeds eviction, so the same rules as the slot picker apply:
+/// numeric names only, physical directories only (`file_type()` does not
+/// follow symlinks), and a NUMERIC sort. Accepting any `snap-*` that
+/// `path().is_dir()` resolved meant a `snap-junk` directory — or a symlink
+/// to one — carrying a `snap.bin` and `.toc` could sort last and become the
+/// protected "newest completed" snapshot, shielding junk while real footage
+/// was released. Lexical sort is also wrong the moment slot numbers differ
+/// in width.
 pub fn list_snapshots() -> Vec<String> {
-    let mut snaps = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(SNAPSHOTS_DIR) {
+    list_snapshots_in(Path::new(SNAPSHOTS_DIR))
+}
+
+fn list_snapshots_in(base: &Path) -> Vec<String> {
+    let mut snaps: Vec<(u32, String)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(base) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("snap-") && entry.path().is_dir() {
-                snaps.push(name);
+            let Some(num) = name
+                .strip_prefix("snap-")
+                .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+                .and_then(|s| s.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            if entry.file_type().is_ok_and(|ft| ft.is_dir()) {
+                snaps.push((num, name));
             }
         }
     }
     snaps.sort();
-    snaps
+    snaps.into_iter().map(|(_, n)| n).collect()
 }
 
 /// Find the next free `snap-NNNNNN` slot. A previous snapshot with no
@@ -685,6 +716,65 @@ fn walk_for_symlink_pointing_at(dir: &Path, needle: &str, depth: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `list_snapshots_in` feeds eviction, so anything it admits can be
+    /// deleted and anything it sorts last is treated as newest.
+    mod snapshot_scan {
+        use super::*;
+
+        fn snap_dir(base: &Path, name: &str) {
+            std::fs::create_dir_all(base.join(name)).unwrap();
+            std::fs::write(base.join(name).join("snap.bin"), b"x").unwrap();
+        }
+
+        #[test]
+        fn orders_numerically_not_lexically() {
+            let tmp = tempfile::tempdir().unwrap();
+            let base = tmp.path();
+            for n in ["snap-000002", "snap-000010", "snap-000001"] {
+                snap_dir(base, n);
+            }
+            assert_eq!(
+                list_snapshots_in(base),
+                vec!["snap-000001", "snap-000002", "snap-000010"],
+            );
+        }
+
+        #[test]
+        fn ignores_non_numeric_and_non_directories() {
+            let tmp = tempfile::tempdir().unwrap();
+            let base = tmp.path();
+            snap_dir(base, "snap-000001");
+            // A junk-named dir could otherwise sort last and be treated as
+            // the protected newest snapshot.
+            snap_dir(base, "snap-junk");
+            snap_dir(base, "snap-000002.bak");
+            std::fs::write(base.join("snap-000999"), b"stray file").unwrap();
+            std::fs::create_dir_all(base.join("not-a-snap")).unwrap();
+
+            assert_eq!(list_snapshots_in(base), vec!["snap-000001"]);
+        }
+
+        #[test]
+        #[cfg(unix)]
+        fn does_not_follow_directory_symlinks() {
+            let tmp = tempfile::tempdir().unwrap();
+            let base = tmp.path();
+            snap_dir(base, "snap-000001");
+            // A planted link resolving to a real dir must not become an
+            // eviction candidate: file_type() reads the dirent itself.
+            std::os::unix::fs::symlink(base.join("snap-000001"), base.join("snap-000500"))
+                .unwrap();
+
+            assert_eq!(list_snapshots_in(base), vec!["snap-000001"]);
+        }
+
+        #[test]
+        fn missing_directory_is_empty_not_a_panic() {
+            let tmp = tempfile::tempdir().unwrap();
+            assert!(list_snapshots_in(&tmp.path().join("nope")).is_empty());
+        }
+    }
 
     #[test]
     fn normalize_accepts_bare_name() {

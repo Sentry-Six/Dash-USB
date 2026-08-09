@@ -281,6 +281,11 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
+      # archiveloop is shell, so cargo never sees it. These extract the real
+      # function bodies out of the script, so they fail if the script drifts.
+      - name: Run shell tests
+        run: bash test/archiveloop-gadget-cycle.test.sh run/archiveloop
+
   lint-web:
     name: Lint web
     runs-on: ubuntu-22.04

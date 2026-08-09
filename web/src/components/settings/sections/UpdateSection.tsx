@@ -185,8 +185,16 @@ export function UpdateSection({ onInstallStart }: Props) {
     // proof the device rebooted; the version file is not, because the OLD
     // daemon rewrites it before `reboot` fires and keeps answering requests.
     let preUpdateBootId: string | null = null
+    // Tracks whether boot_id was ever usable. Null is "unknown", NOT a
+    // licence to fall back to a version-only check — that is precisely the
+    // signal the old daemon can forge.
+    let bootIdUnavailable = false
     let newVersion: string | null = targetVersion ?? null
     setInstalledVersion(newVersion)
+
+    // Tags are compared with an optional leading "v" stripped.
+    const normTag = (v: string | null | undefined) =>
+      (v ?? "").trim().replace(/^v/i, "")
 
     const unsubscribe = wsClient.subscribe("update_status", (data: unknown) => {
       const msg = data as { status?: string; message?: string; error?: string; output?: string }
@@ -234,14 +242,15 @@ export function UpdateSection({ onInstallStart }: Props) {
       // Snapshot boot_id before kicking off the update. Failure leaves it
       // null and the poll falls back to the version heuristic.
       try {
-        const vr = await fetch("/api/system/version")
+        const vr = await fetch("/api/system/version", { cache: "no-store" })
         if (vr.ok) {
           const vd = await vr.json()
           preUpdateBootId = typeof vd.boot_id === "string" && vd.boot_id ? vd.boot_id : null
         }
       } catch {
-        /* boot_id unavailable — version heuristic below still applies */
+        /* leave null — the poll reports "unverified" rather than guessing */
       }
+      bootIdUnavailable = preUpdateBootId === null
 
       const res = await fetch("/api/system/update", {
         method: "POST",
@@ -258,7 +267,7 @@ export function UpdateSection({ onInstallStart }: Props) {
 
         const pollInterval = setInterval(async () => {
           try {
-            const r = await fetch("/api/system/version")
+            const r = await fetch("/api/system/version", { cache: "no-store" })
             if (r.ok) {
               const data = await r.json()
               // Reject stale responses: the old daemon stays responsive
@@ -266,23 +275,26 @@ export function UpdateSection({ onInstallStart }: Props) {
               const polled = (data.version || "").trim()
               const polledBootId =
                 typeof data.boot_id === "string" && data.boot_id ? data.boot_id : null
-              if (preUpdateBootId && polledBootId) {
-                // Authoritative. The version file is NOT proof of a reboot:
-                // the old daemon rewrites /opt/dashusb/version before
-                // `reboot` fires and keeps serving, so a version-only check
-                // reports "complete" while the old binary is still running
-                // — and the page then reloads into a device that is only
-                // just going down.
-                if (polledBootId === preUpdateBootId) return
-              } else {
-                // boot_id unverifiable (missing on either side). Fall back
-                // to the version heuristic: the expected new version, or
-                // any version differing from the pre-update one.
-                const matchesNew = newVersion && polled === newVersion
-                const differsFromOld =
-                  preUpdateVersion && polled && polled !== preUpdateVersion
-                if (!matchesNew && !differsFromOld) return
-              }
+              if (polledBootId === null) bootIdUnavailable = true
+
+              // Both signals are required, because each is individually
+              // forgeable:
+              //   - A changed version file does NOT prove a reboot. The old
+              //     daemon rewrites /opt/dashusb/version before `reboot`
+              //     fires and keeps answering.
+              //   - A changed boot_id does NOT prove the update took. The
+              //     device can reboot after a failed install and come back
+              //     on the old asset.
+              // If boot_id is unreadable the reboot is simply unverifiable;
+              // that is not a licence to accept the version alone.
+              const bootVerified =
+                preUpdateBootId !== null &&
+                polledBootId !== null &&
+                polledBootId !== preUpdateBootId
+              const versionVerified = newVersion
+                ? normTag(polled) === normTag(newVersion)
+                : Boolean(polled) && normTag(polled) !== normTag(preUpdateVersion)
+              if (!bootVerified || !versionVerified) return
               reconnected = true
               clearInterval(pollInterval)
               setStableUpdate(null)
@@ -309,7 +321,11 @@ export function UpdateSection({ onInstallStart }: Props) {
             setUpdateStatus("idle")
             setUpdateMessage(null)
             setInstalledVersion(null)
-            setUpdateError("Update may still be in progress. Refresh the page in a moment.")
+            setUpdateError(
+              bootIdUnavailable
+                ? "The update may have completed, but the reboot could not be verified. Refresh and check the running version."
+                : "Update may still be in progress. Refresh the page in a moment.",
+            )
           }
         }, 180000)
       }, 20000)
