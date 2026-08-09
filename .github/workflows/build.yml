@@ -306,7 +306,9 @@ jobs:
 
   release:
     name: Create Release
-    needs: [build, test]
+    # lint-web too: it is the only job that runs eslint, so without it a
+    # release can ship web code that never passed lint.
+    needs: [build, test, lint-web]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-22.04
     permissions:
