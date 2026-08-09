@@ -309,6 +309,28 @@ jobs:
       - name: List release files
         run: ls -lh release/
 
+      # softprops PATCHes an existing release with the explicit prerelease
+      # boolean below, so without this read a non-hyphenated tag would
+      # clobber a manually ticked pre-release back to full release.
+      # Unexpected gh failures abort rather than risk that clobber; a
+      # missing release (CI creating it fresh) proceeds with the flag unset.
+      # GH_REPO supplies the repo context — this job has no checkout step,
+      # so gh cannot infer it from a local git remote.
+      - name: Read existing pre-release flag
+        id: relmeta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if pre=$(gh release view "$GITHUB_REF_NAME" --json isPrerelease --jq .isPrerelease 2>err.txt); then
+            echo "prerelease=$pre" >> "$GITHUB_OUTPUT"
+          elif grep -qi "not found" err.txt; then
+            echo "prerelease=" >> "$GITHUB_OUTPUT"
+          else
+            cat err.txt >&2
+            exit 1
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
@@ -316,3 +338,7 @@ jobs:
           # Release notes are written by hand; the generated body is only a
           # "Full Changelog" compare link, which we never ship.
           generate_release_notes: false
+          # Hyphenated tags are pre-releases by convention. The repository owner
+          # can also nominate one exact stable-looking tag as a pre-release, and
+          # a manually ticked pre-release on the existing release is preserved.
+          prerelease: ${{ contains(github.ref_name, '-') || vars.DASHUSB_PRERELEASE_TAG == github.ref_name || steps.relmeta.outputs.prerelease == 'true' }}

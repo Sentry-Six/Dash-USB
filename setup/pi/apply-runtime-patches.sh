@@ -23,6 +23,11 @@ err()  { echo -e "${RED}[patches]${NC} $1" >&2; }
 
 # ── Detection helpers ────────────────────────────────────────────────────
 
+is_rock_4cplus() {
+    grep -qai 'rock-4c-plus\|rockpi4c-plus\|ROCK 4C+' \
+        /proc/device-tree/model /proc/device-tree/compatible 2>/dev/null
+}
+
 # Broadcom chips where BlueZ's extended advertising fails or defaults to
 # non-connectable parameters, so SC's BLE pair fails without the raw-HCI
 # ADV_IND helper. Detected from the chip family ID the kernel logs on first BT
@@ -436,6 +441,37 @@ DISCONNECT_EOF
     log "archive-mount-lock: lock-aware connect/disconnect-archive.sh installed"
 }
 
+# ── Rock 4C+ WiFi NVRAM: remove the TX-collapsing AP6256 relink ─────────
+# The old 4C+ installer symlinked the board WiFi NVRAM to nvram_ap6256.txt,
+# which collapses TX to ~6 Mbit/s (sole TX-power source, no txcap_blob).
+# Remove it → driver falls back to the generic brcmfmac43455-sdio.txt. Heals
+# existing boxes on OTA (reboot to apply). BT coexistence is the .hcd patch,
+# not this.
+apply_4cplus_wifi_nvram_fix() {
+    is_rock_4cplus || return 0
+    local brcm=/lib/firmware/brcm
+    local link="$brcm/brcmfmac43455-sdio.radxa,rock-4c-plus.txt"
+    # Only our exact relink (symlink -> nvram_ap6256.txt); leave anything else alone.
+    [ -L "$link" ] || { log "4c+ wifi nvram: no board relink — generic in use"; return 0; }
+    if [ "$(basename "$(readlink "$link")")" != "nvram_ap6256.txt" ]; then
+        log "4c+ wifi nvram: board .txt not the AP6256 relink — leaving as-is"
+        return 0
+    fi
+    # Re-lock only if we unlocked (leave root as found).
+    local ro_before=no
+    findmnt -no OPTIONS / 2>/dev/null | grep -qE '(^|,)ro(,|$)' && ro_before=yes
+    [ -x /root/bin/remountfs_rw ] && /root/bin/remountfs_rw >/dev/null 2>&1 || true
+    if rm -f "$link" 2>/dev/null; then
+        log "4c+ wifi nvram: removed AP6256 relink → generic fallback (REBOOT to apply)"
+    else
+        err "4c+ wifi nvram: could not remove $link (read-only fs? check remountfs_rw)"
+    fi
+    if [ "$ro_before" = yes ]; then
+        sync
+        mount -o remount,ro / 2>/dev/null || true
+    fi
+}
+
 # ── Run all patches ─────────────────────────────────────────────────────
 
 apply_ble_nonfatal_adv
@@ -444,6 +480,7 @@ apply_eatt_disable
 apply_backingfiles_bfq
 apply_hardware_watchdog
 apply_archive_mount_lock_scripts
+apply_4cplus_wifi_nvram_fix
 
 # Append future OTA-surviving patches here. Each must self-check board,
 # precondition, and marker so the script stays a no-op where it doesn't apply.

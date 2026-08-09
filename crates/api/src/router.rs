@@ -43,6 +43,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/files/download", get(crate::files::download_file))
         .route("/api/files/download-zip", get(crate::files::download_zip))
         .route("/api/files/download-zip-multi", post(crate::files::download_zip_multi))
+        .route("/api/logs/{name}/page", get(crate::logs::get_log_page))
         .route("/api/logs/{name}", get(crate::logs::get_log))
         .route("/api/diagnostics/refresh", post(crate::healthcheck::refresh_diagnostics))
         .route("/api/diagnostics", get(crate::healthcheck::get_diagnostics))

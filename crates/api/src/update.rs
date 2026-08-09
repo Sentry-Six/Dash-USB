@@ -116,7 +116,7 @@ pub async fn run_update(
     tokio::spawn(async move {
         hub.broadcast("update_status", &serde_json::json!({"status": "running"}));
 
-        let result = self_update(target_version).await;
+        let result = self_update(&hub, target_version).await;
 
         UPDATE_RUNNING.store(false, Ordering::SeqCst);
 
@@ -265,7 +265,72 @@ async fn detect_release_suffix() -> anyhow::Result<String> {
     Ok("linux-arm64-a53".to_string())
 }
 
-async fn self_update(target_version: Option<String>) -> anyhow::Result<String> {
+/// Stream a release binary to `dest`, broadcasting `downloading` progress
+/// (percent when Content-Length is known, byte counts either way) over the
+/// WS hub. Progress is advisory only — the caller still owns the atomic
+/// stage-then-rename install, so a failure here never touches the live
+/// binary.
+async fn download_with_progress(
+    hub: &sentryusb_ws::Hub,
+    url: &str,
+    dest: &str,
+) -> anyhow::Result<()> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
+    let resp = crate::http_client()
+        .get(url)
+        .header("User-Agent", "dashusb-updater")
+        .send()
+        .await?
+        .error_for_status()?;
+    // GitHub redirects releases to a CDN; reqwest follows them, but the
+    // final response can omit Content-Length — percent goes null and the
+    // UI falls back to an indeterminate bar.
+    let total = resp.content_length().filter(|t| *t > 0);
+    let mut file = tokio::fs::File::create(dest).await?;
+    let mut stream = resp.bytes_stream();
+    let mut done: u64 = 0;
+    let mut last_percent: i64 = -1;
+    let mut last_emit = std::time::Instant::now();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        file.write_all(&chunk).await?;
+        done += chunk.len() as u64;
+        let percent = total.map(|t| ((done as f64 / t as f64) * 100.0) as i64);
+        let emit = match percent {
+            Some(p) => p != last_percent,
+            None => last_emit.elapsed() >= std::time::Duration::from_millis(500),
+        };
+        if emit {
+            if let Some(p) = percent {
+                last_percent = p;
+            }
+            last_emit = std::time::Instant::now();
+            hub.broadcast(
+                "update_status",
+                &serde_json::json!({
+                    "status": "downloading",
+                    "message": "Downloading update…",
+                    "percent": percent,
+                    "bytes_done": done,
+                    "bytes_total": total,
+                }),
+            );
+        }
+    }
+    file.flush().await?;
+    Ok(())
+}
+
+async fn self_update(
+    hub: &sentryusb_ws::Hub,
+    target_version: Option<String>,
+) -> anyhow::Result<String> {
+    hub.broadcast(
+        "update_status",
+        &serde_json::json!({"status": "checking", "message": "Checking release…"}),
+    );
     let suffix = detect_release_suffix().await?;
     let repo = update_repo();
 
@@ -306,6 +371,10 @@ async fn self_update(target_version: Option<String>) -> anyhow::Result<String> {
     // fails silently and the UI reports a new version while the old binary is
     // still on disk (the Rock Pi 4C+ "updated to v3.3.1 but still running
     // v3.3.0" failure).
+    hub.broadcast(
+        "update_status",
+        &serde_json::json!({"status": "remounting", "message": "Preparing filesystem…"}),
+    );
     let _ = sentryusb_shell::run("/root/bin/remountfs_rw", &[]).await;
     let _ = sentryusb_shell::run("mount", &["-o", "remount,rw", "/"]).await;
     let _ = sentryusb_shell::run("mount", &["/", "-o", "remount,rw"]).await;
@@ -320,11 +389,12 @@ async fn self_update(target_version: Option<String>) -> anyhow::Result<String> {
     // tmpfs RAM on a 1 GB device.
     sentryusb_shell::run("mkdir", &["-p", "/opt/dashusb"]).await?;
     let tmp = "/opt/dashusb/.dashusb-update.new";
-    sentryusb_shell::run_with_timeout(
-        std::time::Duration::from_secs(120),
-        "curl", &["-fsSL", &url, "-o", tmp],
-    ).await?;
+    download_with_progress(hub, &url, tmp).await?;
 
+    hub.broadcast(
+        "update_status",
+        &serde_json::json!({"status": "installing", "message": "Installing update…"}),
+    );
     sentryusb_shell::run("chmod", &["+x", tmp]).await?;
 
     // Write to the per-variant path so the picker symlink keeps resolving to a
@@ -348,6 +418,10 @@ async fn self_update(target_version: Option<String>) -> anyhow::Result<String> {
     // read-only /root/bin must never report success while the old binary is
     // still on disk.
     let mut install_warnings: Vec<String> = Vec::new();
+    hub.broadcast(
+        "update_status",
+        &serde_json::json!({"status": "installing", "message": "Installing components…"}),
+    );
 
     // Record the tag: the requested target if there was one, since it matches
     // the binary just installed, else resolve /latest. Go through the shared
@@ -401,6 +475,10 @@ async fn self_update(target_version: Option<String>) -> anyhow::Result<String> {
     // lives at a stable path on the configured tracking branch (BRANCH in
     // dashusb.conf, default main).
     let source = sentryusb_config::github_source();
+    hub.broadcast(
+        "update_status",
+        &serde_json::json!({"status": "updating_scripts", "message": "Updating scripts…"}),
+    );
     let patches_path = "/usr/local/bin/dashusb-apply-runtime-patches";
     let patches_url = format!(
         "https://raw.githubusercontent.com/{}/{}/setup/pi/apply-runtime-patches.sh",
@@ -525,6 +603,16 @@ async fn self_update(target_version: Option<String>) -> anyhow::Result<String> {
     }
 }
 
+/// Kernel boot identifier — changes on every boot. Read per request (cheap)
+/// so it can never go stale. None on non-Linux hosts; the UI treats a null
+/// boot_id as "reboot unverified", never as proof of one.
+fn read_boot_id() -> Option<String> {
+    std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 pub async fn get_version(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
     let version = env!("CARGO_PKG_VERSION");
     let sbc_model = get_sbc_model();
@@ -538,6 +626,10 @@ pub async fn get_version(State(_s): State<AppState>) -> (StatusCode, Json<serde_
         "version": installed.trim(),
         "binary_version": version,
         "sbc_model": sbc_model,
+        // The version tag alone can't prove a reboot: the old daemon
+        // rewrites /opt/dashusb/version BEFORE `reboot` fires and keeps
+        // serving it. The updater UI compares boot_id instead.
+        "boot_id": read_boot_id(),
     })))
 }
 
