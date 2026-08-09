@@ -323,6 +323,31 @@ async fn download_with_progress(
     Ok(())
 }
 
+/// Download `url` to `dest` and validate it as a runnable bash script.
+///
+/// False (with the staged file removed) if the download failed, the body was
+/// empty — GitHub occasionally answers 200 with nothing — or the script does
+/// not parse. Never touches the live script; the caller owns that swap.
+async fn stage_patches_script(url: &str, dest: &str) -> bool {
+    if sentryusb_shell::run_with_timeout(
+        std::time::Duration::from_secs(20),
+        "curl",
+        &["-fsSL", "--max-time", "15", "-o", dest, url],
+    )
+    .await
+    .is_err()
+    {
+        let _ = std::fs::remove_file(dest);
+        return false;
+    }
+    let ok = std::fs::metadata(dest).map(|m| m.len() > 0).unwrap_or(false)
+        && sentryusb_shell::run("bash", &["-n", dest]).await.is_ok();
+    if !ok {
+        let _ = std::fs::remove_file(dest);
+    }
+    ok
+}
+
 async fn self_update(
     hub: &sentryusb_ws::Hub,
     target_version: Option<String>,
@@ -472,17 +497,26 @@ async fn self_update(
     // Downloading only when absent leaves anyone with a stale on-disk copy
     // running the old script forever, so new patches never reach them. A failed
     // download falls back to whatever is on disk, warning only. The script
-    // lives at a stable path on the configured tracking branch (BRANCH in
-    // dashusb.conf, default main).
+    // The helper is pinned to the RELEASE TAG being installed, not to a
+    // branch tip, so the patch script always matches the binary it ships
+    // with. An explicit BRANCH in dashusb.conf is a deliberate developer
+    // override and still wins — this mirrors migrate.rs, so the pre-reboot
+    // update and the post-reboot migration agree on the ref instead of one
+    // silently overwriting the other's helper.
     let source = sentryusb_config::github_source();
     hub.broadcast(
         "update_status",
         &serde_json::json!({"status": "updating_scripts", "message": "Updating scripts…"}),
     );
     let patches_path = "/usr/local/bin/dashusb-apply-runtime-patches";
+    let patches_ref = if source.branch_explicit {
+        source.branch.clone()
+    } else {
+        tag.clone()
+    };
     let patches_url = format!(
         "https://raw.githubusercontent.com/{}/{}/setup/pi/apply-runtime-patches.sh",
-        source.repo_slug, source.branch
+        source.repo_slug, patches_ref
     );
     // Staged beside the destination so the final rename cannot cross
     // filesystems (/tmp is a tmpfs; rename() would fail EXDEV).
@@ -491,65 +525,67 @@ async fn self_update(
         "update.rs: refreshing runtime-patches script from {}",
         patches_url
     );
-    match sentryusb_shell::run_with_timeout(
-        std::time::Duration::from_secs(20),
-        "curl",
-        &[
-            "-fsSL",
-            "--max-time",
-            "15",
-            "-o",
-            patches_tmp,
-            &patches_url,
-        ],
-    )
-    .await
+    let mut staged_ok = stage_patches_script(&patches_url, patches_tmp).await;
+
+    // Tag fetch failed — an unknown or not-yet-pushed tag, or a hand-rolled
+    // build. Bootstrap from the branch ONLY when there is no helper at all:
+    // a device with a working helper must keep it rather than silently
+    // jumping to the branch tip, which is the drift this pinning prevents.
+    if !staged_ok
+        && patches_ref != source.branch
+        && !std::path::Path::new(patches_path).exists()
     {
-        Ok(_) => {
-            // Only swap the live script when the download produced a non-empty
-            // file, catching the rare GitHub "200 OK with empty body".
-            let staged_ok = std::fs::metadata(patches_tmp)
-                .map(|m| m.len() > 0)
-                .unwrap_or(false)
-                && sentryusb_shell::run("bash", &["-n", patches_tmp]).await.is_ok();
-            if staged_ok {
-                match std::fs::rename(patches_tmp, patches_path) {
-                    Ok(()) => {
-                        let _ = sentryusb_shell::run("chmod", &["+x", patches_path]).await;
-                        tracing::info!("update.rs: runtime-patches script refreshed");
-                    }
-                    Err(e) => {
-                        let _ = std::fs::remove_file(patches_tmp);
-                        tracing::warn!(
-                            "update.rs: staged runtime-patches rename failed ({e}); keeping existing script"
-                        );
-                    }
-                }
-            } else {
-                let _ = std::fs::remove_file(patches_tmp);
-                if !std::path::Path::new(patches_path).exists() {
-                    install_warnings.push(
-                        "runtime-patches download empty AND no existing script: board-specific \
-                         fixes won't apply this update. Re-run install-pi.sh manually."
-                            .to_string(),
-                    );
-                }
-            }
-        }
-        Err(e) => {
+        let fallback_url = format!(
+            "https://raw.githubusercontent.com/{}/{}/setup/pi/apply-runtime-patches.sh",
+            source.repo_slug, source.branch
+        );
+        tracing::warn!(
+            "update.rs: tag-pinned patches fetch failed and no helper on disk; bootstrapping from {}",
+            fallback_url
+        );
+        staged_ok = stage_patches_script(&fallback_url, patches_tmp).await;
+    }
+
+    if staged_ok {
+        // chmod the STAGED file, before it becomes live: a successful rename
+        // followed by a failed chmod would leave a non-executable helper
+        // installed, and the old code discarded the chmod result entirely.
+        if sentryusb_shell::run("chmod", &["+x", patches_tmp]).await.is_err() {
             let _ = std::fs::remove_file(patches_tmp);
-            if !std::path::Path::new(patches_path).exists() {
-                install_warnings.push(format!(
-                    "runtime-patches download FAILED ({e}) AND no existing script: board-specific \
-                     fixes (BCM4345C0 BLE on Rock 4C+, EATT disable, etc.) won't auto-reapply \
-                     after this update. Re-run install-pi.sh manually if BLE pairing breaks."
-                ));
-            } else {
-                tracing::warn!(
-                    "update.rs: runtime-patches refresh failed ({e}), falling back to existing on-disk script"
-                );
+            install_warnings.push(
+                "runtime-patches helper could not be made executable; keeping the existing \
+                 script. Fixes added in this release may not apply."
+                    .to_string(),
+            );
+        } else {
+            match std::fs::rename(patches_tmp, patches_path) {
+                Ok(()) => tracing::info!("update.rs: runtime-patches script refreshed"),
+                Err(e) => {
+                    // Never let a failed swap pass as success: the whole point
+                    // of the refresh is that NEW patches reach existing installs.
+                    let _ = std::fs::remove_file(patches_tmp);
+                    tracing::error!(
+                        "update.rs: runtime-patches swap FAILED ({e}); keeping existing script"
+                    );
+                    install_warnings.push(format!(
+                        "runtime-patches script could not be replaced ({e}): this device will \
+                         re-run its EXISTING patch script, so fixes added in this release may \
+                         not apply. Re-run install-pi.sh manually."
+                    ));
+                }
             }
         }
+    } else if !std::path::Path::new(patches_path).exists() {
+        install_warnings.push(
+            "runtime-patches download failed AND no existing script: board-specific fixes \
+             (BCM4345C0 BLE on Rock 4C+, EATT disable, etc.) won't auto-reapply after this \
+             update. Re-run install-pi.sh manually if BLE pairing breaks."
+                .to_string(),
+        );
+    } else {
+        tracing::warn!(
+            "update.rs: runtime-patches refresh failed, falling back to existing on-disk script"
+        );
     }
 
     if std::path::Path::new(patches_path).exists() {
@@ -558,7 +594,8 @@ async fn self_update(
             "env",
             &[
                 &format!("DASHUSB_REPO_SLUG={}", source.repo_slug),
-                &format!("DASHUSB_REF={}", source.branch),
+                // Same effective ref the helper itself was fetched from.
+                &format!("DASHUSB_REF={}", patches_ref),
                 patches_path,
             ],
         )

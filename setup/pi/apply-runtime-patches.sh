@@ -474,13 +474,32 @@ apply_4cplus_wifi_nvram_fix() {
 
 # ── Run all patches ─────────────────────────────────────────────────────
 
-apply_ble_nonfatal_adv
-apply_ble_adv_helper
-apply_eatt_disable
-apply_backingfiles_bfq
-apply_hardware_watchdog
-apply_archive_mount_lock_scripts
-apply_4cplus_wifi_nvram_fix
+# Called directly, the script's exit status was just the LAST function's, so
+# an early failure was invisible and the updater still logged "runtime-patches
+# re-applied successfully". Count failures instead and exit nonzero, without
+# letting one failed patch skip the rest (this script is not `set -e`).
+PATCH_FAILURES=0
+run_patch() {
+    local fn="$1"
+    if ! "$fn"; then
+        PATCH_FAILURES=$((PATCH_FAILURES + 1))
+        err "$fn: FAILED"
+    fi
+}
+
+run_patch apply_ble_nonfatal_adv
+run_patch apply_ble_adv_helper
+run_patch apply_eatt_disable
+run_patch apply_backingfiles_bfq
+run_patch apply_hardware_watchdog
+run_patch apply_archive_mount_lock_scripts
+run_patch apply_4cplus_wifi_nvram_fix
 
 # Append future OTA-surviving patches here. Each must self-check board,
 # precondition, and marker so the script stays a no-op where it doesn't apply.
+
+if [ "$PATCH_FAILURES" -gt 0 ]; then
+    err "$PATCH_FAILURES patch(es) failed to apply — see messages above"
+    exit 1
+fi
+exit 0

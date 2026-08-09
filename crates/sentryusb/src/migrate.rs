@@ -65,6 +65,15 @@ pub async fn run_startup_migration() {
     } else {
         String::new()
     };
+    // The ref the installed helper actually came from: the configured branch
+    // when the user set one explicitly (that copy wins below), otherwise the
+    // version tag whose tarball supplied it. Must match update.rs's
+    // patches_ref so pre- and post-reboot runs agree.
+    let effective_ref = if source.branch_explicit {
+        source.branch.clone()
+    } else {
+        script_ref.clone()
+    };
 
     // Config-derived values reach the script as positional arguments, never
     // interpolated into shell source. The resolver also charset-validates
@@ -107,7 +116,14 @@ pub async fn run_startup_migration() {
                         "env",
                         &[
                             &format!("DASHUSB_REPO_SLUG={}", source.repo_slug),
-                            &format!("DASHUSB_REF={}", source.branch),
+                            // The effective ref, matching the one the helper
+                            // was installed from above (and update.rs's
+                            // patches_ref): the version tag on a default
+                            // device, the configured branch only when the
+                            // user explicitly set one. Passing the branch
+                            // unconditionally made a tag-pinned device fetch
+                            // support files from the branch tip post-reboot.
+                            &format!("DASHUSB_REF={}", effective_ref),
                             "/usr/local/bin/dashusb-apply-runtime-patches",
                         ],
                     )
