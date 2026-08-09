@@ -13,7 +13,8 @@ chrono = { workspace = true }
 axum = { version = "0.8", features = ["ws", "multipart"] }
 ring = "0.17"
 rand = "0.10"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# "stream" is required by update.rs's download_with_progress (bytes_stream).
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 portable-pty = "0.9"
 crc32fast = "1"
 hex = "0.4"
