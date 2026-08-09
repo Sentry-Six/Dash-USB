@@ -26,6 +26,12 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   // HTTP is the primary connectivity signal. WebSockets cycle on their own
   // (server timeouts, keepalive) without meaning anything is wrong, so
   // "reconnecting" and "disconnected" only follow failing HTTP polls.
+  //
+  // Hysteresis: one failed poll is noise — a status handler held up by a busy
+  // disk, or this fetch queuing behind video streams on the browser's
+  // per-host connection limit. Two consecutive failures show "reconnecting",
+  // three show "disconnected". Flashing the banner on a single slow poll
+  // trained users to ignore it.
   function evaluate() {
     if (httpOk.current) {
       if (disconnectTimer.current) {
@@ -37,8 +43,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     } else if (httpFailCount.current >= 3) {
       // Repeated HTTP failures mean it is genuinely gone.
       setState("disconnected")
-    } else {
-      // First HTTP failure: show reconnecting and give it time.
+    } else if (httpFailCount.current >= 2) {
       setState("reconnecting")
     }
   }
@@ -50,11 +55,20 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
 
   useEffect(() => {
     let mounted = true
+    // The abort timeout outlives the 8s interval, so without this guard a
+    // slow window runs overlapping polls — double-counting a single stall as
+    // two consecutive failures (and holding two connection slots).
+    let inFlight = false
 
     async function poll() {
+      if (inFlight) return
+      inFlight = true
       try {
         const controller = new AbortController()
-        const timeout = setTimeout(() => controller.abort(), 10000)
+        // 15s, not 10s: a poll that queues behind video streams counts its
+        // queue time here too, so a shorter deadline reports a healthy
+        // device as gone.
+        const timeout = setTimeout(() => controller.abort(), 15000)
         const res = await fetch("/api/status", {
           signal: controller.signal,
           priority: "low",
@@ -72,6 +86,8 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
           httpFailCount.current++
           evaluate()
         }
+      } finally {
+        inFlight = false
       }
     }
 

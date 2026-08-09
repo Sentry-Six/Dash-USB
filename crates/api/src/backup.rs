@@ -456,6 +456,9 @@ pub async fn create_backup(
     }
 
     write_last_hash(&current_hash);
+    // Drop the listing cache so the new backup is visible immediately rather
+    // than after BACKUP_LIST_TTL.
+    invalidate_backup_list();
     (StatusCode::OK, Json(serde_json::json!({
         "success": true,
         "date": data.date,
@@ -463,9 +466,49 @@ pub async fn create_backup(
     })))
 }
 
+/// Backups change at most daily, but the listing scans /backingfiles plus a
+/// possibly-network archive mount — seconds while an archive run owns the
+/// disk — so a short TTL makes repeat Settings visits instant.
+const BACKUP_LIST_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+static BACKUP_LIST_CACHE: std::sync::Mutex<Option<(std::time::Instant, serde_json::Value)>> =
+    std::sync::Mutex::new(None);
+
+/// Called by the backup-creation paths so a fresh backup appears immediately
+/// instead of after the TTL.
+pub(crate) fn invalidate_backup_list() {
+    *BACKUP_LIST_CACHE.lock().unwrap() = None;
+}
+
 /// Merges local and archive listings, deduping by date. The archive copy wins
 /// when both exist.
 pub async fn list_backups(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
+    {
+        let guard = BACKUP_LIST_CACHE.lock().unwrap();
+        if let Some((at, v)) = guard.as_ref() {
+            if at.elapsed() < BACKUP_LIST_TTL {
+                return (StatusCode::OK, Json(v.clone()));
+            }
+        }
+    }
+
+    // The directory walks are synchronous and can touch a network mount, so
+    // keep them off the async worker — this endpoint being slow used to stall
+    // unrelated requests on the same runtime thread.
+    let body = match tokio::task::spawn_blocking(list_backups_blocking).await {
+        Ok(v) => v,
+        Err(e) => {
+            return crate::json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("backup list task: {}", e),
+            );
+        }
+    };
+    *BACKUP_LIST_CACHE.lock().unwrap() = Some((std::time::Instant::now(), body.clone()));
+    (StatusCode::OK, Json(body))
+}
+
+fn list_backups_blocking() -> serde_json::Value {
     let mut all: Vec<BackupEntry> = Vec::new();
     all.extend(list_backups_in_dir(LOCAL_BACKUP_DIR, "ssd"));
     if Path::new(ARCHIVE_BACKUP_DIR).exists() {
@@ -492,7 +535,7 @@ pub async fn list_backups(State(_s): State<AppState>) -> (StatusCode, Json<serde
     }
     let mut result: Vec<BackupEntry> = all.into_iter().filter(|b| !b.date.is_empty()).collect();
     result.sort_by(|a, b| b.date.cmp(&a.date));
-    (StatusCode::OK, Json(serde_json::to_value(result).unwrap_or_default()))
+    serde_json::to_value(result).unwrap_or_default()
 }
 
 /// Tries the archive dir first (the newer offsite copy), then the local SSD.

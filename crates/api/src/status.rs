@@ -204,6 +204,58 @@ struct PiStatus {
 pub async fn get_status(
     State(state): State<AppState>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    // The sysfs/procfs reads are cheap, but the snapshot scan and
+    // cam_last_write_secs hit /backingfiles — seconds while an archive run
+    // saturates the disk. This is the endpoint the web UI's connection banner
+    // polls, so blocking an async worker here surfaces to the user as
+    // "Reconnecting". Run the whole synchronous FS half on the blocking pool.
+    let mut s = match tokio::task::spawn_blocking(status_fs_snapshot).await {
+        Ok(s) => s,
+        Err(e) => {
+            return crate::json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("status task: {}", e),
+            );
+        }
+    };
+
+    let storage = cached_storage().await;
+    if storage.total_space > 0 {
+        s.total_space = storage.total_space.to_string();
+        s.free_space = storage.free_space.to_string();
+    }
+
+    // IPs, SSID and ether_speed come from the NETWORK_TTL cache. Signal
+    // strength, dBm (from /proc/net/wireless) and throughput (from the
+    // net_sampler loop) are read live every poll: a 10 s lag on a
+    // signal-strength indicator reads as broken.
+    let net = cached_network().await;
+    s.wifi_ssid = net.wifi_ssid;
+    s.wifi_freq = net.wifi_freq;
+    s.wifi_ip = net.wifi_ip;
+    s.ether_ip = net.ether_ip;
+    s.ether_speed = net.ether_speed;
+    if !net.wifi_dev.is_empty() {
+        if let Some((strength, dbm)) = read_wireless_quality(&net.wifi_dev) {
+            s.wifi_strength = strength;
+            s.wifi_signal_dbm = dbm;
+        }
+        let (rx, tx) = compute_throughput(&state.net_sampler, &net.wifi_dev);
+        s.wifi_rx_bps = rx;
+        s.wifi_tx_bps = tx;
+    }
+    if !net.eth_dev.is_empty() {
+        let (rx, tx) = compute_throughput(&state.net_sampler, &net.eth_dev);
+        s.ether_rx_bps = rx;
+        s.ether_tx_bps = tx;
+    }
+
+    (StatusCode::OK, Json(serde_json::to_value(s).unwrap_or_default()))
+}
+
+/// The synchronous, filesystem-touching half of [`get_status`]. Split out so
+/// it can run on the blocking pool.
+fn status_fs_snapshot() -> PiStatus {
     let mut s = PiStatus {
         cpu_temp: String::new(),
         num_snapshots: "0".into(),
@@ -264,38 +316,7 @@ pub async fn get_status(
         s.snapshot_newest = newest.to_string();
     }
 
-    let storage = cached_storage().await;
-    if storage.total_space > 0 {
-        s.total_space = storage.total_space.to_string();
-        s.free_space = storage.free_space.to_string();
-    }
-
-    // IPs, SSID and ether_speed come from the NETWORK_TTL cache. Signal
-    // strength, dBm (from /proc/net/wireless) and throughput (from the
-    // net_sampler loop) are read live every poll: a 10 s lag on a
-    // signal-strength indicator reads as broken.
-    let net = cached_network().await;
-    s.wifi_ssid = net.wifi_ssid;
-    s.wifi_freq = net.wifi_freq;
-    s.wifi_ip = net.wifi_ip;
-    s.ether_ip = net.ether_ip;
-    s.ether_speed = net.ether_speed;
-    if !net.wifi_dev.is_empty() {
-        if let Some((strength, dbm)) = read_wireless_quality(&net.wifi_dev) {
-            s.wifi_strength = strength;
-            s.wifi_signal_dbm = dbm;
-        }
-        let (rx, tx) = compute_throughput(&state.net_sampler, &net.wifi_dev);
-        s.wifi_rx_bps = rx;
-        s.wifi_tx_bps = tx;
-    }
-    if !net.eth_dev.is_empty() {
-        let (rx, tx) = compute_throughput(&state.net_sampler, &net.eth_dev);
-        s.ether_rx_bps = rx;
-        s.ether_tx_bps = tx;
-    }
-
-    (StatusCode::OK, Json(serde_json::to_value(s).unwrap_or_default()))
+    s
 }
 
 /// Refresh-on-stale wrapper around the heavy WiFi + Ethernet shell-outs,
@@ -460,26 +481,31 @@ pub async fn get_wifi_config(
     let mut connected = false;
     let mut source = String::new();
 
-    // 1. Try nmcli
-    if let Ok(out) = sentryusb_shell::run("nmcli", &["-t", "-f", "active,ssid", "dev", "wifi"]).await {
-        for line in out.lines() {
-            if line.starts_with("yes:") {
-                ssid = line.strip_prefix("yes:").unwrap_or("").to_string();
-                connected = true;
-                source = "networkmanager".into();
-                break;
-            }
+    // 1. iwgetid first: it reads the current association out of the kernel
+    //    and returns instantly. `nmcli dev wifi` below triggers a full AP
+    //    SCAN, which takes seconds and briefly disrupts the link — a steep
+    //    price when the answer is almost always "the SSID we are already on".
+    if let Ok(out) = sentryusb_shell::run("iwgetid", &["-r"]).await {
+        let s = out.trim();
+        if !s.is_empty() {
+            ssid = s.to_string();
+            connected = true;
+            source = "iwgetid".into();
         }
     }
 
-    // 2. Fallback: iwgetid
+    // 2. Fallback: nmcli (scanning)
     if ssid.is_empty() {
-        if let Ok(out) = sentryusb_shell::run("iwgetid", &["-r"]).await {
-            let s = out.trim();
-            if !s.is_empty() {
-                ssid = s.to_string();
-                connected = true;
-                source = "iwgetid".into();
+        if let Ok(out) =
+            sentryusb_shell::run("nmcli", &["-t", "-f", "active,ssid", "dev", "wifi"]).await
+        {
+            for line in out.lines() {
+                if line.starts_with("yes:") {
+                    ssid = line.strip_prefix("yes:").unwrap_or("").to_string();
+                    connected = true;
+                    source = "networkmanager".into();
+                    break;
+                }
             }
         }
     }
