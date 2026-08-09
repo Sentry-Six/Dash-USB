@@ -255,23 +255,13 @@ pub async fn get_status(
     s.udc_state = read_udc_state();
     s.cam_last_write_secs = cam_last_write_secs();
 
-    let snapshots = find_snapshots();
-    s.num_snapshots = snapshots.len().to_string();
-    if !snapshots.is_empty() {
-        if let Ok(meta) = std::fs::metadata(&snapshots[0]) {
-            if let Ok(t) = meta.modified() {
-                if let Ok(d) = t.duration_since(std::time::UNIX_EPOCH) {
-                    s.snapshot_oldest = d.as_secs().to_string();
-                }
-            }
-        }
-        if let Ok(meta) = std::fs::metadata(snapshots.last().unwrap()) {
-            if let Ok(t) = meta.modified() {
-                if let Ok(d) = t.duration_since(std::time::UNIX_EPOCH) {
-                    s.snapshot_newest = d.as_secs().to_string();
-                }
-            }
-        }
+    let snapshots = scan_snapshots();
+    s.num_snapshots = snapshots.count.to_string();
+    if let Some(oldest) = snapshots.oldest {
+        s.snapshot_oldest = oldest.to_string();
+    }
+    if let Some(newest) = snapshots.newest {
+        s.snapshot_newest = newest.to_string();
     }
 
     let storage = cached_storage().await;
@@ -563,6 +553,13 @@ pub async fn get_wifi_config(
 
 /// List snapshot backing files at the top of `/backingfiles/snapshots/`.
 ///
+/// How many snapshots exist, and the oldest/newest `snap.bin` mtime.
+struct SnapshotScan {
+    count: usize,
+    oldest: Option<u64>,
+    newest: Option<u64>,
+}
+
 /// Scan exactly one directory level: no recursion, no symlink follow.
 /// Snapshots always keep `snap.bin` at the top level
 /// (`/backingfiles/snapshots/snap-NNNNNN/snap.bin`), and a recursive walk
@@ -571,11 +568,18 @@ pub async fn get_wifi_config(
 /// vfat loop device on first access. Each /api/status call after the autofs
 /// timeout then triggered up to 130 vfat mounts *and* walked the entire dashcam
 /// tree inside each one: 15,000+ openat syscalls per request, 5-15s TTFB.
-fn find_snapshots() -> Vec<String> {
-    let mut snaps = Vec::new();
+///
+/// Folds the mtime extremes rather than returning a sorted path list. The old
+/// version sorted LEXICALLY and read the first and last entries as
+/// oldest/newest, but slot numbers are not time-monotonic in the field — a
+/// reflash can leave a stale high-numbered snapshot sitting above a restarted
+/// sequence — so whenever the highest-numbered snapshot was the older one, the
+/// dashboard rendered its date range backwards.
+fn scan_snapshots() -> SnapshotScan {
+    let mut scan = SnapshotScan { count: 0, oldest: None, newest: None };
     let base = std::path::Path::new("/backingfiles/snapshots/");
     let Ok(entries) = std::fs::read_dir(base) else {
-        return snaps;
+        return scan;
     };
     for entry in entries.flatten() {
         // Only consider entries that are themselves directories on the
@@ -588,15 +592,24 @@ fn find_snapshots() -> Vec<String> {
         }
         let snap_bin = entry.path().join("snap.bin");
         // Use symlink_metadata to avoid traversing into anything weird;
-        // snap.bin is always a regular file on the parent XFS.
-        if std::fs::symlink_metadata(&snap_bin).is_ok() {
-            if let Some(s) = snap_bin.to_str() {
-                snaps.push(s.to_string());
-            }
-        }
+        // snap.bin is always a regular file on the parent XFS. Reusing it for
+        // the mtime keeps this at the same syscall count as the old
+        // existence check.
+        let Ok(meta) = std::fs::symlink_metadata(&snap_bin) else {
+            continue;
+        };
+        scan.count += 1;
+        // A snapshot whose mtime is unreadable still counts; it just can't
+        // move the range.
+        let Ok(mtime) = meta.modified() else { continue };
+        let Ok(d) = mtime.duration_since(std::time::UNIX_EPOCH) else {
+            continue;
+        };
+        let secs = d.as_secs();
+        scan.oldest = Some(scan.oldest.map_or(secs, |o: u64| o.min(secs)));
+        scan.newest = Some(scan.newest.map_or(secs, |n: u64| n.max(secs)));
     }
-    snaps.sort();
-    snaps
+    scan
 }
 
 /// Raspberry Pi cooling-fan RPM from its hwmon device; empty when absent.

@@ -51,14 +51,18 @@ pub async fn list_snapshots(
             continue;
         }
         let path = entry.path();
-        if !path.is_dir() {
+        // file_type() reads the dirent and does NOT follow symlinks, so a
+        // planted `snap-NNNNNN` link cannot be listed as a snapshot.
+        if !entry.file_type().is_ok_and(|ft| ft.is_dir()) {
             continue;
         }
 
-        // mtime stands in for creation time. manage_free_space.sh instead
-        // sorts by alphabetic snap-<id>, close enough to agree for the UI.
-        let created_unix = entry
-            .metadata()
+        // snap.bin's mtime stands in for creation time — NOT the directory's.
+        // A directory's mtime moves whenever an entry inside it is added or
+        // removed (the committed .toc, the mnt autofs symlink), so a
+        // long-settled snapshot could report a creation time well after it was
+        // actually taken. 0 still means unknown.
+        let created_unix = std::fs::symlink_metadata(path.join("snap.bin"))
             .and_then(|m| m.modified())
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
