@@ -118,17 +118,31 @@ pub async fn run_startup_migration() {
                 // fallback won, and running a branch helper with DASHUSB_REF
                 // set to the tag is the mixed-source state this pinning
                 // exists to prevent.
-                if let Ok(reported) = std::fs::read_to_string(USED_REF_FILE) {
-                    let reported = reported.trim();
-                    if !reported.is_empty() && reported != effective_ref {
-                        info!(
-                            "[migrate] support files came from {} (not {}) — using it for DASHUSB_REF",
-                            reported, effective_ref
-                        );
-                        effective_ref = reported.to_string();
-                    }
-                }
+                // Fail closed on a missing or empty report. The script exits
+                // nonzero if it cannot write one, so an Ok run without it means
+                // something is wrong; carrying on would run the helper with the
+                // tag guess, which is the disagreement this reporting exists to
+                // remove. Leave the marker unwritten so the next boot retries.
+                let reported = std::fs::read_to_string(USED_REF_FILE)
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
                 let _ = std::fs::remove_file(USED_REF_FILE);
+                let Some(reported) = reported else {
+                    warn!(
+                        "[migrate] migration reported success but wrote no ref to {} — not marking \
+                         migrated; will retry on next boot",
+                        USED_REF_FILE
+                    );
+                    return;
+                };
+                if reported != effective_ref {
+                    info!(
+                        "[migrate] support files came from {} (not {}) — using it for DASHUSB_REF",
+                        reported, effective_ref
+                    );
+                    effective_ref = reported;
+                }
 
                 // Re-apply runtime patches AFTER the migration. The migration
                 // script unconditionally rewrites /root/bin/dashusb-ble.py
@@ -414,8 +428,11 @@ elif [ -f "$TMPDIR/setup/pi/apply-runtime-patches.sh" ]; then
 fi
 
 # Report the ref the helper actually came from so the caller runs it with a
-# matching DASHUSB_REF instead of assuming the tag.
-printf '%s' "$USED_REF" > "$USED_REF_FILE" 2>/dev/null || true
+# matching DASHUSB_REF instead of assuming the tag. NOT best-effort: if this
+# write is lost, the caller keeps its tag guess and can run a branch helper
+# with the tag ref. `set -e` turns a failure here into a failed migration,
+# which is retried.
+printf '%s' "$USED_REF" > "$USED_REF_FILE"
 
 # ── Restart the phone-app BLE daemon ──
 systemctl enable dashusb-ble 2>/dev/null || true

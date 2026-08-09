@@ -458,17 +458,33 @@ unmount_if_set() {
 ) 210>"$ARCHIVE_MOUNT_LOCK"
 DISCONNECT_EOF
 
-    chmod 755 /root/bin/connect-archive.sh.new /root/bin/disconnect-archive.sh.new
+    if ! chmod 755 /root/bin/connect-archive.sh.new /root/bin/disconnect-archive.sh.new; then
+        err "archive-mount-lock: chmod on staged scripts failed — keeping existing scripts"
+        rm -f /root/bin/connect-archive.sh.new /root/bin/disconnect-archive.sh.new
+        return 1
+    fi
     if ! bash -n /root/bin/connect-archive.sh.new || ! bash -n /root/bin/disconnect-archive.sh.new; then
         err "archive-mount-lock: staged scripts failed bash -n — keeping existing scripts"
         rm -f /root/bin/connect-archive.sh.new /root/bin/disconnect-archive.sh.new
         return 1
     fi
-    # A power loss between these two renames heals on the next run: the marker
-    # check at the top requires BOTH files to carry it.
-    mv /root/bin/connect-archive.sh.new /root/bin/connect-archive.sh
-    mv /root/bin/disconnect-archive.sh.new /root/bin/disconnect-archive.sh
+    # Both renames are checked. A half-installed pair — lock-aware connect with
+    # a lock-unaware disconnect — is the exact adoption race this patch exists
+    # to close, and an unchecked mv followed by a `log` reported that state as
+    # a success. A power loss between the two still heals on the next run: the
+    # marker check at the top requires BOTH files to carry it.
+    if ! mv /root/bin/connect-archive.sh.new /root/bin/connect-archive.sh; then
+        err "archive-mount-lock: installing connect-archive.sh failed — keeping existing scripts"
+        rm -f /root/bin/connect-archive.sh.new /root/bin/disconnect-archive.sh.new
+        return 1
+    fi
+    if ! mv /root/bin/disconnect-archive.sh.new /root/bin/disconnect-archive.sh; then
+        err "archive-mount-lock: connect-archive.sh was replaced but disconnect-archive.sh was NOT — one-sided install, re-run this script"
+        rm -f /root/bin/disconnect-archive.sh.new
+        return 1
+    fi
     log "archive-mount-lock: lock-aware connect/disconnect-archive.sh installed"
+    return 0
 }
 
 # ── Rock 4C+ WiFi NVRAM: remove the TX-collapsing AP6256 relink ─────────
