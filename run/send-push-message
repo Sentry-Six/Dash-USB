@@ -1,19 +1,11 @@
 #!/bin/bash -eu
-# Thin forwarder around POST /api/notifications/send. Converts the positional
-# call contract into a JSON POST; the server owns per-channel HTTP, mobile
-# push, and history logging.
+# Forward positional calls to the notification API. Keep type gating and user
+# command hooks here because hooks inherit the caller's environment.
 #
-# Two things must stay on the bash side:
-#   * The gate check (GET /api/notifications/settings/check), so a disabled
-#     notification type doesn't still run the user's NOTIFICATION_COMMAND_*.
-#   * NOTIFICATION_COMMAND_START / _FINISH, user shell snippets that need the
-#     CALLER's environment (e.g. CURRENT_ARCHIVE_FILE from archiveloop).
-#     Running them server-side would lose that inheritance.
-#
-# Call contract:
+# Usage:
 #   send-push-message <title> <message> [type] [notification_type]
 #
-# Reads env:
+# Environment:
 #   DASHUSB_PORT: API port (default 80)
 #   ARCHIVE_TOTAL_COUNT: used for live_activity on archive_start
 #   NOTIFICATION_COMMAND_ENABLED / _START / _FINISH: local shell hook
@@ -31,9 +23,7 @@ log() {
 DASHUSB_PORT="${DASHUSB_PORT:-80}"
 API_BASE="http://127.0.0.1:${DASHUSB_PORT}"
 
-# Skip entirely when the notification type is toggled off in user settings.
-# Fail open on API errors so a transient server hiccup doesn't silently drop
-# notifications.
+# Fail open on gate API errors so transient failures do not drop notifications.
 if [ -n "$notification_type" ]; then
   gate_response=$(curl -sf --connect-timeout 2 --max-time 5 \
     "${API_BASE}/api/notifications/settings/check?type=${notification_type}" 2>/dev/null) || true
@@ -46,9 +36,7 @@ if [ -n "$notification_type" ]; then
   fi
 fi
 
-# eval'd because a user's config snippet may legitimately contain pipes,
-# variable references, and so on. Backgrounded so a slow or broken user
-# command can't block the caller.
+# User snippets may contain shell syntax; run them asynchronously in caller context.
 if [ "${NOTIFICATION_COMMAND_ENABLED:-false}" = "true" ]; then
   if [ -n "${NOTIFICATION_COMMAND_START:-}" ] && [ "$type" = "start" ]; then
     eval "$NOTIFICATION_COMMAND_START" &
@@ -58,10 +46,7 @@ if [ "${NOTIFICATION_COMMAND_ENABLED:-false}" = "true" ]; then
   fi
 fi
 
-# Build the JSON with python3 so title and message can hold any printable
-# character (quotes, backslashes, newlines from error messages) without
-# breaking the request. python3 is already a hard dependency of the BLE daemon
-# and the RTC service.
+# Use JSON serialization so message punctuation and newlines remain valid.
 payload=$(ARG_TITLE="$title" \
   ARG_MESSAGE="$message" \
   ARG_TYPE="$type" \
@@ -89,8 +74,7 @@ PYEOF
 # Log before any network IO, so the message survives a failed send.
 log "$message"
 
-# Best-effort POST: the API may be temporarily down (crash, update in
-# progress). Log and move on rather than break the caller.
+# Notification delivery is best-effort and must not break the caller.
 response=$(curl -s --connect-timeout 5 --max-time 30 -w "\n%{http_code}" \
   -X POST \
   -H "Content-Type: application/json" \
@@ -108,9 +92,7 @@ if [ "$http_code" -ge 200 ] 2>/dev/null && [ "$http_code" -lt 300 ] 2>/dev/null;
   if [ "$skipped" = "true" ]; then
     log "Notifications skipped (type disabled by server)"
   else
-    # Extract the providers array (e.g. ["mobile_push","discord"]) and the
-    # failed array (e.g. ["discord: timeout"]) with Python; sed can't parse
-    # nested JSON reliably.
+    # Parse nested provider and failure arrays as JSON.
     parse_result=$(python3 - "$body" <<'PYEOF'
 import sys, json
 try:

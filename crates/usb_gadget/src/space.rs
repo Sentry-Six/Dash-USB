@@ -1,10 +1,4 @@
-//! Free space management for the backing filesystem: release old snapshots
-//! when space runs low.
-//!
-//! `run/archiveloop`'s freespacemanager computes the reserve (10 GB + 3% of
-//! the filesystem) and passes it through `manage_free_space.sh`. Manual CLI
-//! use passes none, so the same formula is duplicated in [`default_reserve`]
-//! and must stay in step with archiveloop.
+//! Release old snapshots below the reserve shared with archiveloop.
 
 use anyhow::Result;
 use tracing::{info, warn};
@@ -28,11 +22,7 @@ pub async fn manage_free_space(reserve_bytes: Option<u64>) -> Result<()> {
         return Ok(());
     }
     let reserve = reserve_bytes.unwrap_or_else(|| default_reserve(total));
-    // A reserve at or above the filesystem size can never be satisfied, so the
-    // loop below would release every snapshot in turn and still be "below
-    // reserve" at the end — deleting all footage to chase an impossible
-    // target. Reachable from a bad archiveloop value or a tiny disk where
-    // 10 GiB + 3% exceeds capacity.
+    // Reject impossible reserves instead of deleting every snapshot to chase one.
     if reserve >= total {
         warn!(
             "Reserve {} >= filesystem size {} — refusing to evict; no amount of \
@@ -58,12 +48,7 @@ pub async fn manage_free_space(reserve_bytes: Option<u64>) -> Result<()> {
         return Ok(());
     }
 
-    // Oldest first, but NEVER the newest COMPLETED snapshot: it holds the
-    // only captured copy of the most recent footage (the live drive rolls
-    // over), and make_snapshot's TOC diff needs a predecessor. Completed
-    // means both snap.bin and its committed .toc exist; a directory left by
-    // a crash mid-make protects nothing and stays releasable even when it
-    // sorts newest.
+    // Preserve the newest completed snapshot for recent footage and TOC diffing.
     let keep = snapshots.iter().rev().find(|s| snapshot_is_completed(s));
     let releasable: Vec<&String> = snapshots
         .iter()
@@ -125,12 +110,7 @@ fn get_space(path: &str) -> Result<(u64, u64)> {
 
     let s = String::from_utf8_lossy(&output.stdout);
     let parts: Vec<&str> = s.trim().split_whitespace().collect();
-    // Fail CLOSED. These fields used to be `parse().unwrap_or(0)` with a
-    // silent `(0, 0)` fallback, which fails in the dangerous direction: a
-    // garbled free-blocks field became "zero bytes free", which reads as far
-    // below the reserve and starts releasing snapshots on a disk that may
-    // have plenty of room. Refusing to answer leaves the caller to log and
-    // skip this cycle instead.
+    // Fail closed: malformed capacity data must never look like zero free space.
     if parts.len() < 3 {
         anyhow::bail!("unexpected stat output for {}: {:?}", path, s.trim());
     }

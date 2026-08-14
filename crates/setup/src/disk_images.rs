@@ -1,7 +1,4 @@
-//! Disk image creation.
-//!
-//! Creates the FAT32 cam disk image in /backingfiles/. Wraps and License
-//! Plates live as folders on the cam drive, not on a dedicated partition.
+//! FAT32 camera-disk image creation under `/backingfiles`.
 
 use std::path::Path;
 use std::time::Duration;
@@ -51,11 +48,8 @@ pub fn dehumanize(s: &str) -> Result<u64> {
 
 /// Get available space in KB on /backingfiles, minus a safety margin.
 async fn available_space_kb() -> Result<u64> {
-    // AVAILABLE space, not filesystem size: snapshots live on the same
-    // filesystem, so sizing against the total lets a re-run pass the check
-    // and then fail at truncate once snapshots have grown. Images being
-    // recreated are deleted first, so the caller credits their current
-    // allocation back.
+    // Use available space because snapshots share this filesystem. The caller
+    // separately credits images that will be recreated.
     let output = sentryusb_shell::run(
         "df", &["--output=avail", "--block-size=1K", &format!("{}/", BACKINGFILES)],
     ).await?;
@@ -70,10 +64,7 @@ async fn available_space_kb() -> Result<u64> {
     Ok(avail.saturating_sub(padding))
 }
 
-/// True when an existing image file matches the requested size (within 10 MB)
-/// AND carries a FAT32 partition. A Pi reused from a Sentry USB install can
-/// hold a same-sized exFAT image (`USE_EXFAT` era) that GM cannot read, so
-/// size alone must never let one survive.
+/// Match size within 10 MiB and require the expected FAT32 partition type.
 fn image_matches(file: &str, requested_kb: u64) -> bool {
     if requested_kb == 0 {
         return !Path::new(file).exists();
@@ -122,9 +113,7 @@ async fn create_drive(
     sentryusb_shell::run("truncate", &["--size", &format!("{}K", size_kb), &filename]).await
         .context("truncate failed")?;
 
-    // Only FAT32 is implemented below. Reject anything else rather than
-    // silently formatting FAT32 and leaving the profile author to discover
-    // the mismatch on a car that will not read the drive.
+    // Never silently format a profile requesting an unsupported filesystem.
     let fs = &sentryusb_vehicle_profile::Profile::active().virtual_drive.filesystem;
     if !fs.eq_ignore_ascii_case("fat32") {
         anyhow::bail!("vehicle profile requests unsupported filesystem {fs:?}; only fat32 is implemented");
@@ -202,9 +191,7 @@ pub async fn create_disk_images(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
     let profile = sentryusb_vehicle_profile::Profile::active();
     let min_kb = dehumanize(&profile.virtual_drive.min_size)?;
 
-    // Compute requested sizes before any heavy work so an all-match run can
-    // short-circuit. Size defaults, volume label, and size floor all come from
-    // the vehicle profile.
+    // Resolve profile sizes first so matching images short-circuit all work.
     let mut sizes: Vec<(String, String, u64, String)> = Vec::new();
     for spec in DRIVE_SPECS {
         let raw = env.get(spec.config_key, &profile.virtual_drive.default_size);
@@ -237,23 +224,12 @@ pub async fn create_disk_images(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
 
     ensure_vfat_tools(emitter).await?;
 
-    // Space check. Reject explicitly with a clear breakdown rather than
-    // auto-shrinking; the wizard pre-flight surfaces the same calculation
-    // before submit (see verify::verify_disk_space). Snapshots must NEVER be
-    // auto-deleted as a side effect of a settings change.
-    //
-    // The image is SPARSE (truncate + mkfs.vfat): the car must SEE the full
-    // logical size, but on a pure-rolling profile (no persistent event tier)
-    // real allocation tops out near the rolling window, so requiring the full
-    // logical size physically free would wrongly reject e.g. a 128 GB card
-    // hosting a 64 GB virtual drive. Require instead:
+    // Reject insufficient space; never shrink images or delete snapshots.
+    // Sparse rolling-only images reserve:
     //   min(logical, max(0.5 * logical, 2 * rolling window for live plus one
     //   COW generation)) + snapshot reserve
-    // The reserve stays OUTSIDE the min() cap: snapshots sit next to the image
-    // on the same fs, so even a profile whose estimate hits the logical
-    // ceiling still needs headroom beyond it. The 0.5x-logical floor is
-    // deliberate, padding for per-segment size variance and future profile
-    // drift beyond the 2x-window estimate.
+    // Keep snapshot reserve outside the cap and a 0.5x logical floor for
+    // segment-size variance.
     let logical_requested: u64 = sizes.iter().map(|(_, _, sz, _)| sz).sum();
     let total_requested: u64 = if profile.features.event_folders {
         logical_requested
@@ -310,12 +286,8 @@ pub async fn create_disk_images(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
         create_drive(name, label, *size_kb, emitter).await?;
     }
 
-    // Clean up stale /mutable/Recordings symlinks when the cam drive changed
-    // or was removed: they point into the old cam_disk and dangle after the
-    // recreate. Snapshots are intentionally NOT touched. They live
-    // independently on backingfiles and hold the user's archived footage, so
-    // wiping them on a CAM_SIZE change would be the same "I changed a setting,
-    // why did I lose data" failure mode as a partition wipe.
+    // Rebuilt camera images invalidate recording links. Never remove snapshots,
+    // which hold independent archived footage.
     if sizes[0].2 == 0 || cam_changed {
         if Path::new("/mutable/Recordings").is_dir() {
             let _ = std::fs::remove_dir_all("/mutable/Recordings/Continuous");

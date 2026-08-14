@@ -22,9 +22,7 @@ const ALLOWED_BASES: &[&str] = &[
     "/mnt/cam",
 ];
 
-/// Lexically normalize a request path: anchor at `/` and resolve `.`/`..`
-/// textually, WITHOUT touching the filesystem. `..` pops the previous segment and
-/// is clamped at the root, so the result can never climb above `/`.
+/// Lexically anchor and normalize a request path without filesystem access.
 fn lexical_normalize(req_path: &str) -> PathBuf {
     let mut parts: Vec<std::ffi::OsString> = Vec::new();
     for component in Path::new(req_path).components() {
@@ -44,22 +42,14 @@ fn lexical_normalize(req_path: &str) -> PathBuf {
     p
 }
 
-/// Validate and clean a path against the allowed bases.
-///
-/// Checks the *logical* path (lexically normalized), NOT the symlink-resolved
-/// path, and this is deliberate. Dashcam clips under `/mutable/Recordings/...`
-/// are symlinks into the snapshot autofs mount (`/tmp/snapshots/snap-*/...`),
-/// which sits outside the allowed bases, so canonicalizing would deny every
-/// clip download and make delete operate on the read-only snapshot file
-/// instead of the symlink. Lexical normalization still blocks `..` traversal,
-/// and the API never creates symlinks, so there is no user-reachable symlink
-/// escape left to resolve away.
+/// Validate the normalized logical path rather than its symlink target. Clip
+/// links resolve outside allowed roots, while lexical normalization still
+/// rejects traversal and the API cannot create links.
 fn is_path_allowed(req_path: &str) -> (PathBuf, bool) {
     let clean = lexical_normalize(req_path);
     let clean_str = clean.to_str().unwrap_or("");
     for base in ALLOWED_BASES {
-        // Exact base, or a path strictly under it. The trailing slash stops
-        // `/mutable` matching e.g. `/mutable-secret`.
+        // Require an exact base or slash-delimited child.
         if clean_str == *base || clean_str.starts_with(&format!("{}/", base)) {
             return (clean, true);
         }
@@ -96,11 +86,7 @@ pub async fn list_files(
     State(_s): State<AppState>,
     Query(params): Query<ListParams>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    // A listing stats every entry, and recording clip folders are symlinks
-    // into on-demand (autofs) snapshot mounts, so the first listing of a busy
-    // day can block for seconds while the kernel mounts the image. Run it on
-    // the blocking pool: stalling the async reactor drops the WebSocket
-    // heartbeat and surfaces "Reconnecting to DashUSB…" in the UI.
+    // Autofs-backed clip metadata can block; keep it off async workers.
     tokio::task::spawn_blocking(move || list_files_blocking(params))
         .await
         .unwrap_or_else(|_| {
@@ -114,7 +100,7 @@ fn list_files_blocking(params: ListParams) -> (StatusCode, Json<serde_json::Valu
     let limit = params.limit.unwrap_or(0);
     let search = params.search.as_deref().unwrap_or("").to_lowercase();
 
-    // Map relative paths to allowed bases
+    // Map relative roots to their allowed absolute bases.
     let full_path = if Path::new(req_path).is_absolute() {
         req_path.to_string()
     } else {
@@ -134,7 +120,7 @@ fn list_files_blocking(params: ListParams) -> (StatusCode, Json<serde_json::Valu
         return crate::json_error(StatusCode::FORBIDDEN, "Access denied");
     }
 
-    // Auto-create allowed base directories
+    // Ensure managed roots exist.
     let clean_str = clean_path.to_str().unwrap_or("");
     for base in ALLOWED_BASES {
         if clean_str == *base {
@@ -157,7 +143,7 @@ fn list_files_blocking(params: ListParams) -> (StatusCode, Json<serde_json::Valu
         }
     };
 
-    // Sort: directories first, then alphabetically
+    // Sort directories first, then by name.
     dir_entries.sort_by(|a, b| {
         b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase()))
     });
@@ -179,8 +165,7 @@ fn list_files_blocking(params: ListParams) -> (StatusCode, Json<serde_json::Valu
     let mut files = Vec::with_capacity(paginated.len());
     for (name, _) in paginated {
         let entry_path = clean_path.join(name);
-        // metadata(), not symlink_metadata(): clip symlinks must report the
-        // target's size and type.
+        // Follow clip symlinks for target size and type.
         if let Ok(meta) = std::fs::metadata(&entry_path) {
             files.push(FileEntry {
                 name: name.clone(),
@@ -287,10 +272,7 @@ pub async fn delete_file(State(_s): State<AppState>, Query(params): Query<Delete
     }
 }
 
-/// Multipart form: `file` (required, the payload) and `path` (required,
-/// destination directory). The filename comes from the upload part's
-/// Content-Disposition `filename=`. Streams straight to disk with no
-/// in-memory buffering, so any file size works on low-RAM devices.
+/// Stream a multipart `file` into the requested `path` without buffering it.
 pub async fn upload_file(
     State(_s): State<AppState>,
     mut multipart: axum::extract::Multipart,
@@ -300,9 +282,7 @@ pub async fn upload_file(
     let mut written: u64 = 0;
     let mut file_written = false;
 
-    // `path` can arrive before or after `file`, so always stream `file` to a
-    // temp path and rename once both fields are known. The frontend sends
-    // `file` first, `path` second.
+    // Multipart field order is unspecified; stage until both fields are known.
     let mut temp_path: Option<PathBuf> = None;
 
     while let Ok(Some(mut field)) = multipart.next_field().await {
@@ -320,12 +300,7 @@ pub async fn upload_file(
                     .to_string();
                 filename = Some(fname);
 
-                // Stream to a temp file instead of holding the upload in RAM.
-                // The temp name MUST be unique per upload: keying on the PID
-                // alone let two concurrent uploads share one temp file and
-                // corrupt each other (the last writer's bytes landed under both
-                // destination names). The monotonic counter plus nanosecond
-                // clock keeps overlapping requests apart.
+                // Unique temp names prevent concurrent uploads from sharing data.
                 static UPLOAD_SEQ: std::sync::atomic::AtomicU64 =
                     std::sync::atomic::AtomicU64::new(0);
                 let seq = UPLOAD_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -433,8 +408,7 @@ pub async fn download_file(State(_s): State<AppState>, Query(params): Query<Dele
         Ok(f) => f,
         Err(_) => return (StatusCode::NOT_FOUND, "File not found").into_response(),
     };
-    // Opening a directory succeeds on Unix but streaming it errors mid-body,
-    // so reject it up front and return 404 rather than a truncated response.
+    // Reject directories before response streaming starts.
     match file.metadata().await {
         Ok(m) if !m.is_dir() => {}
         _ => return (StatusCode::NOT_FOUND, "File not found").into_response(),
@@ -515,33 +489,13 @@ pub async fn download_zip_multi(State(_s): State<AppState>, Form(req): Form<Mult
 
 #[derive(Deserialize)]
 pub struct MultiZipRequest {
-    /// JSON-encoded array of paths. The frontend submits a native form whose
-    /// single `paths` field holds `JSON.stringify([...])`, so it arrives as a
-    /// string and is parsed here.
+    /// JSON array encoded in the form's `paths` field.
     paths: String,
 }
 
-// ---- Streaming zip writer ----
-//
-// The ZIP format is emitted by hand so the archive streams out with a fixed,
-// tiny memory footprint regardless of file or archive size. Each entry is a
-// local header with the CRC/size fields zeroed and the "data descriptor" flag
-// set, the file bytes streamed straight through (hashed as they go), then a
-// trailing data descriptor carrying the real CRC-32 and size. Nothing is ever
-// patched in place, so no part of the output is retained.
-//
-// Entries are Stored (no compression): dashcam clips are already-compressed
-// video, so deflating them burns the Pi's CPU for ~0% gain. Readers take sizes
-// and offsets from the central directory (authoritative), so Stored plus data
-// descriptor extracts correctly in macOS Finder, Windows Explorer, unzip and
-// 7-zip.
-//
-// The only thing held in memory is one `CentralEntry` per file, written out as
-// the central directory at the end. That scales with file *count*, not bytes (a
-// few MB for tens of thousands of clips) and is unavoidable for any zip.
-//
-// ZIP64 is emitted once an entry's offset or size crosses 4 GiB, or the entry
-// count exceeds 65535, which a full-day (~100 GB) archive will hit.
+// Streaming, uncompressed ZIP writer. Data descriptors avoid seeking or
+// buffering file contents; only central-directory metadata remains in memory.
+// ZIP64 covers 4 GiB fields and archives with more than 65,535 entries.
 
 const ZIP_CHUNK: usize = 64 * 1024;
 const ZIP_CHANNEL_DEPTH: usize = 8;
@@ -556,9 +510,7 @@ const SIG_ZIP64_LOCATOR: u32 = 0x0706_4b50;
 const GP_FLAGS: u16 = 0x0808;
 const U32_MAX: u64 = 0xFFFF_FFFF;
 
-/// Thresholds at which a field overflows its 32-/16-bit slot and forces ZIP64.
-/// Real limits in production; tests shrink them to exercise the ZIP64 path without
-/// generating multi-GB input.
+/// ZIP64 thresholds; tests lower them to avoid multi-gigabyte fixtures.
 #[derive(Clone, Copy)]
 struct Zip64Thresholds {
     bytes: u64,
@@ -571,8 +523,7 @@ impl Default for Zip64Thresholds {
     }
 }
 
-/// Sequential, non-seekable sink: ships bytes to the response via an mpsc channel
-/// and tracks the absolute offset (needed for central-directory records).
+/// Non-seekable response sink that tracks central-directory offsets.
 struct ZipStream {
     tx: tokio::sync::mpsc::Sender<Vec<u8>>,
     offset: u64,
@@ -633,9 +584,7 @@ fn dos_datetime(t: SystemTime) -> (u16, u16) {
     }
 }
 
-/// Stream one file into the archive: local header, the bytes (hashed as they go),
-/// then a data descriptor; records central-directory metadata. Unreadable files
-/// are skipped (best-effort). `Err` means the client left.
+/// Stream one file and record its central-directory metadata; skip unreadable files.
 fn write_stored_entry(
     z: &mut ZipStream,
     central: &mut Vec<CentralEntry>,
@@ -653,8 +602,7 @@ fn write_stored_entry(
         .map(dos_datetime)
         .unwrap_or((0x0021, 0));
     let stat_size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-    // Decide ZIP64-ness up front (size is known) so the local header and the data
-    // descriptor agree regardless of what is actually read.
+    // Choose ZIP64 before emitting a header that cannot be patched.
     let zip64 = stat_size >= z.limits.bytes;
     let name_bytes = name.as_bytes();
     let offset = z.offset;
@@ -752,8 +700,7 @@ fn walk_dir(
     Ok(())
 }
 
-/// Write the central directory and end-of-central-directory records (with ZIP64
-/// structures when offsets/sizes/counts overflow their 32-/16-bit fields).
+/// Write the central directory and any required ZIP64 records.
 fn write_central_directory(z: &mut ZipStream, central: &[CentralEntry]) -> std::io::Result<()> {
     let central_start = z.offset;
     for e in central {
@@ -793,9 +740,7 @@ fn write_central_directory(z: &mut ZipStream, central: &[CentralEntry]) -> std::
         le_u16(&mut h, 0); // file comment length
         le_u16(&mut h, 0); // disk number start
         le_u16(&mut h, 0); // internal attributes
-        // External attributes carry the Unix mode in the high 16 bits (host = UNIX
-        // in "version made by"); 0o100644 = regular file, rw-r--r-- so extracted
-        // files are readable. Leaving this 0 makes unzip apply mode 0000.
+        // Store mode 100644 so Unix extractors do not create unreadable files.
         le_u32(&mut h, 0o100644 << 16); // external attributes
         le_u32(&mut h, if offset_zip64 { U32_MAX as u32 } else { e.offset as u32 });
         h.extend_from_slice(&e.name);
@@ -832,9 +777,7 @@ fn write_central_directory(z: &mut ZipStream, central: &[CentralEntry]) -> std::
         z.send(loc)?;
     }
 
-    // The end-of-central-directory record carries real values where they fit and
-    // the 0xFFFF/0xFFFFFFFF sentinels (which point readers at the ZIP64 EOCD) only
-    // on genuine 32-/16-bit overflow.
+    // Use ZIP64 sentinels only for fields that overflow their legacy slots.
     let mut eocd = Vec::with_capacity(22);
     le_u32(&mut eocd, SIG_EOCD);
     le_u16(&mut eocd, 0); // number of this disk
@@ -849,9 +792,7 @@ fn write_central_directory(z: &mut ZipStream, central: &[CentralEntry]) -> std::
     Ok(())
 }
 
-/// Spawn a blocking task that streams a zip built by `build` to the response
-/// body. Always returns `200` with the given Content-Disposition: the caller
-/// must have finished all validation and status decisions before calling.
+/// Stream a validated ZIP from a blocking task with fixed response headers.
 fn spawn_zip_stream<F>(disposition: String, build: F) -> Response
 where
     F: FnOnce(&mut ZipStream, &mut Vec<CentralEntry>) -> std::io::Result<()> + Send + 'static,
@@ -860,8 +801,7 @@ where
     tokio::task::spawn_blocking(move || {
         let mut z = ZipStream { tx, offset: 0, limits: Zip64Thresholds::default() };
         let mut central = Vec::new();
-        // If the client disconnects mid-stream, `build` returns Err; skip the
-        // central directory (a partial body is unavoidable once headers are sent).
+        // A disconnected client receives an unavoidable partial body.
         if build(&mut z, &mut central).is_ok() {
             let _ = write_central_directory(&mut z, &central);
         }

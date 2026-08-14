@@ -178,16 +178,11 @@ export function UpdateSection({ onInstallStart }: Props) {
     setUpdateStatus("checking_internet")
     setUpdateError(null)
     setUpdateMessage("Checking internet connection...")
-    // Track the target version locally: /api/system/version is answered by
-    // the OLD daemon until the reboot fires, so it can return a stale tag.
+    // The old daemon serves its version until reboot.
     const preUpdateVersion = version
-    // Kernel boot id before the update. A changed boot_id is the only real
-    // proof the device rebooted; the version file is not, because the OLD
-    // daemon rewrites it before `reboot` fires and keeps answering requests.
+    // A changed boot ID proves the update reboot occurred.
     let preUpdateBootId: string | null = null
-    // Tracks whether boot_id was ever usable. Null is "unknown", NOT a
-    // licence to fall back to a version-only check — that is precisely the
-    // signal the old daemon can forge.
+    // Without boot ID, version-only completion remains unverifiable.
     let bootIdUnavailable = false
     let newVersion: string | null = targetVersion ?? null
     setInstalledVersion(newVersion)
@@ -239,8 +234,7 @@ export function UpdateSection({ onInstallStart }: Props) {
         return
       }
 
-      // Snapshot boot_id before kicking off the update. Failure leaves it
-      // null and the poll falls back to the version heuristic.
+      // Capture boot ID before update; failure leaves completion unverified.
       try {
         const vr = await fetch("/api/system/version", { cache: "no-store" })
         if (vr.ok) {
@@ -270,23 +264,14 @@ export function UpdateSection({ onInstallStart }: Props) {
             const r = await fetch("/api/system/version", { cache: "no-store" })
             if (r.ok) {
               const data = await r.json()
-              // Reject stale responses: the old daemon stays responsive
-              // until `reboot` fires.
+              // Reject responses from the still-running pre-update daemon.
               const polled = (data.version || "").trim()
               const polledBootId =
                 typeof data.boot_id === "string" && data.boot_id ? data.boot_id : null
               if (polledBootId === null) bootIdUnavailable = true
 
-              // Both signals are required, because each is individually
-              // forgeable:
-              //   - A changed version file does NOT prove a reboot. The old
-              //     daemon rewrites /opt/dashusb/version before `reboot`
-              //     fires and keeps answering.
-              //   - A changed boot_id does NOT prove the update took. The
-              //     device can reboot after a failed install and come back
-              //     on the old asset.
-              // If boot_id is unreadable the reboot is simply unverifiable;
-              // that is not a licence to accept the version alone.
+              // Require both a new boot ID and target version: either signal
+              // alone can also result from an incomplete update.
               const bootVerified =
                 preUpdateBootId !== null &&
                 polledBootId !== null &&
@@ -306,8 +291,7 @@ export function UpdateSection({ onInstallStart }: Props) {
                 setUpdateStatus("idle")
                 setUpdateMessage(null)
                 setInstalledVersion(null)
-                // Hard reload: cached chunks and hooks (useVersion,
-                // feature-gated UI) otherwise keep the pre-update snapshot.
+                // Reload cached chunks and feature-gated state.
                 window.location.reload()
               }, 6000)
             }
@@ -371,10 +355,7 @@ export function UpdateSection({ onInstallStart }: Props) {
         halo={headerHalo}
         title="Software Updates"
         badge={
-          // The badge shows the *installed* version, never the available
-          // one: the pending release reads as already installed there. The
-          // "Stable:"/"Pre-release:" cards below carry that version, and
-          // the accent colour is all the badge says about it.
+          // Badge text is the installed version; cards show available versions.
           <Pill kind={stableUpdate || prereleaseUpdate ? "accent" : "slate"}>
             {version ?? "…"}
           </Pill>

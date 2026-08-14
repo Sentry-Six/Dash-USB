@@ -51,13 +51,11 @@ export function MobileNav({ open, onClose }: MobileNavProps) {
 
   return (
     <>
-      {/* Backdrop */}
       <div
         className="fixed inset-0 z-[600] bg-black/60"
         onClick={onClose}
       />
 
-      {/* Drawer */}
       <div className="glass-sidebar fixed left-0 top-0 z-[700] flex h-full w-64 flex-col">
         <div className="flex min-h-16 items-center justify-between px-4 py-3">
           <div className="flex items-center gap-3">
@@ -120,7 +118,6 @@ export function MobileNav({ open, onClose }: MobileNavProps) {
           })}
         </nav>
 
-        {/* Terminal link (secondary) */}
         <NavLink
           to="/terminal"
           onClick={onClose}
@@ -137,7 +134,6 @@ export function MobileNav({ open, onClose }: MobileNavProps) {
           <span>Terminal</span>
         </NavLink>
 
-        {/* Support link (secondary) */}
         <NavLink
           to="/support"
           onClick={onClose}
@@ -154,7 +150,6 @@ export function MobileNav({ open, onClose }: MobileNavProps) {
           <span>Support</span>
         </NavLink>
 
-        {/* Connection status */}
         <div className={cn(
           "mx-2 mb-1 flex items-center gap-2 rounded-lg px-3 py-2 text-xs",
           connState === "connected" ? "text-emerald-400" : connState === "reconnecting" ? "text-amber-400" : "text-red-400"
@@ -168,7 +163,6 @@ export function MobileNav({ open, onClose }: MobileNavProps) {
           </span>
         </div>
 
-        {/* Logout */}
         {authRequired && (
           <button
             onClick={() => { logout(); onClose() }}

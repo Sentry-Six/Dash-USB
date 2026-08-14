@@ -7,9 +7,10 @@ recordings before the car deletes them and archives everything to your
 own server. A web UI lets you review and back up footage — no SSH, no
 config files.
 
-## Install in one line
+## Install over SSH
 
-> **No prebuilt SD card image yet.** The install path is: flash stock **Raspberry Pi OS Lite (64-bit)**, SSH in, and run the one-liner below. A prebuilt image will come later — for now this is the only supported install route. Full step-by-step in [Getting Started](Getting-Started).
+> **No prebuilt SD card image yet.** Flash **Raspberry Pi OS Lite (64-bit)**,
+> connect over SSH, and follow [Getting Started](Getting-Started).
 
 On a Pi already running Pi OS:
 
@@ -19,7 +20,7 @@ sudo -i
 curl -fsSL https://raw.githubusercontent.com/Sentry-Six/Dash-USB/main/install-pi.sh | bash
 ```
 
-> Refresh the apt cache first — Pi OS images bake in package lists that go stale as Debian publishes point releases, and a stale cache makes the install hit `404` errors.
+> Refresh and upgrade packages first to avoid stale package-index errors.
 
 Then open `http://dashusb.local` and the [Setup Wizard](Setup-Wizard-Guide) takes you the rest of the way.
 
@@ -40,7 +41,7 @@ Plus:
   GM records roughly 5 GB per hour of driving, all of which Dash USB keeps
   until space runs out)
 - A **USB-C data cable** (not charge-only) — Pi to any of the car's USB-C ports
-- WiFi network with internet (for first-time setup, updates, and archiving)
+- Wi-Fi; internet access is required for initial setup, updates, and cloud archiving
 
 > Your vehicle needs GM's **Surround Vision Recorder** feature (the built-in
 > rolling dashcam on newer GM EVs and ICE vehicles). Confirmed working on a
@@ -51,11 +52,11 @@ Plus:
 
 | Page | What's on it |
 |------|--------------|
-| [Getting Started](Getting-Started) | Install in 10 minutes |
+| [Getting Started](Getting-Started) | Installation walkthrough |
 | [Setup Wizard Guide](Setup-Wizard-Guide) | Every wizard step explained |
 | [Archive Methods](Archive-Methods) | CIFS, rsync, rclone, NFS |
 | [Notifications](Notifications) | Push notifications to your phone |
-| [Privacy](Privacy) | What we send, when, and why — and how to opt out |
+| [Privacy](Privacy) | Outbound data and privacy controls |
 | [Troubleshooting](Troubleshooting) | Things that go wrong |
 | [FAQ](FAQ) | Common questions |
 

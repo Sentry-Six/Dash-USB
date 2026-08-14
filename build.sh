@@ -4,16 +4,14 @@
 
 set -e
 
-# Build the frontend. static/ is gitignored, so this step is the only thing
-# that populates it: without it a bare cargo build embeds the "frontend not
-# built" placeholder from crates/sentryusb/build.rs.
+# A bare cargo build embeds the placeholder from build.rs because static/ is
+# gitignored; populate it before compiling.
 WEB_DIR="$(dirname "$0")/web"
 if [ -d "$WEB_DIR" ] && [ -f "$WEB_DIR/package.json" ]; then
     echo "Building frontend from $WEB_DIR..."
     (cd "$WEB_DIR" && npm run build)
     echo "Copying frontend to static/"
-    # Full wipe (not /*) so a stale placeholder index.html and old
-    # pre-compressed .br/.gz siblings can't survive into the embed.
+    # Remove dotfiles and stale pre-compressed siblings too.
     rm -rf crates/sentryusb/static
     mkdir -p crates/sentryusb/static
     cp -r "$WEB_DIR/dist/"* crates/sentryusb/static/
@@ -21,10 +19,8 @@ else
     echo "WARNING: no web/ found — binary will embed the 'frontend not built' placeholder."
 fi
 
-# Pre-compress static assets so embed.rs serves raw .br/.gz bytes instead
-# of burning per-request CPU on the Pi Zero 2W. Brotli is optional: without
-# it the server falls back to gzip, then to identity plus the tower-http
-# CompressionLayer.
+# Pre-compress assets to avoid per-request work on a Pi Zero 2 W. Brotli is
+# optional; the server falls back to gzip, then tower-http compression.
 if [ -d crates/sentryusb/static ]; then
     HAS_BROTLI=0
     if command -v brotli >/dev/null 2>&1; then
@@ -37,12 +33,11 @@ if [ -d crates/sentryusb/static ]; then
     echo "Pre-compressing static assets..."
     COUNT=0
     while IFS= read -r -d '' f; do
-        # Skip compressed siblings and already-compressed binary formats;
-        # what survives is text/SVG/JSON/JS/CSS/HTML.
+        # Skip compressed siblings and binary formats.
         case "$f" in
             *.br|*.gz|*.woff2|*.png|*.jpg|*.jpeg|*.webp|*.ico|*.gif|*.mp4|*.mp3|*.zip) continue ;;
         esac
-        # Below ~1 KB there is no compression win, only binary bloat.
+        # Compression below ~1 KB usually increases total size.
         SIZE=$(wc -c < "$f")
         if [ "$SIZE" -lt 1024 ]; then continue; fi
 

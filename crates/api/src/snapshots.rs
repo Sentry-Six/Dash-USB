@@ -1,13 +1,4 @@
-//! Snapshot management API.
-//!
-//! Snapshots are XFS reflink-backed point-in-time copies of cam_disk that
-//! archiveloop takes on a schedule (default every 58 minutes), living at
-//! `/backingfiles/snapshots/snap-<id>/snap.bin`. The runtime's
-//! `manage_free_space.sh` prunes them automatically; these endpoints are the
-//! user's explicit route to inspect and reclaim that space.
-//!
-//! Deletes shell out to `/root/bin/release_snapshot.sh`, which the free-space
-//! manager also uses, rather than reimplementing its umount and symlink cleanup.
+//! Inspect and release XFS reflink snapshots through the runtime's shared cleanup.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -38,7 +29,7 @@ pub async fn list_snapshots(
     let dir = match std::fs::read_dir(SNAPSHOTS_DIR) {
         Ok(d) => d,
         Err(_) => {
-            // A missing directory just means no snapshots have been taken.
+            // A missing directory represents zero snapshots.
             return (StatusCode::OK, Json(serde_json::json!({
                 "snapshots": entries,
             })));
@@ -57,11 +48,7 @@ pub async fn list_snapshots(
             continue;
         }
 
-        // snap.bin's mtime stands in for creation time — NOT the directory's.
-        // A directory's mtime moves whenever an entry inside it is added or
-        // removed (the committed .toc, the mnt autofs symlink), so a
-        // long-settled snapshot could report a creation time well after it was
-        // actually taken. 0 still means unknown.
+        // snap.bin mtime is stable; directory mtime changes with TOC/mount entries.
         let created_unix = std::fs::symlink_metadata(path.join("snap.bin"))
             .and_then(|m| m.modified())
             .ok()
@@ -69,12 +56,7 @@ pub async fn list_snapshots(
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
-        // Apparent allocated bytes (st_blocks * 512), NOT reflink-aware: each
-        // snap.bin is a `cp --reflink=always` of cam_disk.bin, so its st_blocks
-        // reports the full cam_disk block count even though those extents are
-        // shared with the live image and the other snapshots. Upper bound only,
-        // not "what deleting this one snapshot reclaims". The aggregate
-        // `total_allocated_bytes` below recovers the true exclusive footprint.
+        // st_blocks is only an upper bound for shared reflink extents.
         let du_out = sentryusb_shell::run(
             "du", &["-sB1", &path.to_string_lossy()],
         ).await.unwrap_or_default();
@@ -93,17 +75,8 @@ pub async fn list_snapshots(
 
     entries.sort_by_key(|e| e.created_unix);
 
-    // Bytes that deleting every snapshot would free. `du` cannot answer this:
-    // it dedupes hard links by inode, but each snap.bin is a separate inode
-    // sharing extents with cam_disk.bin, so summing per-file st_blocks yields
-    // N * cam_disk_size, far larger than the partition itself.
-    //
-    // The reflink-exclusive footprint is instead:
-    //     df_used(/backingfiles) - du(--exclude=snapshots /backingfiles/)
-    // Partition-level used bytes count each allocated extent once however many
-    // files reference it. Deleting all snapshots leaves only the non-snapshot
-    // files (chiefly cam_disk.bin), whose blocks XFS retains, so `df` settles
-    // to that du value and the difference is what the snapshots hold alone.
+    // Exclusive snapshot footprint is partition usage minus non-snapshot usage;
+    // summing reflink file blocks would count shared extents repeatedly.
     let total_allocated_bytes: u64 = if entries.is_empty() {
         0
     } else {
@@ -135,9 +108,7 @@ pub async fn list_snapshots(
     })))
 }
 
-/// Calls `release_snapshot.sh` to umount the snap.bin loop image and remove the
-/// directory along with dangling /mutable/Recordings symlinks. The id MUST be a
-/// `snap-*` name with no separators; anything else is path traversal.
+/// Release a validated `snap-*` id through the shared runtime cleanup.
 pub async fn delete_snapshot(
     State(_s): State<AppState>,
     Path(id): Path<String>,
@@ -154,13 +125,7 @@ pub async fn delete_snapshot(
         return crate::json_error(StatusCode::NOT_FOUND, "Snapshot not found");
     }
 
-    // Prefer the on-disk script to share the runtime's umount and symlink
-    // cleanup. Plain rm is a fallback for partially-installed systems only.
-    //
-    // Pass the bare `id`, NOT the full path: `release_snapshot.sh` is a thin
-    // shim forwarding "$@" to `dashusb snapshot release`, which expects a
-    // `snap-NNNNNN` name. It also accepts a full path, so the bare id works
-    // against both the shim and full-script installs.
+    // Prefer shared unmount/symlink cleanup; plain removal is an install fallback.
     let script_exists = std::path::Path::new(RELEASE_SNAPSHOT_SCRIPT).exists();
     let result = if script_exists {
         sentryusb_shell::run(RELEASE_SNAPSHOT_SCRIPT, &[id.as_str()]).await

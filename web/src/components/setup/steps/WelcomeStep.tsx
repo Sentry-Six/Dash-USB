@@ -48,13 +48,8 @@ const CONFIG_GROUPS: Record<string, { label: string; keys: string[] }> = {
   },
 }
 
-/** Map legacy lowercase config keys to canonical names. Must stay in sync with
- *  `migrate_legacy_config_keys` in crates/setup/src/env.rs: wizard inputs read
- *  CAM_SIZE, ARCHIVE_SERVER, etc., so without this an imported legacy .conf
- *  drops every old key into an unread keyspace and the user sees blank inputs
- *  despite an "Imported N keys" toast.
- *  New name wins when both old and new are present.
- */
+/** Map legacy keys before importing wizard fields. Keep synchronized with
+ * `migrate_legacy_config_keys`; canonical values take precedence. */
 const LEGACY_KEY_MAP: Record<string, string> = {
   archiveserver: "ARCHIVE_SERVER",
   camsize: "CAM_SIZE",
@@ -263,8 +258,7 @@ export function WelcomeStep({ onBatchChange }: StepProps) {
       setFileName(null)
       setRestoreSource(backup.date)
       setShowRestore(false)
-      // _restore_baseline moves SetupWizard's destructive-change baseline onto
-      // the backup values, so drive-size comparisons run against them.
+      // Rebase destructive-change checks onto restored values.
       onBatchChange({ ...parsed, _restore_baseline: "true" })
 
       const groups = new Set<string>()
@@ -275,17 +269,14 @@ export function WelcomeStep({ onBatchChange }: StepProps) {
       }
       setExpandedGroups(groups)
     } catch {
-      // No error UI: the button resetting is the only signal.
+      // Ignore restore-list errors.
     } finally {
       setRestoringDate(null)
     }
   }
 
-  // Upload path for first run on a fresh image: the archive isn't mounted yet
-  // (its credentials live inside the backup), so /api/system/backups returns an
-  // empty list and there is nothing to pick. POST the file straight to
-  // /api/system/restore, which writes back config, SSH keys, rclone config, BLE
-  // keys and notification credentials.
+  // Fresh images cannot mount archives before restoring their credentials, so
+  // upload the backup directly to the restore endpoint.
   async function handleBackupFileUpload(file: File) {
     if (!file.name.endsWith(".json")) {
       setUploadError("Please select a .json backup file")
@@ -380,11 +371,9 @@ export function WelcomeStep({ onBatchChange }: StepProps) {
         in Raspberry Pi Imager before flashing your SD card.
       </p>
 
-      {/* Upload .conf file or Restore from backup */}
       <div className="mt-8 w-full max-w-md">
         {!imported ? (
           <div className="space-y-3">
-            {/* Drag-and-drop config import */}
             <div
               onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
               onDragLeave={() => setDragOver(false)}
@@ -418,7 +407,6 @@ export function WelcomeStep({ onBatchChange }: StepProps) {
               />
             </div>
 
-            {/* Restore from backup button / panel */}
             {!showRestore ? (
               <button
                 onClick={() => setShowRestore(true)}
@@ -543,7 +531,6 @@ export function WelcomeStep({ onBatchChange }: StepProps) {
           </div>
         ) : (
           <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
-            {/* Header */}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
                 <CheckCircle className="h-5 w-5 text-emerald-400" />
@@ -575,7 +562,6 @@ export function WelcomeStep({ onBatchChange }: StepProps) {
               </button>
             </div>
 
-            {/* Grouped config summary */}
             <div className="mt-4 space-y-1 text-left">
               {groupedEntries.map(({ groupId, label, entries }) => (
                 <div key={groupId}>
@@ -657,7 +643,6 @@ export function WelcomeStep({ onBatchChange }: StepProps) {
         )}
       </div>
 
-      {/* Info cards */}
       <div className="mt-6 grid w-full max-w-md gap-3 text-left">
         <InfoCard
           title="No SSH Required"

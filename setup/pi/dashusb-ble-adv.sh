@@ -1,22 +1,16 @@
 #!/bin/bash
-# Legacy ADV_IND advertiser for Broadcom Pi-family chips where BlueZ's modern
-# advertising path is unreliable (the BCM controllers reject EXTENDED
-# advertising, and even `btmgmt advertising on` defaults to non-connectable
-# parameters on some chip revisions). Programs advertising directly over raw
-# HCI as connectable undirected (ADV_IND) at 100ms intervals.
+# Raw-HCI ADV_IND fallback for Broadcom controllers that reject or misconfigure
+# BlueZ extended advertising.
 #
-# The DashUSB apps filter scans by the "DashUSB-" name prefix, so the
-# local name MUST appear in the scan response (BlueZ doesn't include the
-# name in this path by default, hence the explicit scan-rsp builder below).
-# Fresh flag = a central connect is in flight; don't re-assert advertising then.
+# Apps require the DashUSB-prefixed scan-response name. Never reassert while a
+# central connection flag is fresh.
 CONNECTING_FLAG="/tmp/ble_connecting"
 CONNECTING_FLAG_MAX_AGE=15   # seconds; ignore a stale flag a crashed connect left behind
 
 UUID_LE="9e ca dc 24 0e e5 a9 e0 93 f3 a3 b5 01 00 40 6e"   # 6e400001-b5a3-f393-e0a9-e50e24dcca9e, little-endian
 ADV_DATA="15 02 01 06 11 07 ${UUID_LE} 00 00 00 00 00 00 00 00 00 00 00 00 00"
 
-# Scan-response bytes = [len][0x09 Complete Local Name][name…]. Function is
-# defined before the run-guard so it's sourceable for unit-style testing.
+# Scan response: [length][0x09 Complete Local Name][name].
 build_scanrsp() {
     local name hex namebytes len
     name=$(timeout 5 btmgmt info 2>/dev/null | sed -n 's/^[[:space:]]*name[[:space:]]*//p' | head -1)
@@ -28,20 +22,15 @@ build_scanrsp() {
     printf '%02x 09 %s' "$len" "$(echo "$hex" | sed 's/../& /g')"
 }
 
-# Program legacy ADV_IND directly via HCI (bypasses BlueZ mgmt):
-#   disable → set adv data → set scan-rsp (name, zero-padded to 31) →
-#   adv params (100ms min/max ADV_IND connectable undirected, public addr, all 3 chans) → enable
-# The "0x00" after the intervals is the advertising-type byte: ADV_IND
-# (connectable). DO NOT change to ADV_SCAN_IND (0x02); the chip will then
-# silently refuse incoming GATT connect requests, surfacing as the phone
-# logging "GATT 147 bond=BOND_NONE" 10s into the attempt.
+# Program connectable ADV_IND on all three channels at 100 ms. Advertising type
+# byte 0x00 must not become non-connectable ADV_SCAN_IND 0x02.
 assert_raw_adv() {
     local scanrsp; scanrsp=$(build_scanrsp)
     hcitool -i hci0 cmd 0x08 0x000a 00 >/dev/null 2>&1 || true
     hcitool -i hci0 cmd 0x08 0x0008 $ADV_DATA >/dev/null 2>&1 || true
     hcitool -i hci0 cmd 0x08 0x0009 $scanrsp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 >/dev/null 2>&1 || true
     hcitool -i hci0 cmd 0x08 0x0006 a0 00 a0 00 00 00 00 00 00 00 00 00 00 07 00 >/dev/null 2>&1 || true
-    # Re-check right before enabling so we never re-arm advertising mid-connect.
+    # Re-check immediately before enabling to avoid re-arming mid-connect.
     connect_in_flight && return 0
     hcitool -i hci0 cmd 0x08 0x000a 01 >/dev/null 2>&1 || true
 }
@@ -55,8 +44,7 @@ connect_in_flight() {
     [ "$age" -ge 0 ] && [ "$age" -lt "$CONNECTING_FLAG_MAX_AGE" ]
 }
 
-# Run the advertising loop ONLY when executed directly (the systemd ExecStart),
-# never when sourced, or testing build_scanrsp() would loop forever.
+# Sourcing exposes helpers without starting the service loop.
 if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
     return 0 2>/dev/null || exit 0
 fi

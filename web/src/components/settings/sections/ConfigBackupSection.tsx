@@ -125,7 +125,6 @@ export function ConfigBackupSection() {
       halo="blue"
       title="Config Backup"
     >
-      {/* Location + backup trigger */}
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[10px] text-slate-500">Location:</span>
         <button
@@ -183,7 +182,6 @@ export function ConfigBackupSection() {
         </div>
       </div>
 
-      {/* Confirm / Result */}
       {restoreState === "success" && restoreResult && (
         <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
           <div className="flex items-start gap-3">
@@ -258,7 +256,6 @@ export function ConfigBackupSection() {
         </div>
       )}
 
-      {/* Backups list */}
       {loaded && backups.length === 0 && restoreState === "idle" && (
         <p className="py-2 text-center text-xs text-slate-500">
           No backups yet. Backups are created automatically after each archive.

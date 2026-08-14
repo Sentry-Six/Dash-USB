@@ -20,10 +20,8 @@ function Field({ label, field, type = "text", placeholder, data, onChange, hint 
 
 const TIMEZONES = [
   "auto",
-  // List canonical IANA names only: newer Pi OS / Debian releases ship a
-  // minimal tzdata without the legacy `US/*` aliases, so `timedatectl
-  // set-timezone` fails on them. The backend still normalizes US/Eastern to
-  // America/New_York for older saved configs.
+  // Minimal tzdata omits `US/*`; list canonical IANA names while the backend
+  // normalizes saved aliases.
   // Americas
   "America/Adak", "America/Anchorage", "America/Anguilla", "America/Antigua", "America/Araguaina",
   "America/Argentina/Buenos_Aires", "America/Argentina/Catamarca", "America/Argentina/Cordoba",
@@ -154,8 +152,7 @@ function TempInput({
   placeholder: string
   useFahrenheit: boolean
 }) {
-  // Render the stored value (°C, or legacy milli-°C when >= 1000) as a display
-  // string in the active unit.
+  // Render Celsius or legacy milli-Celsius in the selected unit.
   const toDisplay = (raw: string): string => {
     if (!raw) return ""
     let celsius = parseFloat(raw)
@@ -164,11 +161,8 @@ function TempInput({
     return useFahrenheit ? ((celsius * 9 / 5) + 32).toFixed(1) : celsius.toFixed(1)
   }
 
-  // Hold the typed text in local state. Deriving the input value from the
-  // stored °C on every render made the field uneditable: each keystroke wrote
-  // a converted °C back to the store, which re-rendered the box to that value
-  // (typing "7" in °F stored -13.9 °C and the box jumped to "-13.9"). Push
-  // only the converted °C to the store; re-derive the text on a unit switch.
+  // Keep in-progress text local; converting each keystroke would overwrite
+  // partial Fahrenheit input. Re-derive only when units change.
   const [text, setText] = useState<string>(() => toDisplay(data[field] ?? ""))
   const lastUnit = useRef(useFahrenheit)
   useEffect(() => {
@@ -190,18 +184,16 @@ function TempInput({
           inputMode="decimal"
           value={text}
           onChange={(e) => {
-            // Strip anything that isn't a digit, dot or minus.
             const v = e.target.value.replace(/[^0-9.-]/g, "")
             setText(v)
-            // Partial input isn't a number yet: clear the stored value but
-            // leave the in-progress text on screen.
+            // Preserve incomplete numeric text without storing it.
             if (v === "" || v === "-" || v === "." || v === "-.") {
               onChange(field, "")
               return
             }
             const num = parseFloat(v)
             if (!isNaN(num)) {
-              // Store as °C (converted to milli-°C on save).
+              // Store Celsius; save converts to milli-Celsius.
               const celsius = useFahrenheit ? ((num - 32) * 5 / 9) : num
               onChange(field, celsius.toFixed(1))
             }
@@ -219,8 +211,7 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
   const [tzSearch, setTzSearch] = useState("")
   const [isPi5, setIsPi5] = useState(false)
   const useFahrenheit = data.TEMPERATURE_UNIT === "F"
-  // The master selector reflects the temperature choice; the per-unit controls
-  // below can still diverge into a mixed set.
+  // Temperature controls the master selector; individual units may diverge.
   const isMetric = !useFahrenheit
 
   useEffect(() => {
@@ -240,7 +231,6 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
 
   return (
     <div className="space-y-6">
-      {/* Timezone */}
       <div>
         <label className="mb-1 block text-sm font-medium text-slate-300">Time Zone</label>
         <div className="relative mb-2">
@@ -278,7 +268,6 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
         </p>
       </div>
 
-      {/* Archive tuning */}
       <div>
         <div className="mb-3 flex items-center gap-2">
           <Cog className="h-4 w-4 text-blue-400" />
@@ -294,9 +283,6 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
         </div>
       </div>
 
-      {/* Master selector: sets temperature, distance and tire-pressure units
-          together. The per-unit controls below and the dashboard's Display &
-          Units stay in sync through the same config keys. */}
       <div>
         <div className="mb-3 flex items-center gap-2">
           <Ruler className="h-4 w-4 text-blue-400" />
@@ -438,7 +424,6 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
         </div>
       )}
 
-      {/* System tuning */}
       <div>
         <div className="mb-3 flex items-center gap-2">
           <Cog className="h-4 w-4 text-blue-400" />
@@ -464,7 +449,6 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
         </div>
       </div>
 
-      {/* Source */}
       <div>
         <div className="mb-3 flex items-center gap-2">
           <Cog className="h-4 w-4 text-blue-400" />

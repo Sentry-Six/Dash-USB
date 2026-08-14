@@ -32,7 +32,7 @@ export interface PiStatus {
    * Host-link state from /sys/class/udc; "configured" means the car has
    * enumerated the gadget and is talking. drives_active only reflects the
    * configfs binding (the Pi's intent to present) and stays "yes" through a
-   * dead link. Present only on backends ≥ v3.13.4.
+   * dead link.
    */
   udc_state?: string
   /** Seconds since the car last wrote to cam_disk.bin, -1 when unknown. */
@@ -44,7 +44,7 @@ export interface PiStatus {
   ether_speed: string
   fan_speed: string
   sbc_model?: string
-  /** Negative integer parsed from iwconfig "Signal level=-48 dBm". Present only on backends ≥ v2.7.4. */
+  /** Negative integer parsed from iwconfig "Signal level=-48 dBm". */
   wifi_signal_dbm?: number
   wifi_rx_bps?: number
   wifi_tx_bps?: number

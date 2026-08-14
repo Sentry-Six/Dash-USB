@@ -47,7 +47,7 @@ function read_setup_variables {
   fi
   if [ -e $setup_file ]
   then
-    # setup_file is effectively a constant, which shellcheck can't see.
+    # setup_file resolves only from the fixed paths above.
     # shellcheck disable=SC1090
     safesource $setup_file
   else
@@ -55,8 +55,6 @@ function read_setup_variables {
     return 1
   fi
 
-  # TODO: change this "declare" to "local" when github updates
-  # to a newer shellcheck.
   declare -A newnamefor
 
   newnamefor[archiveserver]=ARCHIVE_SERVER
@@ -97,9 +95,7 @@ function read_setup_variables {
     fi
   done
 
-  # Defaults for anything the config didn't set. Only variables a script
-  # that sources this file actually reads belong here; the Rust side reads
-  # the conf file directly and never consults this environment.
+  # Defaults only for scripts that source this environment.
   export DASHUSB_HOSTNAME=${DASHUSB_HOSTNAME:-dashusb}
   export NOTIFICATION_TITLE=${NOTIFICATION_TITLE:-${DASHUSB_HOSTNAME}}
   export RTC_BATTERY_ENABLED=${RTC_BATTERY_ENABLED:-false}
@@ -107,9 +103,7 @@ function read_setup_variables {
 
 read_setup_variables
 
-# Mobile push credentials are deliberately NOT stored in dashusb.conf. The
-# daemon-managed JSON file below is the single source of truth, which keeps
-# concurrent conf writes from racing.
+# Mobile push credentials use the daemon-managed JSON store, not shell config.
 NOTIFICATION_CREDENTIALS_JSON="/root/.dashusb/notification-credentials.json"
 if [ "${MOBILE_PUSH_ENABLED:-false}" = "true" ] && [ -f "$NOTIFICATION_CREDENTIALS_JSON" ]; then
   MOBILE_PUSH_DEVICE_ID=$(sed -n 's/.*"device_id" *: *"\([^"]*\)".*/\1/p' "$NOTIFICATION_CREDENTIALS_JSON")
@@ -162,14 +156,13 @@ function losetup_find_show {
   fi
   if [ -n "$loop" ]
   then
-    # losetup failed and the file already had a loop device, so a new one
-    # can't be identified. Report failure rather than guess.
+  # An existing loop prevents identifying any side effect of the failed call.
     return 1
   fi
   local newloop=$(losetup -n -O NAME -j "$lastarg")
   if [ -z "$newloop" ]
   then
-    # losetup truly failed: no loop device was created
+    # No loop device was created.
     return 1
   fi
   echo "$newloop"

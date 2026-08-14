@@ -112,8 +112,7 @@ export default function Dashboard() {
   const [storageBreakdown, setStorageBreakdown] =
     useState<StorageBreakdown | null>(null)
   const [archiveProgress, setArchiveProgress] = useState<ProcessProgress | null>(null)
-  // Shared store keeps this live-synced with the Display & Units controls
-  // in Settings.
+  // Share live unit selection with Settings.
   const { tempF: systemUseFahrenheit } = useUnits()
   const [rtcWarning, setRtcWarning] = useState<string | null>(null)
 
@@ -171,9 +170,7 @@ export default function Dashboard() {
       })
       .catch(() => {})
 
-    // Pause every poller while the tab is hidden (phone in a pocket) so the
-    // dashboard stops hitting the Pi and draining battery for data nobody
-    // is looking at.
+    // Pause network polling while the page is hidden.
     const statusInterval = setInterval(() => {
       if (!document.hidden) fetchStatus()
     }, 2000)
@@ -183,14 +180,12 @@ export default function Dashboard() {
     const storageInterval = setInterval(() => {
       if (!document.hidden) fetchStorageBreakdown()
     }, 10000)
-    // Local-only counter, but skip it while hidden to avoid re-rendering
-    // the dashboard once a second for a backgrounded tab.
+    // Avoid background renders for the local uptime counter.
     const uptimeInterval = setInterval(() => {
       if (!document.hidden) setUptime((p) => p + 1)
     }, 1000)
 
-    // Refresh the tiles the moment the tab is shown again instead of
-    // waiting out the slower intervals.
+    // Refresh immediately when the tab becomes visible.
     const onVisible = () => {
       if (document.hidden) return
       fetchStatus()
@@ -244,7 +239,6 @@ export default function Dashboard() {
     )
   }
 
-  // Banner stack, priority sorted (warn before update).
   const banners: BannerItem[] = []
   if (rtcWarning) {
     banners.push({
@@ -305,8 +299,6 @@ export default function Dashboard() {
   )
 }
 
-// Tiles
-
 function SystemTile({
   status,
   uptime,
@@ -341,10 +333,7 @@ function SystemTile({
           value={`${status.fan_speed} RPM`}
         />
       )}
-      {/* "Connected" requires udc_state == "configured", not just a gadget
-          bound in configfs: a bound gadget with a dead host link is exactly
-          how the car reports an error. Label and colour must derive from the
-          one state value so they cannot drift. */}
+      {/* Host connectivity requires UDC configured, not merely configfs binding. */}
       <Row
         icon={<HardDrive className="h-3.5 w-3.5" />}
         label="USB Drives"
@@ -445,9 +434,7 @@ function NetworkTile({ status }: { status: PiStatus }) {
           )}
         </>
       ) : (
-        // Always render an Ethernet row so the tile stays balanced when only
-        // one interface is up. Muted styling signals the disconnected state
-        // without claiming the tile's halo.
+        // Preserve the tile row while showing disconnected Ethernet as muted.
         <div className="tile-row">
           <span className="inline-flex text-slate-600">
             <EthernetPort className="h-3.5 w-3.5" />
@@ -494,9 +481,7 @@ function StorageTile({
         <span className="text-[11px] text-slate-500">
           / {formatBytes(totalSpace)} · {usedPctStr} used
         </span>
-        {/* High usage alarms new users ("96% used!") even though snapshots
-            rotate automatically as space gets tight. CSS-only group-hover,
-            so no React state is needed. */}
+        {/* Explain high usage because snapshots rotate as space tightens. */}
         <span className="group relative inline-flex items-center self-center">
           <Info
             aria-label="About storage management"

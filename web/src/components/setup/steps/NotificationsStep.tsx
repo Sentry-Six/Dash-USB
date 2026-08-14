@@ -114,7 +114,7 @@ const providers: NotificationProvider[] = [
 ]
 
 function isProviderEnabled(provider: NotificationProvider, data: StepProps["data"]): boolean {
-  // Mobile App has no fields → its enable state must be a real stored toggle.
+  // Mobile App has no credential fields from which to infer enablement.
   if (provider.id === "mobile_push") return data[provider.enableField] === "true"
   const required = requiredByProvider[provider.enableField] ?? provider.fields.map((f) => f.key)
   return required.length > 0 && required.some((k) => (data[k] ?? "").trim() !== "")
@@ -122,7 +122,6 @@ function isProviderEnabled(provider: NotificationProvider, data: StepProps["data
 
 function ProviderCard({ provider, data, onChange, errorFields }: { provider: NotificationProvider; errorFields: Set<string> } & Pick<StepProps, "data" | "onChange">) {
   const enabled = isProviderEnabled(provider, data)
-  // Default expand on enabled providers, but let the user toggle freely.
   const [expanded, setExpanded] = useState(enabled)
   const isMobile = provider.id === "mobile_push"
 

@@ -1,8 +1,5 @@
-// The system allocator is used so the binary works on every Pi kernel
-// regardless of page size (Pi 5 / Bookworm uses 16 KB pages while older
-// Pis use 4 KB pages). A page-size-specific allocator like jemalloc
-// aborts at startup when its compiled-in page size doesn't match the
-// kernel's, which is why we don't use one here.
+// The system allocator supports both the 4 KiB and 16 KiB page sizes used by
+// supported Pi kernels; page-size-specific allocators can abort at startup.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -29,12 +26,8 @@ struct Args {
     #[arg(long)]
     dev: bool,
 
-    /// Optional subcommand. Without one, the HTTP server runs.
-    ///
-    /// Subcommands are invoked by the `/root/bin/{make,release}_snapshot.sh`,
-    /// `enable/disable_gadget.sh`, and `manage_free_space.sh` wrappers
-    /// installed by the setup wizard. archiveloop calls those wrappers
-    /// every cycle, so these subcommands keep the archive flow alive.
+    /// Optional command used by the installed gadget and archive wrappers.
+    /// Without one, the HTTP server runs.
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -78,7 +71,7 @@ enum GadgetAction {
 enum SnapshotAction {
     /// Create a new reflink snapshot of `/backingfiles/cam_disk.bin`.
     Make {
-        /// Reserved for future compat (e.g. `nofsck`); ignored for now.
+        /// Accepted but ignored for wrapper CLI compatibility.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -102,13 +95,9 @@ enum SpaceAction {
 
 #[tokio::main]
 async fn main() {
-    // Boot-phase timer. Lets us attribute the gap between systemd
-    // "Started dashusb.service" and the UDC bind in the journal.
-    // Each `phase!` call emits `boot_phase=NAME elapsed_ms=N` so it's
-    // greppable: `journalctl -b -u dashusb.service | grep boot_phase`.
+    // Record startup phases so journal logs expose delays before the UDC bind.
     let t0 = std::time::Instant::now();
 
-    // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -126,55 +115,41 @@ async fn main() {
     let args = Args::parse();
     phase!("args_parsed");
 
-    // The /root/bin/ wrappers expect subcommands to run to completion
-    // synchronously and exit with a status code.
+    // Installed wrappers require a synchronous exit status.
     if let Some(cmd) = args.command {
         std::process::exit(run_subcommand(cmd).await);
     }
 
     info!("DashUSB server starting on port {}", args.port);
 
-    // Run startup migration in background
     tokio::spawn(async {
         migrate::run_startup_migration().await;
     });
 
-    // Boot-time timezone safety net: if setup left TIME_ZONE=auto unresolved
-    // (no network during setup → Pi stuck on UTC → drive telemetry mis-links),
-    // re-resolve once now. Non-blocking; no-op once a real zone is set.
+    // Retry unresolved automatic timezones without blocking startup.
     tokio::spawn(async {
         sentryusb_setup::system::ensure_timezone_resolved().await;
     });
 
-    // Periodic malloc_trim releases heap pages glibc would otherwise keep
-    // cached in its per-arena free lists. With MALLOC_ARENA_MAX=2 from the
-    // systemd unit, this keeps RSS bounded across burst workloads like clip
-    // ingest. No-op on non-glibc targets.
+    // Return cached glibc heap pages after burst workloads.
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     tokio::spawn(async {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(300));
         tick.tick().await; // skip the first immediate tick
         loop {
             tick.tick().await;
-            // SAFETY: malloc_trim is thread-safe (takes the arena mutex
-            // internally per glibc docs) and we call it from a tokio task,
-            // never a signal handler. Returns 1 if memory was released, 0
-            // if not.
+            // SAFETY: glibc documents malloc_trim as thread-safe; this runs in
+            // a task, not a signal handler.
             unsafe { libc::malloc_trim(0); }
         }
     });
 
-    // Publish the active vehicle profile to the bash side (archiveloop
-    // sources /root/bin/profile_env.sh). Rewritten only when content
-    // differs, so OTA updates propagate profile changes without a
-    // setup re-run.
+    // Keep archiveloop's generated profile environment current across updates.
     sentryusb_vehicle_profile::write_profile_env();
 
-    // Initialize auth
     let auth = sentryusb_api::init_auth();
     phase!("auth_initialized");
 
-    // WebSocket hub
     let hub = sentryusb_ws::Hub::new();
 
     phase!("processor_initialized");
@@ -188,19 +163,14 @@ async fn main() {
     // Resume setup if it was interrupted by a reboot (e.g. dwc2 overlay, root shrink)
     sentryusb_api::setup::auto_resume_setup(hub.clone());
 
-    // Fire the anonymous install beacon once per install (gated by
-    // /mutable/.beaconed). No fingerprint and no identifier: just an
-    // incrementing counter on the support server. Opted-in update-check
-    // telemetry is separate, in check_for_update().
+    // The once-per-install beacon has no fingerprint or identifier; update
+    // telemetry is separately opt-in.
     sentryusb_api::update::spawn_install_beacon();
 
-    // Boot-time storage auto repair (opt-in via the storage_auto_repair
-    // preference). Detects a /backingfiles that failed to mount at boot
-    // and runs the guarded xfs_repair ladder; see api::storage_repair.
+    // Run the opt-in boot repair check for an unmounted /backingfiles.
     sentryusb_api::storage_repair::spawn_boot_check(hub.clone());
     phase!("startup_tasks_spawned");
 
-    // Build the API router
     let mut app = sentryusb_api::build_router(app_state.clone());
 
     // Serve recording video files via the bind mount of
@@ -210,7 +180,6 @@ async fn main() {
         tower_http::services::ServeDir::new("/var/www/html/Recordings"),
     );
 
-    // Static file serving with SPA fallback (unless dev mode)
     if !args.dev {
         app = app.fallback(embed::spa_handler);
         info!("Serving embedded static files");
@@ -218,20 +187,9 @@ async fn main() {
         info!("Running in development mode (no static file serving)");
     }
 
-    // MUST be applied after every route is registered: axum's
-    // `Router::layer` only wraps routes that already exist at call time.
-    //
-    // The predicate skips bodies that are already compressed (video, image,
-    // zip) and octet-stream, which has no Content-Length and would otherwise
-    // be gzip-streamed in full on every /api/files/download.
-    //
-    // Size floor is 1024 rather than tower-http's 32: sub-1 KB JSON costs
-    // more CPU to compress than it saves.
-    //
-    // Brotli quality 6, not the default 11. Quality 11 adds 100-200 ms per
-    // large JSON response on a Pi Zero 2W for ~5% more compression. Assets
-    // pre-compressed at build time already carry Content-Encoding, so
-    // tower-http skips them here.
+    // Apply after registering routes because Router::layer wraps only existing
+    // routes. Skip compressed/streaming media, avoid sub-1 KiB CPU overhead,
+    // and use Brotli quality 6 to keep Pi response latency bounded.
     let compression = CompressionLayer::new()
         .br(true)
         .gzip(true)
@@ -249,7 +207,6 @@ async fn main() {
     );
     app = app.layer(compression);
 
-    // Auth middleware
     app = app.layer(axum::middleware::from_fn_with_state(
         auth,
         sentryusb_api::auth::auth_middleware,
@@ -280,8 +237,7 @@ async fn main() {
 }
 
 async fn shutdown_signal() {
-    // systemd stops the service with SIGTERM. Without handling it, the
-    // graceful drain below only ran on interactive Ctrl+C.
+    // systemd uses SIGTERM; interactive sessions use Ctrl+C.
     #[cfg(unix)]
     {
         let mut sigterm =
@@ -299,10 +255,8 @@ async fn shutdown_signal() {
     info!("Shutdown signal received, draining connections...");
 }
 
-/// Dispatch a subcommand. Returns the exit code the wrapper scripts should
-/// propagate back to their caller. `0` on success; `1` (or a shell-friendly
-/// non-zero) on failure. Errors are printed to stderr so archiveloop's
-/// existing `ERROR: make_snapshot.sh failed (exit $?)` log lines stay useful.
+/// Dispatch a wrapper command, returning its shell exit status and writing
+/// failures to stderr for archiveloop diagnostics.
 async fn run_subcommand(cmd: Command) -> i32 {
     match cmd {
         Command::Gadget { action } => run_gadget(action).await,
@@ -312,9 +266,7 @@ async fn run_subcommand(cmd: Command) -> i32 {
 }
 
 async fn run_gadget(action: GadgetAction) -> i32 {
-    // usb_gadget::enable/disable are synchronous and touch configfs; run
-    // them on a blocking thread so they don't panic inside a tokio worker
-    // on slow udc bind retries.
+    // configfs operations are synchronous and may block during UDC retries.
     let result = match action {
         GadgetAction::Enable { .. } => {
             tokio::task::spawn_blocking(sentryusb_gadget::enable).await
@@ -339,10 +291,7 @@ async fn run_gadget(action: GadgetAction) -> i32 {
 async fn run_snapshot(action: SnapshotAction) -> i32 {
     match action {
         SnapshotAction::Make { args } => {
-            // archiveloop calls `make_snapshot.sh nofsck` after a reboot
-            // to skip the redundant fsck pass; treat anything else
-            // (including bare "fsck" or no arg) as fsck-on. The bash
-            // wrapper forwards `"$@"` so the first arg is what landed.
+            // Only an explicit `nofsck` from archiveloop skips the check.
             let skip_fsck = args.iter().any(|a| a.eq_ignore_ascii_case("nofsck"));
             match sentryusb_gadget::snapshot::make_snapshot(skip_fsck).await {
                 Ok(Some(name)) => {
@@ -350,9 +299,7 @@ async fn run_snapshot(action: SnapshotAction) -> i32 {
                     0
                 }
                 Ok(None) => {
-                    // Snapshot was identical to the previous one and
-                    // discarded. Print nothing: callers capturing stdout
-                    // see an empty string and skip.
+                    // Empty stdout tells the wrapper no snapshot was retained.
                     0
                 }
                 Err(e) => {
@@ -376,10 +323,8 @@ async fn run_snapshot(action: SnapshotAction) -> i32 {
 async fn run_space(action: SpaceAction) -> i32 {
     match action {
         SpaceAction::Manage { args } => {
-            // A present-but-unparseable reserve must NOT silently fall back to
-            // the built-in default: archiveloop and this path would then be
-            // enforcing different reserves, with nothing in the log to say so.
-            // Fail loudly instead.
+            // Reject invalid explicit reserves instead of diverging from
+            // archiveloop's space policy.
             let reserve = match args.first().map(|a| (a, a.parse::<u64>())) {
                 None => Ok(None),
                 Some((_, Ok(v))) => Ok(Some(v)),

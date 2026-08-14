@@ -10,10 +10,7 @@ then
   exit 0
 fi
 
-# Re-read the display unit from the conf on every call so a settings change
-# reaches this long-running monitor without a reboot. Parse only this one key:
-# sourcing the whole conf mid-flight would re-export archive/WiFi state.
-# Falls back to the boot-time env, then Celsius.
+# Re-read only the temperature unit so changes apply without re-exporting config.
 function current_unit() {
   local unit
   unit=$(sed -n "s/^export TEMPERATURE_UNIT=[\"']\?\([CFcf]\).*/\1/p" /root/dashusb.conf 2>/dev/null | tail -1)
@@ -75,8 +72,7 @@ do
     fi
   fi
 
-  # TEMPERATURE_INTERVAL is in minutes; counter is in seconds and advances 60
-  # per iteration.
+  # Convert the minute interval to this loop's seconds counter.
   if [[ ! ( -z "${TEMPERATURE_INTERVAL:+x}" ) ]]
   then
     counter_mod=$((counter % (TEMPERATURE_INTERVAL * 60)))

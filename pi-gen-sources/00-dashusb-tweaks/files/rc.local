@@ -1,17 +1,5 @@
 #!/bin/bash -e
-#
-# rc.local
-#
-# This script is executed at the end of each multiuser runlevel.
-# Make sure that the script will "exit 0" on success or any other
-# value on error.
-#
-# In order to enable or disable this script just change the execution
-# bits.
-#
-# By default this script does nothing.
-
-# Print the IP address
+# Report the assigned address during boot.
 _IP=$(hostname -I) || true
 if [ "$_IP" ]
 then
@@ -107,7 +95,7 @@ function enable_wifi () {
         cp /dashusb/wpa_supplicant.conf /etc/wpa_supplicant/wpa_supplicant.conf
       fi
 
-      # set the host name now if possible, so it's effective immediately after the reboot
+      # Persist the hostname before rebooting.
       local old_host_name
       old_host_name=$(cat /etc/hostname)
       if [[ -n "$DASHUSB_HOSTNAME" ]] && [[ "$DASHUSB_HOSTNAME" != "$old_host_name" ]]
@@ -162,9 +150,7 @@ then
   fi
   mv /dashusb/dashusb.conf /root/
   dos2unix /root/dashusb.conf
-  # The conf is used for WiFi/hostname below. Setup itself is owned
-  # exclusively by the daemon (web wizard / auto-resume) — rc.local
-  # never orchestrates it.
+  # rc.local consumes only WiFi and hostname settings; the daemon owns setup.
 fi
 if [ -e "/root/dashusb.conf" ]
 then
@@ -176,15 +162,8 @@ else
   setup_progress "no config file found."
 fi
 
-# check if we previously marked wifi as enabled
 enable_wifi
-# Good to start setup at this point
 
-# Setup runs exclusively through the dashusb daemon (web wizard, or its
-# auto-resume of an interrupted run). The legacy bash setup orchestrator
-# was removed in the Dash USB fork — one orchestrator, no races.
-
-# we're done. If setup completed successfully, dashusb will have been
-# started as a systemd service at this point
+# The daemon exclusively owns setup and interrupted-run recovery.
 
 exit 0

@@ -66,9 +66,7 @@ pub struct NotifyConfig {
     pub sns_enabled: bool,
     pub sns_topic_arn: String,
     pub sns_region: String,
-    // Passed to the SNS signer explicitly: systemd starts the server
-    // without sourcing dashusb.conf, so env-only AWS credential lookups
-    // never resolve on a normal install (see sns.rs).
+    // Pass config credentials explicitly because systemd does not source them.
     pub sns_access_key: String,
     pub sns_secret_key: String,
 
@@ -183,25 +181,19 @@ pub struct NotifyRequest<'a> {
     pub message: &'a str,
     /// `start` or `finish`. Drives the live_activity branch on mobile push.
     pub type_hint: Option<&'a str>,
-    /// Category (`archive_start`, `temperature`, `drives`). Echoed to the
-    /// push server and used for the gate check upstream.
+    /// Category forwarded to the push server and used for upstream gating.
     pub notification_type: Option<&'a str>,
     /// Total clip count for the pending archive run. Enables the
     /// live_activity payload on `archive_start`.
     pub archive_total_count: Option<u32>,
 }
 
-/// Shared outbound client, built once on first send and reused for the
-/// life of the process. Rebuilding it would stand up a fresh TLS pool,
-/// DNS cache and idle connection pool per sentry event.
+/// Process-wide outbound client with shared TLS and connection pools.
 static NOTIFY_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
 
 fn notify_client() -> &'static reqwest::Client {
     NOTIFY_CLIENT.get_or_init(|| {
-        // Panic rather than fall back to `Client::default()`: the default
-        // builder discards the timeouts below, so a TLS init failure would
-        // yield a no-timeout client that hangs a tokio worker indefinitely
-        // on a misconfigured push endpoint.
+        // Never fall back to a client without the bounded timeout.
         reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .connect_timeout(std::time::Duration::from_secs(10))
@@ -223,11 +215,8 @@ pub async fn send_to_all_with_context(
     let title = req.title;
     let message = req.message;
 
-    // Dispatch concurrently so total latency is the slowest channel, not
-    // the sum: each send is an independent HTTP call with its own 30s
-    // timeout, and a slow or unreachable Discord/Gotify endpoint must not
-    // delay a time-sensitive mobile push. Per-provider results and their
-    // ordering are unchanged for callers.
+    // Independent channels run concurrently so one endpoint cannot delay all
+    // notifications; preserve configured result ordering below.
     let mut sends: Vec<(&'static str, String, BoxFuture<'_, Result<()>>)> = Vec::new();
 
     if config.pushover_enabled {

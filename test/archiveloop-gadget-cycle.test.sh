@@ -1,19 +1,13 @@
 #!/bin/bash
-# Focused tests for redundant USB gadget reconnect reduction.
-#
-# connect_usb_drives_to_host is NOT idempotent — it tears the gadget down and
-# re-presents it. A single archive cycle called it twice (once after
-# archive_clips, again in the outer loop), so a zero-clip cycle at home
-# re-enumerated the drive for nothing and the recorder briefly lost it.
-# ensure_usb_drives_connected must connect only when the gadget is down.
+# `connect_usb_drives_to_host` re-enumerates the gadget. These tests require
+# `ensure_usb_drives_connected` to call it only while the gadget is down.
 #
 # Usage: bash test/archiveloop-gadget-cycle.test.sh [path/to/archiveloop]
 set -euo pipefail
 
 script=${1:-run/archiveloop}
 
-# Pull the real function bodies out of the script so the test cannot drift
-# from the shipped implementation.
+# Exercise function bodies extracted from the shipped script.
 eval "$(awk '
   /^function ensure_usb_drives_connected / {keep=1}
   keep {print}
@@ -36,8 +30,7 @@ connect_usb_drives_to_host_locked() {
   connect_calls=$((connect_calls + 1))
   usb_active=true
 }
-# The real one takes flock on a lock file; the ordering it guarantees is not
-# what these tests exercise.
+# Lock ordering is outside these connection-state tests.
 with_gadget_lock() { "$@"; }
 
 failures=0
@@ -73,16 +66,14 @@ ensure_usb_drives_connected
 check "inactive gadget is reconnected" 1 "$connect_calls"
 check "gadget ends up active" true "$usb_active"
 
-# The regression itself: the post-archive call and the outer-loop call in the
-# same cycle must together produce exactly one connect.
+# Multiple calls in one cycle must produce at most one connection.
 reset
 usb_active=false
 ensure_usb_drives_connected   # post-archive (run_archive_cycle)
 ensure_usb_drives_connected   # outer loop
 check "double call in one cycle connects once" 1 "$connect_calls"
 
-# The zero-clip case that raised the vehicle storage alert: nothing ever
-# disconnected, so nothing should reconnect.
+# A zero-clip cycle never disconnects and therefore must not reconnect.
 reset
 usb_active=true
 ensure_usb_drives_connected

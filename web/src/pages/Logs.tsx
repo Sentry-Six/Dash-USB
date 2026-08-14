@@ -10,14 +10,7 @@ const logTabs = [
 
 const SCROLL_THRESHOLD = 60
 
-// Log line parser.
-//
-// Untagged:  "Fri 20 Mar 21:27:22 PDT 2026: some message"
-// Tagged:    "Mon 21 Mar 14:30:45 UTC 2026: [drive-map] message"
-// Format:     Day DD Mon HH:MM:SS TZ YYYY:
-//
-// Extracts the time (HH:MM:SS), an optional [tag] and the message, then
-// classifies the level by keyword for color coding.
+// Parse `Day DD Mon HH:MM:SS TZ YYYY: [optional-tag] message`.
 
 type LogLevel = "error" | "warning" | "success" | "info" | "debug" | "default"
 
@@ -31,8 +24,7 @@ interface ParsedLine {
   fullTs: number // parsed timestamp in ms, 0 when the line has none
 }
 
-// Matches: "Day DD Mon HH:MM:SS TZ YYYY:" at the start of a line
-// Captures: (DD) (Mon) (HH:MM:SS) (YYYY)
+// Captures day, month, time, and year.
 const TIMESTAMP_RE =
   /^[A-Z][a-z]{2}\s+(\d{1,2})\s+([A-Z][a-z]{2})\s+(\d{2}:\d{2}:\d{2})\s+\w+\s+(\d{4}):\s*/
 
@@ -41,7 +33,6 @@ const MONTH_INDEX: Record<string, number> = {
   Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
 }
 
-// Matches a [tag] prefix after the timestamp
 const TAG_RE = /^\[([^\]]+)\]\s*/
 
 function classifyLevel(message: string, tag: string): LogLevel {
@@ -110,7 +101,7 @@ function classifyLevel(message: string, tag: string): LogLevel {
   )
     return "success"
 
-  // Any tagged line counts as info, as do these keywords.
+  // Tagged and recognized operational lines are informational.
   if (
     tag ||
     lower.includes("starting") ||
@@ -207,7 +198,6 @@ function FormattedLog({ content }: { content: string }) {
     return content.split("\n").map((line) => parseLine(line))
   }, [content])
 
-  // Plain loop, not a .map closure, so the accumulators stay render-local.
   const rows: ReactNode[] = []
   let prevDate = ""
   let inBootCycle = false // true after the first timestamped entry
@@ -219,9 +209,8 @@ function FormattedLog({ content }: { content: string }) {
       continue
     }
 
-    // Boot cycle separator (====== lines from archiveloop)
     if (parsed.raw.trim().startsWith("=====")) {
-      prevDate = "" // new boot cycle
+      prevDate = ""
       inBootCycle = false
       rows.push(
         <span key={i} className="block border-b border-slate-700/40 my-3" />
@@ -265,12 +254,10 @@ export default function Logs() {
 
   const activeLog = logTabs.find((t) => t.id === activeTab)!
 
-  // archiveloop and setup share the timestamp format. Diagnostics is a
-  // structured system-info dump, so it stays raw.
+  // Diagnostics is structured system information and stays raw.
   const shouldFormat = activeTab === "archiveloop" || activeTab === "setup"
 
-  // With flex-direction: column-reverse, scrollTop is 0 at the bottom
-  // and becomes negative as you scroll up.
+  // With column-reverse, scrollTop is zero at the bottom and negative above it.
   const handleScroll = useCallback(() => {
     const el = preRef.current
     if (!el) return
@@ -389,7 +376,6 @@ export default function Logs() {
         </div>
       </div>
 
-      {/* Tab bar */}
       <div className="flex gap-1">
         {logTabs.map((tab) => (
           <button
@@ -407,7 +393,6 @@ export default function Logs() {
         ))}
       </div>
 
-      {/* Log output */}
       <div className="glass-card relative flex-1 overflow-hidden">
         <pre
           ref={preRef}

@@ -8,9 +8,7 @@ fi
 
 export LOG_FILE=/mutable/archiveloop.log
 
-# Truncate the log if it can't be opened for append (/mutable full or the
-# file damaged) so archiveloop starts instead of crash-looping. log() uses
-# `|| true`, so a later write failure can't kill the script either.
+# Recover an unappendable log without crash-looping the archive service.
 if ! : >> "$LOG_FILE" 2>/dev/null; then
   : > "$LOG_FILE" 2>/dev/null || true
 fi
@@ -28,8 +26,7 @@ function log () {
 
 function log_errors_on_exit {
   log "archiveloop exited with code $1. Recent errors follow"
-  # Must name the live unit, dashusb-archive (see crates/setup
-  # install_archive_service), or this dump comes back empty.
+  # Query the installed archive unit, not this script's filename.
   journalctl -n 15 -u dashusb-archive >> "$LOG_FILE" 2>/dev/null || true
   log "end of errors."
   exit "$1"
@@ -45,7 +42,6 @@ then
       ;;
   esac
   then
-    # success
     log_errors_on_exit 0
   fi
 fi
@@ -54,16 +50,10 @@ export CAM_MOUNT=/mnt/cam
 
 source /root/bin/envsetup.sh
 
-# Gadget-cycle lock shared with the daemon's enable/disable handlers.
-# MUST match GADGET_CYCLE_LOCK_PATH in crates/usb_gadget/src/cycle_lock.rs.
-# set -u is active, so losing this definition crash-loops the service before
-# the gadget comes up and the car never sees a drive.
+# Shared with GADGET_CYCLE_LOCK_PATH in crates/usb_gadget/src/cycle_lock.rs.
 GADGET_CYCLE_LOCK=/tmp/sentryusb_gadget_cycle.lock
 
-# Vehicle-profile defaults (RECORDINGS_TREE, RECORDING_ROOT, CAM_MIN_FREE_BYTES,
-# SNAPSHOT_INTERVAL_DEFAULT, RECORDINGS_ARCHIVE_DEFAULT, CLIP_MIN_BYTES).
-# Written by the daemon at startup; user conf still wins everywhere via
-# ${VAR:-$VAR_DEFAULT}.
+# Daemon-generated profile defaults; explicit user configuration wins.
 source /root/bin/profile_env.sh 2>/dev/null || true
 
 if ! grep -q timer "$STATUSLED/trigger"
@@ -120,16 +110,10 @@ function fix_errors_in_image () {
   log "Finished fsck on $image."
 }
 
-# Travel Mode: the archive target is always reachable (car hotspot, VPN,
-# tethered phone), so the normal park-at-home rhythm never fires. Reads
-# TRAVEL_MODE_ENABLED from the config rather than the environment so the
-# Settings toggle applies without restarting archiveloop. Config paths match
-# sentryusb_config::find_config_path(); first existing file wins.
+# Travel Mode supports always-reachable networks. Read config directly so the
+# Settings toggle applies without restarting; first existing path wins.
 function travel_mode_active () {
-  # Cached for TRAVEL_MODE_CACHE_TTL seconds: archive_is_reachable consults
-  # this, and the reachability waits call that once a second, so an uncached
-  # read would source a config file at 1 Hz forever. The TTL keeps the
-  # Settings toggle effectively live without the churn.
+  # Cache to avoid sourcing configuration in every one-second reachability poll.
   local now=$SECONDS
   if [ -n "${_TM_CACHE_AT:-}" ] && \
      [ $((now - _TM_CACHE_AT)) -lt "${TRAVEL_MODE_CACHE_TTL:-5}" ] && \
@@ -141,9 +125,7 @@ function travel_mode_active () {
   for conf in /root/dashusb.conf /boot/firmware/dashusb.conf /boot/dashusb.conf
   do
     [ -f "$conf" ] || continue
-    # Isolated subshell so bash itself parses export/quoting, no side effects.
-    # `|| true` guards the parent: a conf that exits non-zero would otherwise
-    # abort archiveloop under `set -e`.
+    # Source in a subshell so quoting is parsed without side effects or set -e exit.
     val=$( set +eu; . "$conf" >/dev/null 2>&1; printf '%s' "${TRAVEL_MODE_ENABLED:-}" ) || true
     case "${val,,}" in
       yes|true|1|on) rc=0 ;;
@@ -155,15 +137,13 @@ function travel_mode_active () {
   return "$rc"
 }
 
-# Seconds between Travel Mode cycles. TRAVEL_MODE_INTERVAL is an undocumented
-# power-user override; otherwise pace with the user's snapshot interval.
+# Optional Travel Mode interval; otherwise use the snapshot interval.
 function travel_mode_interval () {
   local v="${TRAVEL_MODE_INTERVAL:-${SNAPSHOT_INTERVAL:-${SNAPSHOT_INTERVAL_DEFAULT:-900}}}"
   case "$v" in
     ''|*[!0-9]*) v=900 ;;
   esac
-  # Base 10 explicitly: a leading zero would otherwise be read as octal, and
-  # "0900" is an invalid octal literal that aborts the script under set -e.
+  # Force base 10 so zero-padded values are not parsed as octal.
   v=$((10#$v))
   if [ "$v" -lt 60 ] || [ "$v" -gt 86400 ]; then v=900; fi
   echo "$v"
@@ -203,13 +183,8 @@ function archive_is_reachable () {
   true
 }
 
-# Replaces wait_for_archive_to_be_unreachable when Travel Mode is on. An
-# always-on link never goes unreachable, so that wait would block forever and
-# halt snapshotting; sleep a bounded interval instead and let the next
-# iteration snapshot and upload whatever the car has written since.
-#
-# A failed cycle retries sooner than a full interval so a brief dropout (a
-# tunnel, a dead zone) does not cost a whole snapshot window of footage.
+# Pace always-on links instead of waiting forever for unreachability. Failed
+# cycles retry sooner than a full interval.
 function travel_mode_pace () {
   local interval
   if [ "${ARCHIVE_CYCLE_FAILED:-0}" = "1" ]; then
@@ -220,10 +195,7 @@ function travel_mode_pace () {
     log "Travel Mode: next snapshot and archive in ${interval}s"
   fi
 
-  # Sleep in slices, watching for the canary that POST /api/system/trigger-sync
-  # drops. Normal mode consumes it inside the reachability waits; Travel Mode
-  # idles here instead, so without this check "Archive Sync" would do nothing
-  # until the interval expired.
+  # Sleep in slices so the manual-sync canary interrupts Travel Mode pacing.
   local deadline=$((SECONDS + interval))
   local remaining slice
   while [ "$SECONDS" -lt "$deadline" ]; do
@@ -256,11 +228,7 @@ function connect_usb_drives_to_host() {
 function connect_usb_drives_to_host_locked() {
   clear_archive_status
   log "Connecting usb to host..."
-  # Tear the USB gadget down before touching the cam disk image. If
-  # clean_cam_mount was skipped (archive went unreachable while the car drove
-  # away) the gadget is still active, and mounting cam_disk.bin for the sync
-  # below would give the Pi and the car simultaneous access to the same block
-  # device: corrupted filesystem, car stops writing dashcam footage.
+  # Never mount cam_disk.bin while the car can access the gadget.
   if /root/bin/disable_gadget.sh 2>/dev/null; then
     log "Disabled stale USB gadget before sync"
     fix_errors_in_images
@@ -273,24 +241,18 @@ function connect_usb_drives_to_host_locked() {
 }
 
 function run_archive_cycle () {
-  # Export the relaxed probe deadline for the whole cycle so child scripts
-  # inherit it. The rclone transfer monitor probes reachability to decide
-  # whether to kill an in-flight upload; at the 1 s default a slow cellular
-  # link reads as dead and the transfer dies mid-flight.
+  # Give Travel Mode child probes enough time for slow cellular links.
   if travel_mode_active; then
     export ARCHIVE_PING_TIMEOUT="${ARCHIVE_PING_TIMEOUT:-4}"
   fi
 
-  # Records the outcome in ARCHIVE_CYCLE_FAILED and swallows the failure so
-  # `set -e` can't abort the main loop.
+  # Record failure without allowing set -e to terminate the loop.
   ARCHIVE_CYCLE_FAILED=0
   archive_clips || ARCHIVE_CYCLE_FAILED=1
 }
 
 function wifi_cycle () {
-  # Only needed when ap0 exists: it shares the radio with wlan0 and pins it to
-  # the AP channel, so wlan0 can't scan other channels for the home network.
-  # Without ap0, NetworkManager handles reconnection on its own.
+  # ap0 pins the shared radio channel; otherwise NetworkManager reconnects wlan0.
   if ! iw dev ap0 info &>/dev/null; then
     return
   fi
@@ -333,12 +295,10 @@ function wait_for_archive_to_be_reachable () {
       rm /tmp/archive_is_reachable
       break
     fi
-    # WiFi recovery while waiting for home network.
     scan_counter=$((scan_counter + 1))
     if (( scan_counter % 30 == 0 )); then
       nmcli device wifi rescan 2>/dev/null || true
     fi
-    # wifi_cycle only needed if ap0 somehow still exists
     if (( scan_counter % 300 == 0 )) && iw dev ap0 info &>/dev/null; then
       log "Archive still unreachable after ${scan_counter}s, cycling WiFi..."
       wifi_cycle
@@ -424,9 +384,7 @@ function wait_for_archive_to_be_unreachable () {
   log "Waiting for archive to be unreachable..."
   while true
     do
-      # Travel Mode may be switched on while parked here. Without this the
-      # toggle would not take effect until the link dropped or the service
-      # restarted, which on an always-on link means never.
+      # Apply Travel Mode while an always-on link remains reachable.
       if travel_mode_active
       then
         log "Travel Mode enabled while waiting; resuming paced cycles."
@@ -465,15 +423,8 @@ function check_if_usb_gadget_is_mounted () {
   connect_usb_drives_to_host
 }
 
-# Present the drive only if it isn't already presented.
-#
-# connect_usb_drives_to_host is NOT idempotent: it tears the gadget down and
-# re-presents it. A single archive cycle used to call it twice — once after
-# archive_clips and again in the outer loop — so on a zero-clip cycle at home
-# the car saw a pointless USB re-enumeration, the recorder briefly lost its
-# drive, and the vehicle could raise a storage alert. The state is checked
-# INSIDE the gadget lock so a concurrent cycler can't flip it between the
-# test and the connect.
+# Avoid needless USB re-enumeration. Check state inside the cycle lock to close
+# the concurrent-cycler race.
 function ensure_usb_drives_connected () {
   with_gadget_lock ensure_usb_drives_connected_locked
 }
@@ -601,8 +552,7 @@ function archive_progress_monitor () {
     done < "$listfile"
     write_archive_status "{\"phase\":\"archiving\",\"current\":$done,\"total\":$total}"
 
-    # Mirror progress to /mutable so a mid-batch reboot leaves a record the
-    # next run can surface in its start notification. Atomic write.
+    # Atomically persist progress for recovery after a mid-batch reboot.
     echo "{\"phase\":\"archiving\",\"current\":$done,\"total\":$total}" > /mutable/archive_in_progress.json.tmp \
       && mv /mutable/archive_in_progress.json.tmp /mutable/archive_in_progress.json
 
@@ -641,8 +591,7 @@ function clean_cam_mount {
   log "cleaning cam mount"
   ensure_cam_file_is_mounted
 
-  # Delete the files fsck "recovered". They are generally files the car or
-  # DashUSB had already deleted.
+  # Remove filesystem-recovered remnants.
   find "${CAM_MOUNT}" \( \( -type f -name FSCK\*.REC \) -o \( -type f -name "*~[0-9].MP4" \) \) -print0 | xargs -0 rm -rf
 
   # Delete short recordings
@@ -650,10 +599,7 @@ function clean_cam_mount {
 
   if [ "$mode" = "freespace" ]
   then
-    # Remove files, oldest first, until the car's available-space check is
-    # comfortably satisfied. GM refuses to record below 32 GB free; the floor
-    # comes from the vehicle profile via profile_env.sh (CAM_MIN_FREE_BYTES,
-    # default 32 GiB).
+  # Remove oldest files until the profile's vehicle free-space floor is met.
  
     (cd "${CAM_MOUNT}"; find . -type f -a -path "./${RECORDING_ROOT:-}*" -printf '%P\0') > /tmp/rmcandidates.txt
     if [ -s /tmp/rmcandidates.txt ]
@@ -676,7 +622,7 @@ function clean_cam_mount {
     rm -f /tmp/rmcandidates.txt /tmp/rmcandidatesbytime.txt
   fi
 
-  # delete directories that are now empty (never the recording root itself)
+  # Delete empty descendants, never the recording root.
   if [ -n "${RECORDING_ROOT:-}" ] && [ -d "$CAM_MOUNT/$RECORDING_ROOT" ]; then
     find "$CAM_MOUNT/$RECORDING_ROOT" -mindepth 1 -type d -empty -delete || true
   fi
@@ -689,20 +635,8 @@ function clean_cam_mount {
   log "done cleaning cam mount"
 }
 
-# On-drive directory structure (GM Surround Vision profile):
-#   <RECORDING_ROOT>/            Android/media/…/SurroundVisionRecorder
-#     FRONT_YYYY_MM_DD_T_HH_MM_SS.mp4
-#     LEFT_…  RIGHT_…  REAR_…    one file per camera per 5-min segment
-# The car rolling-deletes files older than its firmware window (2 h).
-
-# SoC temperature from the thermal zone, formatted like temperature_monitor's
-# output. Echoes nothing on devices with no thermal sensor. Call it inline at
-# the failure site so the value predates the chip cooling down: overheating
-# (WiFi drop / throttling) is a common cause of archive failures, and the
-# periodic monitor samples only once a minute.
-# TEMPERATURE_UNIT ("F" for Fahrenheit, else Celsius) is re-read live from
-# dashusb.conf so a settings change needs no reboot. Parse only that one key;
-# never re-source the whole conf mid-flight.
+# Sample SoC temperature at failure time and re-read only TEMPERATURE_UNIT;
+# periodic monitoring may miss a short heat-related failure.
 function soc_temperature () {
   local zone=/sys/class/thermal/thermal_zone0/temp
   [ -e "$zone" ] || return 0
@@ -740,11 +674,8 @@ function archive_recordings () {
   local -r reclist_previously_archived=/mutable/recordings_archived
   local -r ignorelist=/tmp/ignore_files
 
-  # Every file the snapshot link farm captured is a candidate: the car
-  # rolling-deletes the source, so "archive everything" IS the product.
-  # ARCHIVE_RECORDINGS=false in the conf opts out (local snapshots only); the
-  # default comes from the vehicle profile via profile_env.sh.
-  # Match by name only. Following the symlinks here would mount every snapshot.
+  # Archive all snapshot-linked recordings unless explicitly disabled. Match
+  # names without following links, which would mount every snapshot.
   if [ "${ARCHIVE_RECORDINGS:-${RECORDINGS_ARCHIVE_DEFAULT:-true}}" = "true" ]
   then
     (cd "$overlaylower"; find . -path "./Continuous/*" -type l -fprintf "$reclist" '%P\n')
@@ -757,17 +688,13 @@ function archive_recordings () {
     cp "${reclist_previously_archived}" "${reclist_archived}"
   fi
 
-  # Drop ledger entries whose files are gone from the snapshots, so the
-  # dedup ledger doesn't grow without bound.
+  # Bound the dedup ledger to files still present in snapshots.
   intersect "${reclist_archived}" "${reclist}"
 
   # Remove previously-archived files from the candidate list.
   prunefile "${reclist}" "${reclist_archived}"
 
-  # ${reclist} now holds only files that haven't been archived. Drop .mp4s
-  # under CLIP_MIN_BYTES: truncated tails from a power cut. This needs the
-  # link targets, so one batched `stat -L` walks the whole list; `-d '\n'`
-  # keeps one path per line, and broken symlinks drop out via stat's error.
+  # Drop unarchived clips below CLIP_MIN_BYTES using one batched link-following stat.
   if [ -s "${reclist}" ]
   then
     (cd "$overlaymerged"; xargs -a "${reclist}" -d '\n' stat -L --format='%s %n' 2>/dev/null) \
@@ -795,8 +722,7 @@ function archive_recordings () {
     local message="Archiving $total_count file(s)"
     local fail_temp=""
 
-    # Surface how many files a prior interrupted run (e.g. reboot) completed.
-    # The progress monitor persists that count every 5s.
+    # Surface completed work from an interrupted prior run.
     local prior_done=0
     if [ -r /mutable/archive_in_progress.json ]; then
       prior_done=$(sed -n 's/.*"current":\([0-9]\+\).*/\1/p' /mutable/archive_in_progress.json)
@@ -863,15 +789,14 @@ function archive_recordings () {
       fi
     done < ${reclist}
 
-    # copy the list of archived files back to /mutable if it has changed
+    # Persist a changed archive ledger.
     if ! diff -q -N "${reclist_archived}" "${reclist_previously_archived}" > /dev/null
     then
         cp "${reclist_archived}" "${reclist_previously_archived}.new"
         mv "${reclist_previously_archived}.new" "${reclist_previously_archived}"
     fi
 
-    # Clear the in-progress marker at the end of the batch (success or failure)
-    # so the next run's start notification can't claim a stale "prior run" count.
+    # Do not report completed batches as interrupted on the next run.
     rm -f /mutable/archive_in_progress.json
 
     message+="Archived ${files_archived} files"
@@ -902,18 +827,15 @@ function archive_recordings () {
     fi
   fi
 
-  # overlayfs behavior is undefined if the lower is changed while the overlay is active, so umount first
+  # Unmount overlayfs before changing its lower layer.
   umount "$overlaymerged"
 
   if archive_is_reachable
   then
     if [ "$archive_success" = "true" ]
     then
-      # clean_cam_mount mounts cam_disk.bin, which requires disconnecting the
-      # gadget. In Travel Mode the car is driving and recording, so defer it
-      # rather than interrupt capture. The car runs its own rolling delete on
-      # that drive, and snapshot pruning on /backingfiles is handled
-      # separately by the free-space manager, which never touches the gadget.
+      # Travel Mode defers cam-disk cleanup to avoid interrupting recording;
+      # snapshot free-space management remains independent.
       if travel_mode_active; then
         log "Travel Mode: deferring freespace cleanup to keep the drive connected to the car"
       else
@@ -960,10 +882,7 @@ function archive_clips () {
     clips_ok=false
   fi
 
-  # If the user drove away during archive, the gadget is still presented to the
-  # car (clean_cam_mount was skipped inside archive_recordings). Skip all
-  # post-archive cleanup: every step below cycles the USB gadget, which would
-  # interrupt the car's recording.
+  # Skip gadget-cycling cleanup if the archive became unreachable while driving.
   if ! archive_is_reachable; then
     log "Archive became unreachable during clip archiving (user likely drove away); skipping post-archive cleanup to keep USB drive stable for the car"
     touch /tmp/flag_post_archive
@@ -972,14 +891,11 @@ function archive_clips () {
     return 1
   fi
 
-  touch /tmp/flag_post_archive  #Set post-archive flag for optional temperature logging
+  # Enable the optional post-archive temperature notification.
+  touch /tmp/flag_post_archive
   clear_archive_status
-  # Reconnect the cam drive first so the car can resume recording immediately.
-  # Nothing below touches the cam disk. In Travel Mode the gadget was never
-  # disconnected (cleanup was deferred above), so skip the cycle entirely.
-  # `ensure_` rather than `connect_`: on a cycle that never disconnected (no
-  # clips to archive) the gadget is still up, and a full connect would
-  # re-enumerate it for nothing.
+  # Restore recording before later cleanup; ensure avoids re-enumerating an
+  # already-present gadget. Travel Mode never disconnected it.
   if ! travel_mode_active; then
     ensure_usb_drives_connected
   fi
@@ -1025,8 +941,7 @@ function set_time () {
   local -r clocktime_start=$(date +%s.%N)
   for _ in {1..5}
   do
-    # Fall back to the NIST server by IP: while the clock is wrong, DNS over
-    # TLS fails certificate validation and name resolution is unavailable.
+    # The IP fallback avoids DNS failure while system time is invalid.
     if ntpdig -S time.google.com || sntp -S 129.6.15.28
     then
       local -r uptime_end=$(awk '{print $1}' /proc/uptime)
@@ -1073,9 +988,7 @@ function kmsgmirror {
     echo "===== boot $(date) ====="
     dmesg --time-format iso 2>/dev/null || dmesg 2>/dev/null || true
   } >> "$out" 2>/dev/null || true
-  # Trim right after the boot dump too: on a reboot-heavy box with a quiet
-  # kernel, the follow loop below may never see enough lines to reach its size
-  # check, and repeated boot dumps would grow unbounded.
+  # Trim immediately because a quiet follow stream may never trigger the limit.
   if [[ "$(stat --format=%s "$out" 2>/dev/null)" -gt 2000000 ]] 2>/dev/null
   then
     tail -n 8000 "$out" > "${out}.2" 2>/dev/null && mv "${out}.2" "$out" 2>/dev/null || true
@@ -1186,10 +1099,7 @@ export -f log
 echo "==============================================" >> "$LOG_FILE"
 log "Starting archiveloop at $(awk '{print $1}' /proc/uptime) seconds uptime..."
 
-# One-line boot forensics for reconstructing an incident later: distinguishes a
-# car power cut from a PMIC brownout or watchdog reset. power_reset is a Pi 5
-# PMIC flag (all zeros = clean power-on); throttled bit 0 = undervoltage since
-# boot.
+# Capture Pi 5 reset and undervoltage flags for boot diagnostics.
 log "Boot reason: power_reset=$(od -An -tx1 /proc/device-tree/chosen/power/power_reset 2>/dev/null | tr -d ' \n' || true) throttled=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2 || true)"
 
 set_sys_param /proc/sys/vm/dirty_background_bytes DIRTY_BACKGROUND_BYTES 65536
@@ -1216,20 +1126,13 @@ then
   clean_cam_mount boot
 fi
 
-# Present the drive to the car BEFORE the boot snapshot. The snapshot is a
-# reflink copy of the live image, safe while the car writes (exactly like every
-# mid-loop snapshot), and taking it first costs the car ~50 extra seconds
-# without a drive on every power-on.
+# Present before the reflink boot snapshot to avoid delaying recording.
 connect_usb_drives_to_host
 
 if has_cam_disk
 then
-  # Snapshot immediately, with no waitforidle. While recording, the car never
-  # idles for the 5s gap, so waitforidle would burn its full 90s cap on every
-  # boot AND widen the window in which the car can rotate clips away before
-  # this snapshot captures them. A mid-write copy is fine: make_snapshot fscks
-  # the copy (default mode), and a partial in-flight clip was always possible
-  # across the power-loss boundary anyway.
+  # Do not wait for idle at boot: active recording exhausts the 90-second cap
+  # and can rotate clips away. Snapshot fsck handles an in-flight copy.
   /root/bin/make_snapshot.sh || log "ERROR: boot make_snapshot.sh failed (exit $?)"
 fi
 
@@ -1255,25 +1158,17 @@ then
 
   doubleblink
 
-  # Probe reachability ONCE and reuse it: probing separately for the reconnect
-  # and the wait let a single transient miss skip the debounced wait entirely.
+  # Reuse one probe so transient disagreement cannot skip the debounced wait.
   reachable_now=0
   archive_is_reachable && reachable_now=1
 
-  # Skip the gadget cycle if the user drove away during archive: the gadget is
-  # still presented to the car, and re-cycling it would interrupt recording.
-  # Travel Mode never disconnects it, so skip the cycle there too. This is the
-  # second half of the old double-connect — run_archive_cycle above has
-  # already re-presented the drive, so this is a no-op in the common case.
+  # Avoid cycling a gadget already restored by the archive or retained while driving.
   if [ "$reachable_now" = 1 ] && ! travel_mode_active; then
     ensure_usb_drives_connected
   fi
 
-  # Without the Travel Mode branch this boot cycle would block here forever on
-  # an always-on link and never reach the main loop.
   if travel_mode_active; then
-    # Repair a dead gadget BEFORE sleeping: pacing first would leave the car
-    # without a drive for the whole interval.
+    # Repair the gadget before pacing.
     check_if_usb_gadget_is_mounted
     travel_mode_pace
   elif [ "$reachable_now" = 1 ]; then
@@ -1317,21 +1212,17 @@ do
 
   doubleblink
 
-  # Probe reachability ONCE and reuse it (see the boot block above).
+  # Reuse one reachability result for reconnect and wait decisions.
   reachable_now=0
   archive_is_reachable && reachable_now=1
 
-  # Skip the gadget cycle if the user drove away during archive: the gadget is
-  # still presented to the car, and re-cycling it would interrupt recording.
-  # Travel Mode never disconnects it, so skip the cycle there too. As in the
-  # boot path, run_archive_cycle has already re-presented the drive.
+  # Avoid cycling a gadget already restored by the archive or retained while driving.
   if [ "$reachable_now" = 1 ] && ! travel_mode_active; then
     ensure_usb_drives_connected
   fi
 
   if travel_mode_active; then
-    # Repair a dead gadget BEFORE sleeping: pacing first would leave the car
-    # without a drive for the whole interval.
+    # Repair the gadget before pacing.
     check_if_usb_gadget_is_mounted
     travel_mode_pace
   elif [ "$reachable_now" = 1 ]; then

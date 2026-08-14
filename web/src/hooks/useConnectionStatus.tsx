@@ -23,15 +23,8 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   const httpOk = useRef(true)
   const httpFailCount = useRef(0)
 
-  // HTTP is the primary connectivity signal. WebSockets cycle on their own
-  // (server timeouts, keepalive) without meaning anything is wrong, so
-  // "reconnecting" and "disconnected" only follow failing HTTP polls.
-  //
-  // Hysteresis: one failed poll is noise — a status handler held up by a busy
-  // disk, or this fetch queuing behind video streams on the browser's
-  // per-host connection limit. Two consecutive failures show "reconnecting",
-  // three show "disconnected". Flashing the banner on a single slow poll
-  // trained users to ignore it.
+  // HTTP is authoritative because WebSockets reconnect routinely. Require two
+  // failures for reconnecting and three for disconnected to absorb slow I/O.
   function evaluate() {
     if (httpOk.current) {
       if (disconnectTimer.current) {
@@ -41,23 +34,19 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       httpFailCount.current = 0
       setState("connected")
     } else if (httpFailCount.current >= 3) {
-      // Repeated HTTP failures mean it is genuinely gone.
       setState("disconnected")
     } else if (httpFailCount.current >= 2) {
       setState("reconnecting")
     }
   }
 
-  // Ensure WebSocket stays connected (it handles its own reconnection)
   useEffect(() => {
     wsClient.connect()
   }, [])
 
   useEffect(() => {
     let mounted = true
-    // The abort timeout outlives the 8s interval, so without this guard a
-    // slow window runs overlapping polls — double-counting a single stall as
-    // two consecutive failures (and holding two connection slots).
+    // Prevent overlapping polls from counting one stall twice.
     let inFlight = false
 
     async function poll() {
@@ -65,13 +54,9 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       inFlight = true
       try {
         const controller = new AbortController()
-        // 15s, not 10s: a poll that queues behind video streams counts its
-        // queue time here too, so a shorter deadline reports a healthy
-        // device as gone.
+        // Include time queued behind browser video connections.
         const timeout = setTimeout(() => controller.abort(), 15000)
-        // No `priority: "low"` hint: under heavy streaming or download
-        // traffic the browser defers it, which manufactures exactly the slow
-        // response the hysteresis and timeout above exist to absorb.
+        // Default priority prevents streaming traffic from indefinitely deferring health checks.
         const res = await fetch("/api/status", {
           signal: controller.signal,
         } as RequestInit)

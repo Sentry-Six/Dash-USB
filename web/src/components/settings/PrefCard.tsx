@@ -3,16 +3,9 @@ import { cn } from "@/lib/utils"
 import type { Halo } from "@/components/ui/StatusTile"
 import { SectionErrorBoundary } from "@/components/ErrorBoundary"
 
-/**
- * The "feature unavailable" overlay drawn over the card body when `disabled`
- * is set on a PrefCard. The header (icon, title, badge) keeps rendering
- * normally; only the body is blurred and inerted, so the card stays
- * identifiable.
- */
+/** Configuration for an inert card-body overlay. */
 interface DisabledConfig {
-  /** Centered text explaining what the user needs to enable. */
   reason: string
-  /** Optional "go enable this" affordance. */
   cta?: {
     label: string
     onClick?: () => void
@@ -27,13 +20,8 @@ interface PrefCardProps {
   badge?: ReactNode
   footer?: ReactNode
   className?: string
-  /**
-   * When set, the card body renders behind a blurred, non-interactive overlay
-   * carrying this reason and optional CTA. Children stay mounted (no state
-   * loss on re-enable). The body wrapper must use `inert`, not just
-   * `pointer-events: none`, which would leave it reachable by Tab and by
-   * assistive tech.
-   */
+  /** Keep the mounted body inaccessible to pointer, keyboard, and assistive
+   * technology without losing its state. */
   disabled?: DisabledConfig
   children: ReactNode
 }
@@ -65,9 +53,7 @@ export function PrefCard({
       </div>
       {disabled ? (
         <div className="relative">
-          {/* Controls stay mounted (no state loss on re-enable) but sit fully
-              behind a frosted scrim. Blur alone left the body legible and its
-              text collided with the centered message. */}
+          {/* Keep controls mounted behind an opaque-enough inert scrim. */}
           <div
             inert
             aria-hidden
@@ -132,12 +118,7 @@ function packWithin(heights: number[], cap: number, max: number): number[] | nul
   return runs.length <= max ? runs : null
 }
 
-/**
- * Split items into at most `n` contiguous runs (one per column), minimising
- * the tallest column the way CSS multi-column balances. Binary search on the
- * smallest feasible column height. Padded with empty trailing columns so the
- * result always has `n` entries.
- */
+/** Minimize the tallest of `n` source-ordered column runs. */
 function balancedRuns(heights: number[], n: number): number[] {
   let lo = Math.max(0, ...heights)
   let hi = heights.reduce((a, b) => a + b, 0) + GRID_GAP_PX * Math.max(0, heights.length - 1)
@@ -157,41 +138,23 @@ function balancedRuns(heights: number[], n: number): number[] {
 }
 
 /**
- * Card wrapper used by every settings tab. Masonry reproducing the CSS
- * multi-column layout it replaced:
- *  - cards hold a ~`min`px width and never stretch to fill a wide row,
- *  - tall cards next to short ones pack vertically instead of leaving a
- *    row-aligned "staircase" of gaps (the System tab's backup list beside
- *    the short Export/Raw cards),
- *  - cards fill in source order, top-to-bottom then left-to-right, height-
- *    balanced across the column count multicol would pick for
- *    `column-width: min`.
- *
- * Do NOT switch this to CSS multi-column. Multicol is a fragmentation
- * context, and WebKit plus older Chromium mis-paint fragmented boxes
- * combining `backdrop-filter`, `overflow: hidden` and absolutely positioned
- * children, all of which PrefCard uses. Symptoms were blank "ghost" cards and
- * the disabled-state overlay floating detached from its card chrome.
- *
- * Layout is measured and absolutely positioned over the flattened DOM
- * children, so a section that renders several cards in a fragment
- * (UpdateSection, PrivacyCards) contributes each card individually.
- * Positions live in inline styles, not React state, so cards never remount
- * when they move.
+ * Height-balanced, source-ordered masonry for settings cards. CSS multicol
+ * mis-paints these fragmented, filtered cards in WebKit and older Chromium.
+ * Measuring flattened DOM children keeps fragments independent; inline
+ * positions move cards without remounting them.
  */
 export function PrefGrid({ children, min = 340 }: { children: ReactNode; min?: number }) {
   const ref = useRef<HTMLDivElement>(null)
 
-  // Intentionally no dependency array: a re-render can add or remove cards,
-  // so the observers re-attach to the current child nodes every render.
+  // Reattach observers after every render because the child set can change.
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
 
-    const ro = new ResizeObserver(() => layout()) // container width + card heights (async content)
+    const ro = new ResizeObserver(() => layout()) // width and asynchronous height changes
     const layout = () => {
       const kids = Array.from(el.children) as HTMLElement[]
-      for (const kid of kids) ro.observe(kid) // no-op when already observed
+      for (const kid of kids) ro.observe(kid)
       if (kids.length === 0) {
         el.style.height = "0px"
         return
@@ -200,9 +163,7 @@ export function PrefGrid({ children, min = 340 }: { children: ReactNode; min?: n
       const n = Math.max(1, Math.floor((width + GRID_GAP_PX) / (min + GRID_GAP_PX)))
       const colWidth = (width - (n - 1) * GRID_GAP_PX) / n
 
-      // Width writes before height reads: one reflow. The style-equality
-      // guards keep observer-triggered re-runs mutation-free so they can't
-      // loop.
+      // Write widths before reading heights; equality guards prevent loops.
       for (const kid of kids) {
         const w = `${colWidth}px`
         if (kid.style.width !== w) kid.style.width = w
@@ -229,9 +190,9 @@ export function PrefGrid({ children, min = 340 }: { children: ReactNode; min?: n
       if (el.style.height !== h) el.style.height = h
     }
 
-    layout() // before first paint, so nothing flashes unpositioned
+    layout() // position before first paint
     ro.observe(el)
-    const mo = new MutationObserver(layout) // a section mounting/unmounting a card
+    const mo = new MutationObserver(layout)
     mo.observe(el, { childList: true })
     return () => {
       ro.disconnect()
@@ -241,10 +202,7 @@ export function PrefGrid({ children, min = 340 }: { children: ReactNode; min?: n
 
   return (
     <div ref={ref} className="relative">
-      {/* One boundary per section, so a crashing card degrades to a fallback
-          card instead of unmounting the whole app. Boundaries add no DOM
-          node, so the flattened-children measurement is unaffected and a
-          fallback measures as a single card. */}
+      {/* Per-section boundaries preserve the page and add no measured DOM node. */}
       {Children.map(children, (child) => (
         <SectionErrorBoundary>{child}</SectionErrorBoundary>
       ))}

@@ -124,8 +124,7 @@ export default function Support() {
       if (t) localStorage.setItem(STORAGE_KEY, JSON.stringify(t))
       else localStorage.removeItem(STORAGE_KEY)
     } catch {
-      // localStorage unavailable (private mode or quota): the ticket just
-      // won't persist.
+      // Ticket persistence is optional when localStorage is unavailable.
     }
   }
 
@@ -135,7 +134,7 @@ export default function Support() {
     setStatus({ text: "Sending...", type: "loading" })
 
     try {
-      // Local copy: setTicket hasn't applied yet inside this handler.
+      // setTicket has not committed within this handler.
       let activeTicket = ticket
 
       if (!activeTicket) {
@@ -173,10 +172,7 @@ export default function Support() {
         }
       }
 
-      // Upload diagnostics byte-faithfully, matching the Logs tab Download.
-      // Use /api/logs/diagnostics, not /api/diagnostics: the latter strips
-      // ANSI and control chars server-side, losing bytes (NULs from
-      // device-tree files, etc.) the support agent may need.
+      // Use the byte-faithful logs endpoint; /api/diagnostics strips controls.
       if (includeDiagnostics && activeTicket) {
         setStatus({ text: "Collecting diagnostics...", type: "loading" })
         await fetch("/api/diagnostics/refresh", { method: "POST" }).catch(() => { })
@@ -308,7 +304,6 @@ export default function Support() {
 
   return (
     <div className="flex h-[calc(100vh-120px)] flex-col md:h-[calc(100vh-96px)]">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <MessageCircle className="h-5 w-5 text-blue-400" />
@@ -330,7 +325,6 @@ export default function Support() {
         )}
       </div>
 
-      {/* Messages area */}
       <div className="mt-4 flex flex-1 flex-col overflow-hidden rounded-xl border border-white/5 bg-white/[0.02]">
         <div className="flex-1 overflow-y-auto px-4 py-4">
           {!ticket && messages.length === 0 && !ticketClosed && (
@@ -435,10 +429,8 @@ export default function Support() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Composer */}
         {!ticketClosed && (
           <div className="shrink-0 border-t border-white/5 px-4 py-3">
-            {/* Attachment preview */}
             {attachment && (
               <div className="mb-2 flex items-center gap-2 rounded-lg bg-white/5 px-3 py-1.5">
                 <Paperclip className="h-3.5 w-3.5 text-slate-500" />
@@ -450,7 +442,6 @@ export default function Support() {
               </div>
             )}
 
-            {/* Options row */}
             <div className="mb-2 flex items-center gap-3">
               <button
                 type="button"
@@ -488,7 +479,6 @@ export default function Support() {
               </label>
             </div>
 
-            {/* Input row */}
             <div className="flex items-end gap-2">
               <textarea
                 value={message}
@@ -508,7 +498,6 @@ export default function Support() {
               </button>
             </div>
 
-            {/* Status + char count */}
             <div className="mt-1.5 flex items-center justify-between">
               {status ? (
                 <span className={cn("flex items-center gap-1 text-xs", {

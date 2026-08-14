@@ -1,15 +1,5 @@
-//! Vehicle profiles: how a car brand records dashcam footage onto the USB
-//! drive (recording path, filename format, camera set, segment length,
-//! rolling-delete window, virtual-drive geometry).
-//!
-//! Profiles are TOML under `profiles/`, embedded into the binary at
-//! compile time so an OTA update can never skew the binary against its
-//! profile. Add a brand by adding a file and listing it in [`EMBEDDED`].
-//!
-//! `VEHICLE_PROFILE` in dashusb.conf selects an embedded profile by id;
-//! `DASHUSB_PROFILE_PATH` overrides with an on-disk TOML for dev/bench.
-//! Anything invalid falls back to the default with a logged warning: the
-//! recorder must never fail to boot over a bad profile reference.
+//! Embedded vehicle-specific recording formats and virtual-drive geometry.
+//! Invalid selections fall back to the default profile so recording can boot.
 
 use std::sync::OnceLock;
 
@@ -77,8 +67,7 @@ pub struct VirtualDrive {
     /// Free-space floor (bytes) the post-archive cleaner leaves so the
     /// car's available-space check keeps passing.
     pub min_free_bytes: u64,
-    /// Only "fat32" is supported today; the field exists so a brand with
-    /// a different on-drive format stays data-only.
+    /// On-drive filesystem; currently only `fat32` is implemented.
     pub filesystem: String,
     pub label: String,
 }
@@ -147,12 +136,8 @@ impl Profile {
             .map(|(_, s)| Self::from_toml(s))
     }
 
-    /// The process-wide active profile.
-    ///
-    /// Resolution: `DASHUSB_PROFILE_PATH` env (dev/bench override), then
-    /// the `VEHICLE_PROFILE` conf key, then the default. Every failure
-    /// path logs and falls back to the embedded default, which unit tests
-    /// guarantee parses.
+    /// Process-wide profile resolved from the development override, config,
+    /// then the embedded default.
     pub fn active() -> &'static Profile {
         static ACTIVE: OnceLock<Profile> = OnceLock::new();
         ACTIVE.get_or_init(|| {
@@ -194,7 +179,7 @@ impl Profile {
 
     pub fn clip_regex(&self) -> &regex::Regex {
         self.compiled_regex.get_or_init(|| {
-            // validate() already proved this compiles.
+            // validate() already compiled the same expression.
             regex::Regex::new(&self.recording.filename_regex).expect("validated regex")
         })
     }
@@ -211,11 +196,8 @@ impl Profile {
         })
     }
 
-    /// Render `/root/bin/profile_env.sh`, the bridge handing archiveloop
-    /// and the per-method archive scripts the profile values they need.
-    /// Values a dashusb.conf key may override carry a `*_DEFAULT` suffix
-    /// and are read as `${SNAPSHOT_INTERVAL:-$SNAPSHOT_INTERVAL_DEFAULT}`,
-    /// so user config always wins.
+    /// Render the profile environment consumed by archiveloop. Configurable
+    /// values use `*_DEFAULT` names so user configuration takes precedence.
     pub fn render_profile_env(&self) -> String {
         format!(
             "#!/bin/bash\n\
@@ -237,9 +219,7 @@ impl Profile {
     }
 }
 
-/// Write `/root/bin/profile_env.sh` when its content differs. Runs on
-/// every daemon start so OTA updates propagate profile changes without a
-/// setup re-run. Skips silently when /root/bin is absent (dev machines).
+/// Refresh `/root/bin/profile_env.sh` when profile output changes.
 pub fn write_profile_env() {
     let dir = std::path::Path::new("/root/bin");
     if !dir.is_dir() {

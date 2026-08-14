@@ -8,12 +8,8 @@ use crate::router::AppState;
 pub async fn memory_stats(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
     let mut stats = serde_json::Map::new();
 
-    // VmRSS/VmSize from /proc/self/status, NOT page counts from
-    // /proc/self/statm. statm reports PAGES, and this assumed 4096 bytes per
-    // page — wrong by 4x on a 16 KiB-page Pi 5 kernel, silently
-    // under-reporting memory on exactly the board most likely to be running
-    // near its limit. These fields are already in kB, so no page size is
-    // involved.
+    // /proc/self/status reports kB directly, independent of 4/16 KiB kernel
+    // page size.
     if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
         for line in status.lines() {
             let Some((label, rest)) = line.split_once(':') else {

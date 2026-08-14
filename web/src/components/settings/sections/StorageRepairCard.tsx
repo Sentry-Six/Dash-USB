@@ -56,18 +56,9 @@ const STATE_META: Record<HealthState, { label: string; tone: string }> = {
 }
 
 /**
- * Settings > System > Repair Storage.
- *
- * Guided recovery for the external-SSD XFS partition behind `/backingfiles`
- * when it won't mount (CRC or dirty-log corruption after a power loss).
- *
- * The card always renders, but stays behind a disabled overlay unless camera
- * storage sits on a separate external drive. That overlay must not be
- * removed: it is what stops repair being aimed at the SD card.
- *
- * The backend runs the non-destructive path automatically and HARD STOPS
- * before the destructive `xfs_repair -L`. This card surfaces that stop as an
- * explicit "Force repair" confirmation, then a reboot-required state.
+ * Guided XFS recovery for external `/backingfiles`. The external-drive gate
+ * prevents SD-card repair, and destructive log clearing requires explicit
+ * confirmation after non-destructive repair stops.
  */
 export function StorageRepairCard() {
   const [health, setHealth] = useState<StorageHealth | null>(null)
@@ -104,8 +95,7 @@ export function StorageRepairCard() {
     refreshHealth()
   }, [refreshHealth])
 
-  // Auto-repair preferences are stored as either booleans or "true"/"false"
-  // strings. Accept both, default off.
+  // Accept both current boolean and legacy string preferences.
   useEffect(() => {
     const isOn = (v: unknown) => v === true || v === "true"
     Promise.all([
@@ -135,7 +125,6 @@ export function StorageRepairCard() {
     }).catch(() => {})
   }
 
-  // Live progress + terminal states from the backend repair task.
   useEffect(() => {
     const unsub = wsClient.subscribe("storage_repair", (data: unknown) => {
       const d = data as RepairMsg
@@ -156,12 +145,10 @@ export function StorageRepairCard() {
     return () => unsub()
   }, [])
 
-  // Keep the log panel pinned to the newest line.
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
   }, [lines])
 
-  // Stop the reboot poller if the card unmounts before the box returns.
   useEffect(
     () => () => {
       if (rebootPollRef.current) window.clearInterval(rebootPollRef.current)
@@ -199,10 +186,7 @@ export function StorageRepairCard() {
     } catch {
       /* the box is going down, so a failed fetch here is expected */
     }
-    // Wait for the Pi to drop off and come back, then reload so the card
-    // re-fetches health instead of sitting on "Rebooting" forever. Reload
-    // only after seeing it go down, otherwise the still-up pre-reboot server
-    // triggers an immediate reload.
+    // Require an outage before reloading post-reboot health.
     let sawDown = false
     if (rebootPollRef.current) window.clearInterval(rebootPollRef.current)
     rebootPollRef.current = window.setInterval(async () => {
@@ -218,7 +202,6 @@ export function StorageRepairCard() {
     }, 3000)
   }
 
-  // Blocked state: storage isn't on a separate external drive.
   if (health && !health.external) {
     return (
       <PrefCard

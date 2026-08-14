@@ -1,26 +1,17 @@
 #!/bin/bash
-#
-# dashusb-pick-binary — select the best-tuned dashusb binary for the
-# running CPU. Runs as ExecStartPre before dashusb.service starts, so
-# the daemon always launches via the best binary the hardware can run.
-#
-# The decision is recorded both in journalctl AND in
-# /opt/dashusb/active-variant (one line, the matched suffix) so the
-# in-app self-updater can re-download the same variant on update.
+# Select a compatible CPU-tuned binary before dashusb.service starts. Record
+# the required variant in /opt/dashusb/active-variant for subsequent updates.
 #
 # Detection rules:
 #   * armv7 userspace (32-bit Pi) → linux-armv7
-#   * aarch64 with HWCAP_ATOMICS (LSE in /proc/cpuinfo Features) → linux-arm64-a76
-#     ↳ Pi 5 (Cortex-A76), and any future ARMv8.1+ board
+#   * aarch64 with LSE atomics and AES in /proc/cpuinfo Features → linux-arm64-a76
+#     ↳ Pi 5 (Cortex-A76) and compatible ARMv8.1+ boards
 #   * aarch64 with CPU part 0xD08 (Cortex-A72) → linux-arm64-a72
 #     ↳ Pi 4, Radxa ROCK 4C+ perf cluster
-#   * any other aarch64 (catch-all, includes Cortex-A53) → linux-arm64-a53
+#   * other aarch64, including Cortex-A53 → linux-arm64-a53
 #     ↳ Pi 3, Pi Zero 2 W, Radxa ZERO 3W, OrangePi Zero 2W
 #
-# Fallback chain: if the picked file doesn't exist on disk (older image
-# missing a variant), fall back to a72 (broadest aarch64 compat), then
-# to the unsuffixed legacy name for very old installs that pre-date
-# this scheme.
+# Missing variants fall back through compatible binaries, then the legacy name.
 
 set -u
 
@@ -32,18 +23,12 @@ TAG="dashusb-pick-binary"
 log() { logger -t "$TAG" -- "$1" 2>/dev/null || echo "$TAG: $1" >&2; }
 
 detect_variant() {
-    # Userspace arch takes precedence — a 64-bit kernel may host a 32-bit
-    # userspace where the aarch64 dynamic linker doesn't exist, in which
-    # case an aarch64 binary won't load even though /proc/cpuinfo looks
-    # arm64-capable. dpkg --print-architecture is the authoritative answer
-    # on Debian-derived Pi OS.
+    # Userspace architecture determines which dynamic linker is available.
     if command -v dpkg >/dev/null 2>&1; then
         case "$(dpkg --print-architecture 2>/dev/null)" in
             armhf) echo "linux-armv7"; return ;;
             armel)
-                # armv6 (original Pi Zero W / Pi 1) is no longer supported.
-                # Fall through so the fallback chain has a chance to find
-                # an installed binary, but log the situation loudly.
+                # Unsupported armv6 still gets a chance to use an installed fallback.
                 log "armel userspace detected; armv6 builds are no longer produced"
                 ;;
             arm64) ;; # fall through to aarch64 sub-detection
@@ -58,36 +43,27 @@ detect_variant() {
             ;;
         aarch64) ;;
         *)
-            # Unknown — return the broadest aarch64 binary as a guess.
+            # Preserve the legacy A72 fallback for an unknown architecture.
             echo "linux-arm64-a72"
             return
             ;;
     esac
 
-    # aarch64 sub-detection. The Features line in /proc/cpuinfo lists the
-    # HWCAP names the kernel exported for this CPU. "atomics" indicates LSE
-    # (ARMv8.1+ Large System Extensions) — only present on Cortex-A76 and
-    # newer in our hardware spread. The a76 build also keeps the ARMv8
-    # Cryptographic Extension enabled (the Pi 5 implements it), so require
-    # the "aes" hwcap too — a future v8.1+ board without crypto must get
-    # the a72 build (plain v8.0+crc) instead of SIGILLing in SHA/AES code.
+    # The a76 build requires both ARMv8.1 LSE atomics and AES. Requiring both
+    # avoids illegal crypto instructions on ARMv8.1 boards without AES.
     if grep -qE '^Features.*\batomics\b' /proc/cpuinfo \
         && grep -qE '^Features.*\baes\b' /proc/cpuinfo; then
         echo "linux-arm64-a76"
         return
     fi
 
-    # CPU part 0xD08 is Cortex-A72 (Pi 4's BCM2711). Match anywhere in the
-    # file because big.LITTLE SoCs like RK3399 (ROCK 4C+) report multiple
-    # CPU part lines — presence of any A72 core is enough to use the
-    # A72-tuned binary.
+    # Match any Cortex-A72 core because big.LITTLE systems list multiple parts.
     if grep -qE '^CPU part[[:space:]]*:[[:space:]]*0x[dD]08' /proc/cpuinfo; then
         echo "linux-arm64-a72"
         return
     fi
 
-    # Default for aarch64: A53-tuned. Covers Pi 3, Pi Zero 2 W,
-    # Allwinner H618 boards (Radxa ZERO 3W, OrangePi Zero 2W).
+    # A53 is the conservative aarch64 default.
     echo "linux-arm64-a53"
 }
 
@@ -95,9 +71,7 @@ DETECTED="$(detect_variant)"
 PICKED="$DETECTED"
 PICKED_PATH="${INSTALL_DIR}/dashusb-${PICKED}"
 
-# Fallback chain — if the preferred variant isn't on disk, walk back through
-# safer choices. Last resort is the unsuffixed legacy filename in case the
-# image was built before this scheme.
+# Fall back through installed variants before trying the legacy filename.
 if [ ! -x "$PICKED_PATH" ]; then
     log "preferred variant ${PICKED} not installed at ${PICKED_PATH}, walking fallbacks"
     for fallback in linux-arm64-a72 linux-arm64-a53 linux-armv7; do
@@ -111,7 +85,7 @@ if [ ! -x "$PICKED_PATH" ]; then
 fi
 
 if [ ! -x "$PICKED_PATH" ]; then
-    # Last-ditch: legacy single-binary install at /opt/dashusb/dashusb.
+    # Support images that predate per-CPU filenames.
     if [ -x "${INSTALL_DIR}/dashusb" ] && [ ! -L "${INSTALL_DIR}/dashusb" ]; then
         PICKED="legacy"
         PICKED_PATH="${INSTALL_DIR}/dashusb"
@@ -122,24 +96,15 @@ if [ ! -x "$PICKED_PATH" ]; then
     fi
 fi
 
-# Atomic symlink swap — ln -sfn keeps the old link reachable until rename
-# completes, so a concurrent systemd ExecStart wouldn't dereference a
-# half-written link.
+# Keep the previous symlink reachable until the replacement is ready.
 ln -sfn "$PICKED_PATH" "$CURRENT_LINK"
 
-# The /root/bin shims installed by setup exec bare `dashusb`; keep a
-# stable PATH entry pointed at the picked variant.
+# Setup shims execute the stable PATH entry.
 ln -sfn "$CURRENT_LINK" /usr/local/bin/dashusb 2>/dev/null || true
 
-# Record what this CPU NEEDS (the detected variant) — NOT what we ended
-# up running. The fallback pick above reflects what happened to be on
-# disk, and recording it poisons every downstream consumer that trusts
-# this file (updater, startup migration, awake_start's one-shot fetch):
-# they'd keep DOWNLOADING the fallback variant forever even though the
-# right one is a URL away. Same reason "legacy" must never land here —
-# it isn't a release suffix and 404s every download built from it.
-# Best-effort write — failure here doesn't block startup, the updater
-# just falls back to re-detection on its own.
+# Record the detected requirement, not a temporary fallback. Update downloads
+# use this suffix; `legacy` and fallback choices may not identify the right asset.
+# Failure is nonfatal because the updater can repeat detection.
 if [ -n "$DETECTED" ]; then
     printf '%s\n' "$DETECTED" > "$ACTIVE_FILE" 2>/dev/null || true
 fi

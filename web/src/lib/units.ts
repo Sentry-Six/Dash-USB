@@ -1,10 +1,6 @@
 import { useSyncExternalStore } from "react"
 
-// Shared unit preference backed by /api/setup/config. The single
-// TEMPERATURE_UNIT key governs every Pi CPU temperature shown: dashboard
-// System tile, temperature-alert notifications, health checks, log
-// entries. SYSTEM_TEMPERATURE_UNIT is a legacy key, migrated away at
-// daemon startup.
+// Shared temperature-unit preference backed by setup configuration.
 type UnitState = {
   tempF: boolean // TEMPERATURE_UNIT === "F"
   loaded: boolean
@@ -52,9 +48,7 @@ async function load() {
   }
 }
 
-// Refetch whenever the first consumer (re)mounts, so returning to Settings
-// picks up out-of-band edits (raw-config editor, setup wizard). Mounted
-// consumers stay live-synced with each other in between.
+// The first subscriber refreshes out-of-band edits; mounted consumers share state.
 function subscribe(cb: () => void): () => void {
   const wasEmpty = listeners.size === 0
   listeners.add(cb)
@@ -64,18 +58,13 @@ function subscribe(cb: () => void): () => void {
   }
 }
 
-// Read-modify-write the whole config with `updates` applied. Optimistic:
-// state flips immediately and reverts to the prior snapshot if the save
-// fails, so the UI never shows a value that didn't persist.
+// Optimistically update, then revert if the full-config save fails.
 async function writeKeys(updates: Record<string, string>, optimistic: Partial<UnitState>) {
   const prev = state
   set(optimistic)
   try {
     const res = await fetch("/api/setup/config")
-    // MUST abort if the read fails. The PUT is a full-config replace and the
-    // writer comments out every active key missing from the payload, so
-    // sending a map built from `{}` would disable archive credentials and
-    // everything else.
+    // Never replace the full config from an empty failed-read baseline.
     if (!res.ok) throw new Error("could not read current config")
     const cfg = await res.json()
     if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) {
@@ -106,7 +95,6 @@ export function useUnits() {
   const s = useSyncExternalStore(subscribe, snapshot, snapshot)
   return {
     ...s,
-    // Metric = Celsius; Imperial = Fahrenheit.
     isMetric: !s.tempF,
     setMetric: (metric: boolean) =>
       writeKeys({ TEMPERATURE_UNIT: metric ? "C" : "F" }, { tempF: !metric }),

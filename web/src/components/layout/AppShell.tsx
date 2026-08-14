@@ -7,9 +7,7 @@ import { ConnectionBanner } from "./ConnectionBanner"
 import { cn } from "@/lib/utils"
 import { ConnectionProvider } from "@/hooks/useConnectionStatus"
 
-// Routes likely to follow the Dashboard, prefetched on idle so navigation is
-// instant. Heavy or rarely opened routes (Terminal) stay out of this list:
-// don't burn data on screens the user may never visit.
+// Idle-prefetch common lightweight routes, excluding heavy or uncommon pages.
 const PREFETCH_ROUTES: Array<() => Promise<unknown>> = [
   () => import("@/pages/Viewer"),
   () => import("@/pages/Files"),
@@ -18,7 +16,6 @@ const PREFETCH_ROUTES: Array<() => Promise<unknown>> = [
 ]
 
 export function AppShell() {
-  // Persist the collapse choice across reloads.
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try {
       return localStorage.getItem("sidebar-collapsed") === "1"
@@ -28,9 +25,7 @@ export function AppShell() {
   })
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
-  // Warm the module cache for likely-next routes on idle. Skipped under
-  // Save-Data or a slow effective connection so metered users aren't charged
-  // for pages they never open.
+  // Respect Save-Data and slow connections when warming likely routes.
   useEffect(() => {
     const conn = (navigator as Navigator & {
       connection?: { saveData?: boolean; effectiveType?: string }
@@ -57,7 +52,6 @@ export function AppShell() {
   return (
     <ConnectionProvider>
         <div className="flex h-full">
-          {/* Desktop sidebar */}
           <div className="hidden md:block">
             <Sidebar
               collapsed={sidebarCollapsed}
@@ -75,10 +69,8 @@ export function AppShell() {
             />
           </div>
 
-          {/* Mobile nav drawer */}
           <MobileNav open={mobileNavOpen} onClose={() => setMobileNavOpen(false)} />
 
-          {/* Main content */}
           <main
             className={cn(
               "flex-1 overflow-y-auto transition-all duration-300",
@@ -86,7 +78,6 @@ export function AppShell() {
               sidebarCollapsed && "md:ml-16"
             )}
           >
-            {/* Mobile header */}
             <div className="sticky top-0 z-[500] flex h-14 items-center gap-3 border-b border-white/5 bg-slate-950/80 px-4 backdrop-blur-md md:hidden">
               <button
                 onClick={() => setMobileNavOpen(true)}
@@ -97,10 +88,7 @@ export function AppShell() {
               <span className="text-sm font-semibold text-slate-100" style={{ fontFamily: '"Inter", -apple-system, system-ui, sans-serif' }}>Dash USB</span>
             </div>
 
-            {/* Cap and center the content column in the post-sidebar area so
-                cards don't stretch into sparse bands on wide monitors or
-                zoomed-out viewports. Pages that genuinely need full bleed can
-                opt out with their own wrapper. */}
+            {/* Bound card width on wide and zoomed-out viewports. */}
             <div className="mx-auto w-full max-w-[1280px] p-4 pb-safe md:p-6">
               <ConnectionBanner />
               <Outlet />

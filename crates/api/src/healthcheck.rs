@@ -99,11 +99,7 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
             hw.push(item("Power/throttling", "pass", None));
         }
     }
-    // /opt/dashusb/active-variant is written by dashusb-pick-binary at every
-    // service start. Its presence means the multi-binary layout is active and
-    // its value names the per-CPU variant that was picked. First place to look
-    // when triaging "why is my Pi 5 not getting LSE atomics" or "did my upgrade
-    // migrate to the new layout".
+    // The picker records the active CPU variant at each service start.
     match std::fs::read_to_string("/opt/dashusb/active-variant") {
         Ok(s) => {
             let variant = s.trim().to_string();
@@ -144,12 +140,9 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
         Some(p) => st.push(item("Backingfiles free space", "pass", Some(format!("{:.1}% free", p)))),
         None => st.push(item("Backingfiles free space", "warn", Some("partition not mounted".to_string()))),
     }
-    // Only check disks the user asked for: a zero or empty size key means the
-    // disk is disabled and its absence is not a fault.
+    // Ignore disabled optional disk images.
     let user_wants = |size_key: &str| -> bool {
-        // "0", "0G", "0M", "0K", empty and unset all mean disabled; any
-        // non-zero numeric prefix means enabled. Strict enough for health,
-        // since the exact size value is setup's problem.
+        // Health needs only zero/nonzero; setup validates exact sizes.
         let Some(raw) = active_cfg.get(size_key) else { return false; };
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -182,10 +175,7 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
             st.push(item(label, status, Some("missing".to_string())));
         }
     }
-    // /mutable/Recordings is the source of the bind mount at
-    // /var/www/html/Recordings. A failure here means the ServeDir route cannot
-    // expose cam content to Samba or web downloads. Without the check the
-    // dashboard reads "all green" while Recordings is silently empty.
+    // Missing source content makes the recordings bind mount appear empty.
     if std::path::Path::new("/mutable/Recordings").is_dir() {
         st.push(item("Recordings directory", "pass", None));
     } else {
@@ -197,8 +187,7 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
     }
     categories.push(HealthCategory { name: "Storage".to_string(), items: st });
 
-    // Core files. Entries marked `exec` must be executable, because archiveloop
-    // invokes them by path: missing is a fail, present but non-executable warns.
+    // Runtime scripts must exist and executable entries must retain their mode.
     let mut core = Vec::new();
     let core_files: &[(&str, &str, bool)] = &[
         ("/opt/dashusb/dashusb", "DashUSB binary", true),
@@ -277,9 +266,7 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
     }
     categories.push(HealthCategory { name: "Configuration".to_string(), items: cfg });
 
-    // USB gadget. Presence in configfs is not enough: the gadget must be bound
-    // to a UDC and expose at least `lun.0` with a real backing file. An
-    // enumerated gadget with no LUNs shows the car a drive with nothing on it.
+    // Gadget health requires UDC binding and a backed LUN, not just configfs.
     let mut gad = Vec::new();
     if sentryusb_gadget::is_active() {
         gad.push(item("Gadget UDC bound", "pass", None));
@@ -294,10 +281,7 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
                 Some("gadget is bound but exposes no LUN.0 — car will see the drive but nothing on it".to_string()),
             )),
         }
-        // Bound-in-configfs is the Pi's intent; the UDC link state is what
-        // the car actually sees. A gadget can stay "bound" across a dead link
-        // (2026-07-08 incident: the car showed an X for ~6 min while this
-        // check still passed).
+        // UDC state reflects the car link; configfs binding reflects only intent.
         let udc_state = crate::status::read_udc_state();
         match udc_state.as_str() {
             "configured" => gad.push(item("Host link (UDC state)", "pass", None)),
@@ -322,12 +306,10 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
     }
     categories.push(HealthCategory { name: "USB Gadget".to_string(), items: gad });
 
-    // BLE: the phone-app GATT peripheral (companion-app pairing, Wi-Fi setup,
-    // API proxy). No vehicle data flows over BLE in Dash USB.
+    // BLE serves companion-app pairing/setup/API proxy, not vehicle data.
     let mut ble = Vec::new();
 
-    // Labelled explicitly so an inactive app GATT service is never read as a
-    // dead car link.
+    // Distinguish app BLE health from the vehicle USB link.
     let ble_running = sentryusb_shell::run(
         "systemctl", &["is-active", "--quiet", "dashusb-ble"],
     ).await.is_ok();
@@ -352,10 +334,7 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
     ));
     categories.push(HealthCategory { name: "BLE".to_string(), items: ble });
 
-    // RTC, surfaced only when the user opted in via RTC_BATTERY_ENABLED. Pi 4
-    // and earlier ship without an RTC, so warning about "no /dev/rtc0" on a Pi
-    // 4 with no external module is noise. With the opt-in set, /dev/rtc0 and a
-    // readable battery voltage are both expected.
+    // Check RTC hardware only when the user enabled RTC support.
     let rtc_opted_in = active_cfg.get("RTC_BATTERY_ENABLED").map(|v| v.trim() == "true").unwrap_or(false);
     if rtc_opted_in {
         let mut rtc = Vec::new();
@@ -377,9 +356,7 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
         categories.push(HealthCategory { name: "Clock / RTC".to_string(), items: rtc });
     }
 
-    // dashusb-archive is the archiveloop unit and MUST stay marked critical: a
-    // crashed archive loop has to read RED on the dashboard, not hide behind
-    // "all green" while footage goes unarchived.
+    // Archive-loop failure is critical because footage otherwise stays local.
     let mut svcs = Vec::new();
     for (svc, critical) in &[
         ("dashusb", true),

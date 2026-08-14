@@ -36,9 +36,7 @@ interface FileEntry {
   path: string
   is_dir: boolean
   size: number
-  // Must match the backend's serialized field name (files.rs FileEntry).
-  // A mismatch fails silently: the Date column renders blank and both
-  // date sorts degrade to name order on NaN timestamps.
+  // Matches files.rs serialization; date sorting otherwise degrades silently.
   mod_time: string
 }
 
@@ -94,19 +92,17 @@ export default function Files() {
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const sortMenuRef = useRef<HTMLDivElement>(null)
 
-  // Which drive tabs to show depends on the device config.
   useEffect(() => {
     async function loadConfig() {
       try {
         const res = await fetch("/api/config")
         const cfg = await res.json()
         const visible: DriveTab[] = []
-        // The USB Drive root is always available.
         visible.push(ALL_DRIVES.find(d => d.id === "USB Drive")!)
         if (cfg.has_cam === "yes") {
           visible.push(ALL_DRIVES.find(d => d.id === "Recordings")!)
         }
-        // Nothing configured (e.g. dev mode): show every tab.
+        // Development mode may not expose configured drives.
         const result = visible.length > 0 ? visible : ALL_DRIVES
         setDrives(result)
         setActiveDrive(result[0])
@@ -134,11 +130,9 @@ export default function Files() {
         setFiles([])
       } else {
         const raw = await res.json()
-        // Server returns { path, entries: [...] } wrapper
+        // Accept both the wrapped response and the legacy array.
         const data: FileEntry[] = Array.isArray(raw) ? raw : (raw.entries ?? [])
-        // At a drive's base path, descend into the folder named after the
-        // drive: disk images carry one, sometimes next to hidden metadata
-        // folders that would otherwise be the first thing shown.
+        // Enter the named drive folder rather than adjacent hidden metadata.
         if (activeDrive && path === activeDrive.base && !searchQuery) {
           const match = data.find(
             (e) => e.is_dir && e.name === activeDrive.id
@@ -173,7 +167,6 @@ export default function Files() {
     }, 300)
   }
 
-  // Close sort menu on outside click
   useEffect(() => {
     function handleClick(e: MouseEvent) {
       if (sortMenuRef.current && !sortMenuRef.current.contains(e.target as Node)) {
@@ -288,7 +281,7 @@ export default function Files() {
     setUploads(initial)
     setUploading(true)
 
-    // Upload files sequentially to avoid overwhelming low-RAM devices
+    // Upload sequentially to bound memory and I/O pressure.
     for (let i = 0; i < fileArr.length; i++) {
       await uploadFileWithProgress(fileArr[i], currentPath, i)
     }
@@ -301,9 +294,7 @@ export default function Files() {
       setUploads([])
       setUploading(false)
     }, 2000)
-    // fetchFiles is a plain function with a new identity each render, so
-    // listing it would defeat the memo. It closes over currentPath only,
-    // which is already a dep.
+    // fetchFiles closes over currentPath and has an unstable identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPath])
 
@@ -425,7 +416,6 @@ export default function Files() {
         </div>
       </div>
 
-      {/* Drive selector */}
       <div className="flex flex-wrap gap-1">
         {drives.map((drive) => (
           <button
@@ -444,7 +434,6 @@ export default function Files() {
         ))}
       </div>
 
-      {/* Search and Sort */}
       <div className="flex items-center gap-2">
         <div className="relative flex-1">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-600" />
@@ -495,7 +484,6 @@ export default function Files() {
         </div>
       </div>
 
-      {/* Upload progress */}
       {uploads.length > 0 && (
         <div className="glass-card space-y-2 p-3">
           <div className="flex items-center justify-between">
@@ -555,7 +543,6 @@ export default function Files() {
         </div>
       )}
 
-      {/* File list */}
       <div
         className={cn("glass-card flex min-h-0 flex-1 flex-col overflow-hidden relative", dragging && "ring-2 ring-blue-500/50")}
         onDragEnter={handleDragEnter}
@@ -669,7 +656,6 @@ export default function Files() {
         </div>
       </div>
 
-      {/* Floating selection action bar */}
       {selected.size > 0 && (
         <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 md:left-[calc(50%+7rem)]">
           <div className="glass-card flex items-center gap-3 border border-blue-500/20 bg-slate-900/95 px-4 py-3 shadow-2xl backdrop-blur-xl animate-in slide-in-from-bottom-2 fade-in duration-200">
