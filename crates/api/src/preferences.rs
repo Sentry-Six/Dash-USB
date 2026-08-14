@@ -1,11 +1,5 @@
-//! User preferences (key-value store).
-//!
-//! Concurrency: [`set_preference`] is a read-modify-write and MUST hold
-//! `PREFS_LOCK` for the whole sequence. Without it two concurrent PUTs read the
-//! same baseline and the second write silently clobbers the first.
-//!
-//! Durability: saves go through tmp+rename so a power cut mid-write can't leave
-//! the file half-formed, parseable as empty and losing every stored flag.
+//! Durable key-value preferences. Read-modify-write operations hold
+//! `PREFS_LOCK`; saves use atomic replacement.
 
 use std::sync::Mutex;
 
@@ -42,13 +36,8 @@ pub(crate) fn load_prefs() -> serde_json::Map<String, serde_json::Value> {
 }
 
 pub(crate) fn save_prefs(prefs: &serde_json::Map<String, serde_json::Value>) {
-    // tmp+rename: a direct `fs::write` leaves a zero-length file if the kernel
-    // panics mid-write, which silently resets every toggle (notification
-    // settings, update channel, analytics opt-in) to its default on next boot.
-    //
-    // The first-install wizard saves prefs BEFORE the /mutable partition exists
-    // and is mounted, so pre-create the parent or the write fails with ENOENT.
-    // That placeholder lands on rootfs; later saves land on the real partition.
+    // Pre-create the directory because first-install preferences may be saved
+    // before /mutable is mounted. Atomic replacement prevents torn JSON.
     let data = serde_json::to_string_pretty(prefs).unwrap_or_default();
     let prefs_path = prefs_file();
     if let Some(parent) = std::path::Path::new(&prefs_path).parent() {
@@ -99,9 +88,7 @@ pub async fn set_preference(
     };
 
     {
-        // Hold across the whole load, modify, save. Recovering from a poisoned
-        // guard is safe: every save rewrites the file from a complete
-        // in-memory map.
+        // Hold through load/modify/save; each save rewrites a complete map.
         let _guard = PREFS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let mut prefs = load_prefs();
         prefs.insert(req.key, req.value);
@@ -110,4 +97,3 @@ pub async fn set_preference(
 
     crate::json_ok()
 }
-

@@ -14,10 +14,7 @@ export function NetworkTab({ status }: Props) {
     !!status?.ether_speed && status.ether_speed !== "Unknown!"
 
   return (
-    // One grid for the whole tab so every card aligns to the same two
-    // columns; separate containers with their own breakpoints leave column
-    // edges misaligned row-to-row. Cards pair up in order and collapse to
-    // one column below lg, where two ~360px cards get cramped.
+    // One grid aligns every card and collapses cramped pairs below `lg`.
     <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
       {/* Network interfaces */}
       <PrefCard

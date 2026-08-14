@@ -5,15 +5,18 @@ Dash USB can send you push notifications when:
 - An archive run starts
 - An archive completes or fails (with file counts and duration)
 - The Pi's temperature crosses your Warning / Caution thresholds
+- A post-archive temperature report, when enabled
+- Storage repair completes or requires manual action
 
 Configure providers in the [Setup Wizard](Setup-Wizard-Guide#6-notifications) — re-run it anytime from **Settings → System → Setup Wizard**. Mobile app push pairing lives in **Settings → Notifications**.
 
-You can enable as many providers as you want at once. A provider is enabled by filling in its fields — there's no separate on/off checkbox.
+You can enable multiple providers. Credential-based providers are enabled when
+their fields are filled; Mobile App uses an explicit checkbox.
 
 ## Providers
 
 ### Pushover
-Paid one-time-fee iOS / Android app. Most reliable for personal alerts.
+iOS and Android notification service.
 
 | Field | Where to get it |
 |-------|-----------------|
@@ -109,7 +112,8 @@ Push notifications to your phone via the Sentry Connect push service.
 
 To pair: open **Settings → Notifications → Mobile Notifications** in the web UI, generate a pairing code, and enter it in the app under **Settings → Pair for Notifications**.
 
-> **Current status:** push notifications work today through the Sentry Connect app's notification pairing. The app's *device* pairing (discovering the Pi over Bluetooth) does **not** recognize Dash USB devices yet — a dedicated **Dash Connect** app is planned. You don't need device pairing for push notifications.
+> Notification pairing works through Sentry Connect. Its Bluetooth device
+> pairing does not currently recognize Dash USB and is not required for push.
 
 ---
 

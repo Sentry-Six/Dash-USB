@@ -7,7 +7,6 @@ import {
 import { cn } from "@/lib/utils"
 import type { ClipEntry, ClipGroup } from "@/lib/api"
 
-/** GET /api/profile response: the active vehicle profile. */
 interface VehicleProfile {
   id: string
   display_name: string
@@ -97,8 +96,7 @@ export default function Viewer() {
   const [segmentDurations, setSegmentDurations] = useState<number[]>([])
   const [profile, setProfile] = useState<VehicleProfile | null>(null)
 
-  // The active profile drives the camera set, grid layout and filename
-  // parsing. Nothing brand-specific is hard-coded here.
+  // Profile data defines cameras, layout, and filename parsing.
   useEffect(() => {
     fetch("/api/profile")
       .then((r) => r.json())
@@ -122,9 +120,7 @@ export default function Viewer() {
   )
   const gridCols = profile ? Math.max(...profile.grid.map((r) => r.length), 1) : 2
 
-  // Cells to render: the profile grid (including "" spacers), plus any
-  // optional camera (e.g. INTERIOR on 2027+ GMs) that has footage in the
-  // selected clip but no grid slot.
+  // Append recorded optional cameras that have no configured grid slot.
   const gridCells = useMemo(() => {
     if (!profile) return [] as string[]
     const cells = profile.grid.flat()
@@ -135,9 +131,7 @@ export default function Viewer() {
   }, [profile, clipSets])
 
   const currentSet = clipSets[currentSetIdx] as ClipSet | undefined
-  // Unprobed segments fall back to the profile's segment length (300s on
-  // GM). Probed indices are tracked in probedRef, never inferred from the
-  // duration value itself.
+  // Track probes explicitly because fallback and measured durations can match.
   const segmentSeconds = profile?.segment_seconds ?? 300
   const probedRef = useRef<Set<number>>(new Set())
 
@@ -148,11 +142,11 @@ export default function Viewer() {
   const animFrameRef = useRef<number>(0)
   const pendingSeekRef = useRef<number | null>(null)
 
-  // Cross-segment preloading: hidden <video> elements for the next segment
+  // Hidden videos preload the next segment.
   const preloadedVideosRef = useRef<Map<string, HTMLVideoElement>>(new Map())
   const preloadedForIdxRef = useRef<number>(-1)
 
-  // Refs for high-frequency values: avoids a React render per video frame.
+  // High-frequency values stay in refs to avoid per-frame renders.
   const currentTimeRef = useRef(0)
   const globalTimeRef = useRef(0)
   const playingRef = useRef(false)
@@ -178,7 +172,6 @@ export default function Viewer() {
 
   const globalTime = priorSegmentsTime + currentTime
 
-  // Seek-bar segment markers, as percentages of total duration.
   const segmentPositions = useMemo(() => {
     if (segmentDurations.length <= 1 || totalDuration <= 0) return []
     const positions: number[] = []
@@ -247,8 +240,7 @@ export default function Viewer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- regex/primary are stable once the profile loads
   }, [selectedClip, clipRegex])
 
-  // Probe only the first few segment durations up front; the rest are
-  // probed lazily by the effect below as the user navigates near them.
+  // Probe a small initial batch, then lazily probe nearby segments.
   const EAGER_PROBE_COUNT = 6
   useEffect(() => {
     probedRef.current = new Set()
@@ -292,8 +284,6 @@ export default function Viewer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- segmentSeconds/primaryCamera are stable once the profile loads
   }, [clipSets])
 
-  // Probe a window of segments around the current one as the user
-  // approaches the un-probed tail.
   useEffect(() => {
     if (!clipSets.length || currentSetIdx < EAGER_PROBE_COUNT - 2) return
     const probeStart = Math.max(0, currentSetIdx - 1)
@@ -324,8 +314,7 @@ export default function Viewer() {
     }
 
     return () => { cancelled = true; cleanups.forEach((c) => c()) }
-    // segmentDurations intentionally omitted: depending on it would cancel
-    // and re-create in-flight probes every time one completes.
+    // segmentDurations would restart in-flight probes after every result.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clipSets, currentSetIdx])
 
@@ -353,8 +342,7 @@ export default function Viewer() {
     preloadedForIdxRef.current = -1
   }, [])
 
-  // Within PRELOAD_WINDOW of the segment end, buffer the next segment's
-  // active cameras so playback crosses the boundary without a stall.
+  // Buffer active cameras near the segment boundary.
   useEffect(() => {
     if (!playing || clipSets.length === 0) return
     const PRELOAD_WINDOW = 5 // seconds
@@ -381,13 +369,11 @@ export default function Viewer() {
           v.muted = true
           v.playsInline = true
           v.src = url
-          // Hidden; buffering only.
           v.style.display = "none"
           document.body.appendChild(v)
           preloadedVideosRef.current.set(cam, v)
         })
       } else if (timeRemaining > PRELOAD_WINDOW && preloadedForIdxRef.current !== -1) {
-        // User seeked away from the end.
         cleanupPreloaded()
       }
     }, 1000)
@@ -397,7 +383,6 @@ export default function Viewer() {
     }
   }, [playing, clipSets, activeCameras, cleanupPreloaded])
 
-  // Preloads are stale once the segment changes.
   useEffect(() => {
     cleanupPreloaded()
   }, [currentSetIdx, cleanupPreloaded])
@@ -406,7 +391,7 @@ export default function Viewer() {
     return () => cleanupPreloaded()
   }, [cleanupPreloaded])
 
-  // Master video: the primary camera if it is mounted, else any camera.
+  // Prefer the profile's primary camera as the synchronization master.
   useEffect(() => {
     if (!currentSet) { masterVideoRef.current = null; return }
     const primary = primaryCamera ? videoRefs.current.get(primaryCamera) : undefined
@@ -421,7 +406,7 @@ export default function Viewer() {
   const startAnimLoop = useCallback(() => {
     const UI_INTERVAL = 66 // ~15fps for React state updates
     function tick() {
-      if (!playingRef.current) return // stop loop when paused
+      if (!playingRef.current) return
       const master = masterVideoRef.current
       if (master) {
         currentTimeRef.current = master.currentTime
@@ -449,7 +434,6 @@ export default function Viewer() {
   }, [playbackSpeed, currentSetIdx])
 
 
-  // Auto-advance to the next clip set, or stop at the last one.
   const handleVideoEnded = useCallback(() => {
     setCurrentSetIdx((i) => {
       if (i < clipSets.length - 1) return i + 1
@@ -465,7 +449,7 @@ export default function Viewer() {
         if (v) v.currentTime = time
       })
     })
-    // Update UI immediately for paused seeks
+    // Paused seeks need an immediate UI update.
     currentTimeRef.current = time
     if (!playingRef.current) {
       globalTimeRef.current = priorSegmentsTimeRef.current + time
@@ -567,10 +551,7 @@ export default function Viewer() {
 
   async function handleDeleteClip(clip: ClipEntry) {
     try {
-      // Delete through /mutable/Recordings (the snapshot-symlink tree this
-      // view lists from), never /mnt/cam: the live cam-disk image is
-      // unmounted on the Pi side whenever the USB gadget is presenting it
-      // to the car. The download button below and the Files page agree.
+      // Delete through the listed snapshot tree; /mnt/cam may be host-mounted.
       const fullPath = `/mutable/Recordings/${CATEGORY}/${clip.date}`
       await fetch(`/api/files?path=${encodeURIComponent(fullPath)}`, { method: "DELETE" })
       setGroups((prev) =>
@@ -606,7 +587,6 @@ export default function Viewer() {
 
   const progress = totalDuration > 0 ? (globalTime / totalDuration) * 100 : 0
 
-  // "" entries are spacers that preserve the grid shape.
   const camerasToShow = focusedCamera ? [focusedCamera] : gridCells
 
   return (
@@ -617,7 +597,6 @@ export default function Viewer() {
         isFullscreen ? "h-screen bg-slate-950 p-2" : "h-[calc(100vh-120px)] md:h-[calc(100vh-96px)]"
       )}
     >
-      {/* Header */}
       {!isFullscreen && (
         <div className="mb-3 flex items-center justify-between">
           <div>
@@ -632,7 +611,6 @@ export default function Viewer() {
         </div>
       )}
 
-      {/* Toolbar */}
       <div className={cn("mb-2 flex items-center gap-1", isFullscreen && "mb-1")}>
         <span className="rounded-lg bg-blue-500/15 px-3 py-1.5 text-sm font-medium text-blue-400">
           Recordings
@@ -653,7 +631,6 @@ export default function Viewer() {
       </div>
 
       <div className="flex min-h-0 flex-1 gap-2">
-        {/* Clip browser sidebar */}
         {!sidebarCollapsed && (
           <div className="glass-card flex w-56 shrink-0 flex-col overflow-hidden">
             <div className="flex-1 overflow-y-auto p-1.5">
@@ -735,11 +712,9 @@ export default function Viewer() {
           </div>
         )}
 
-        {/* Video area */}
         <div className="flex min-h-0 flex-1 flex-col">
           {currentSet ? (
             <>
-              {/* Camera grid */}
               <div
                 className={cn(
                   "relative min-h-0 flex-1",
@@ -751,7 +726,6 @@ export default function Viewer() {
               >
                 {camerasToShow.map((cam, cellIdx) => {
                   if (!cam) {
-                    // Grid spacer cell (profile rows can be sparse).
                     return <div key={`spacer-${cellIdx}`} className="hidden md:block" />
                   }
                   const hasFocus = focusedCamera === cam
@@ -828,7 +802,6 @@ export default function Viewer() {
                 })}
               </div>
 
-              {/* Transport bar */}
               <div className="glass-card mt-1 p-2">
                 <div
                   ref={seekBarRef}
@@ -923,7 +896,6 @@ export default function Viewer() {
                   </div>
 
 
-                  {/* Download the whole day folder as a zip */}
                   <button
                     onClick={handleDownload}
                     className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-white/5 hover:text-slate-300"

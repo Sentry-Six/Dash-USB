@@ -105,22 +105,22 @@ fn excluded_devices() -> HashSet<String> {
             continue;
         }
 
-        // Resolve symlinks (e.g. /dev/disk/by-partuuid/xxx -> /dev/sda1)
+        // Resolve stable-device symlinks to their kernel names.
         let resolved = std::fs::canonicalize(source)
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| source.to_string());
         let dev = resolved.strip_prefix("/dev/").unwrap_or(&resolved);
 
-        // Strip partition suffix to get the parent disk name.
+        // Strip partition suffixes to identify the parent disk.
         if dev.contains("mmcblk") || dev.contains("nvme") || dev.contains("loop") {
-            // mmcblk/nvme/loop style: partition suffix is "pN"
+            // mmcblk/nvme/loop partitions use a `pN` suffix.
             if let Some(idx) = dev.rfind('p') {
                 if idx > 0 {
                     excluded.insert(dev[..idx].to_string());
                 }
             }
         } else {
-            // sd-style: partition suffix is just trailing digits
+            // sd-style partitions use trailing digits.
             let trimmed: String = dev
                 .chars()
                 .rev()

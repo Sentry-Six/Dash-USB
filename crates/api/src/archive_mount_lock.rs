@@ -1,20 +1,6 @@
-//! Cross-process ownership of the `/mnt/archive` network mount.
-//!
-//! Two parties mount the CIFS/NFS archive share: archiveloop's
-//! connect-archive.sh at the start of each archive cycle, and the backup path
-//! in `backup.rs` when the user hits Backup Now with no cycle running. Both
-//! MUST hold an exclusive `flock` on [`ARCHIVE_MOUNT_LOCK_PATH`] across their
-//! mount/unmount transitions (archiveloop via `flock` on fd 210 in
-//! connect/disconnect-archive.sh; keep the path in sync with those scripts).
-//! Without it, archiveloop can adopt a mount the backup created and then have
-//! it unmounted mid-cycle, or its disconnect can `umount -f -l` a backup
-//! mid-write.
-//!
-//! Deliberately NOT held across a whole archive cycle: post-archive-process.sh
-//! curls the backup API while its cycle runs, so a cycle-scoped lock would
-//! deadlock that in-flight request (the same trap the gadget cycle_lock doc
-//! comment warns about). The lock covers only mount, use and unmount windows;
-//! a long rsync runs lock-free on a mount archiveloop owns.
+//! Coordinates backup and archiveloop ownership of `/mnt/archive`. Hold the
+//! shared flock across mount/use/unmount windows, but not entire archive
+//! cycles, which may call the backup API and deadlock.
 
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -32,10 +18,7 @@ pub struct ArchiveMountGuard {
     _file: File,
 }
 
-/// Acquire the archive-mount flock, waiting up to `timeout` for whoever holds
-/// it (archiveloop holds it for seconds around a mount/unmount). Polls
-/// `LOCK_NB` rather than parking in `flock(2)` so the wait stays bounded.
-/// Blocking: call it from a blocking thread.
+/// Acquire the mount flock with a bounded, blocking poll.
 pub fn acquire(timeout: Duration) -> io::Result<ArchiveMountGuard> {
     acquire_path(Path::new(ARCHIVE_MOUNT_LOCK_PATH), timeout)
 }
@@ -68,9 +51,7 @@ fn acquire_path(path: &Path, timeout: Duration) -> io::Result<ArchiveMountGuard>
 #[cfg(unix)]
 fn try_flock_exclusive(file: &File) -> io::Result<bool> {
     use std::os::unix::io::AsRawFd;
-    // Same primitive as shell `flock`: the lock lives on the open file
-    // description, so it also excludes other threads of this process and
-    // stays held across await points until the guard drops.
+    // The open file description retains the lock until the guard drops.
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if rc == 0 {
         return Ok(true);

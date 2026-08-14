@@ -1,10 +1,5 @@
-//! AWS SNS Publish with a hand-rolled SigV4 signature.
-//!
-//! Credentials: env (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / optional
-//! AWS_SESSION_TOKEN), then dashusb.conf. The conf fallback is required
-//! because systemd starts the server without sourcing the conf, which
-//! leaves env-only lookups empty on web-UI installs.
-//! Region: topic ARN, then the conf, then AWS_REGION.
+//! AWS SNS Publish with SigV4. Credentials resolve from environment then
+//! config; region resolves from the topic ARN, config, then environment.
 
 use anyhow::{bail, Result};
 use chrono::Utc;

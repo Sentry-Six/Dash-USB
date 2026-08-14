@@ -55,7 +55,6 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         collapsed ? "w-16" : "w-56"
       )}
     >
-      {/* Logo */}
       <div className="flex min-h-16 items-center gap-3 px-4 py-3">
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-500/20">
           <Shield className="h-5 w-5 text-blue-400" />
@@ -74,7 +73,6 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         )}
       </div>
 
-      {/* Navigation */}
       <nav className="flex-1 space-y-1 px-2 py-4">
         {navItems.map((item) => {
           const showBadge = updateAvailable && item.to === "/settings"
@@ -118,7 +116,6 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         })}
       </nav>
 
-      {/* Terminal link (secondary) */}
       <NavLink
         to="/terminal"
         title={collapsed ? "Terminal" : undefined}
@@ -137,7 +134,6 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         {!collapsed && <span>Terminal</span>}
       </NavLink>
 
-      {/* Support link (secondary) */}
       <NavLink
         to="/support"
         title={collapsed ? "Support" : undefined}
@@ -156,7 +152,6 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         {!collapsed && <span>Support</span>}
       </NavLink>
 
-      {/* Connection status */}
       <div
         title={collapsed ? (connState === "connected" ? "Connected" : connState === "reconnecting" ? "Reconnecting" : "Offline") : undefined}
         className={cn(
@@ -175,7 +170,6 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         )}
       </div>
 
-      {/* Logout */}
       {authRequired && (
         <button
           onClick={logout}
@@ -191,7 +185,6 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         </button>
       )}
 
-      {/* Collapse toggle, pinned to the right edge and vertically centered */}
       <button
         onClick={onToggle}
         className="absolute right-0 top-1/2 z-40 -translate-y-1/2 translate-x-1/2 flex h-6 w-6 items-center justify-center rounded-full border border-white/10 bg-slate-900 text-slate-500 shadow-lg transition-colors hover:bg-slate-800 hover:text-slate-300"

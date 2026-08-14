@@ -1,10 +1,5 @@
-//! Support-ticket proxy to the backend API.
-//!
-//! - Forwards `X-Auth-Token` (per-ticket session token) and `X-Passcode`
-//!   (fingerprint-based admin access) from the incoming request.
-//! - Re-serializes JSON bodies to normalize broken Unicode escapes (\usb and
-//!   similar appear in diagnostics text and choke strict JSON parsers).
-//! - Preserves the upstream status code instead of flattening to 200/502.
+//! Support-ticket proxy preserving authentication headers and upstream status,
+//! with normalized JSON bodies.
 
 use std::time::Duration;
 

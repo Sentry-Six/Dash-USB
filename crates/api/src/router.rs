@@ -54,8 +54,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/system/gadget-enable", post(crate::system::gadget_enable))
         .route("/api/system/gadget-disable", post(crate::system::gadget_disable))
         .route("/api/system/trigger-sync", post(crate::system::trigger_sync))
-        // Phone-app (Dash Connect) GATT pairing reset, unrelated to any vehicle
-        // BLE. Clears app bonds and PIN, then restarts the peripheral.
+        // Reset only phone-app GATT pairing state.
         .route("/api/system/ble-reset-pair", post(crate::system::ble_reset_pair))
         .route("/api/system/speedtest", get(crate::system::speedtest))
         .route("/api/system/rtc-status", get(crate::system::get_rtc_status))
@@ -68,7 +67,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/system/check-update", post(crate::update::check_for_update))
         .route("/api/system/update-status", get(crate::update::get_update_status))
         .route("/api/system/block-devices", get(crate::devices::list_block_devices))
-        // Guided XFS backingfiles recovery (see storage_repair.rs)
+        // Guided XFS backingfiles recovery.
         .route("/api/storage/health", get(crate::storage_repair::storage_health))
         .route("/api/storage/repair", post(crate::storage_repair::storage_repair))
         .route("/api/config/preference", get(crate::preferences::get_preference).put(crate::preferences::set_preference))
@@ -146,10 +145,7 @@ async fn handle_ws(socket: axum::extract::ws::WebSocket, hub: sentryusb_ws::Hub)
         }
     });
 
-    // Reader: any message (including pong) resets the 60s read deadline, so
-    // two missed pings tear the socket down. A browser-paused tab therefore
-    // stops holding a server-side task within a minute, rather than for however
-    // long the TCP send buffer takes to fill.
+    // Any message resets the deadline; two missed pings release abandoned tasks.
     let mut recv_task = tokio::spawn(async move {
         loop {
             match tokio::time::timeout(Duration::from_secs(60), receiver.next()).await {

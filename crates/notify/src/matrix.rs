@@ -1,6 +1,5 @@
-//! Matrix has no webhook: each send logs in for an access token, posts,
-//! then logs out. The logout is best-effort and runs even when the post
-//! failed, so the send status is only checked afterwards.
+//! Matrix sends by logging in, posting, then making a best-effort logout.
+//! Preserve the send result across logout failure.
 
 use anyhow::{bail, Result};
 use reqwest::Client;

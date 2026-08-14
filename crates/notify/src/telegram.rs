@@ -2,9 +2,7 @@ use anyhow::{bail, Result};
 use reqwest::Client;
 
 pub async fn send(client: &Client, bot_token: &str, chat_id: &str, title: &str, message: &str, silent: bool) -> Result<()> {
-    // The Bot API path needs a literal `bot` prefix on the token.
-    // BotFather issues tokens without it, so strip any the user pasted in
-    // rather than doubling it.
+    // Normalize an optional pasted `bot` prefix before constructing the API path.
     let token = bot_token.strip_prefix("bot").unwrap_or(bot_token);
     let url = format!("https://api.telegram.org/bot{}/sendMessage", token);
     let text = format!("{}: {}", title, message);

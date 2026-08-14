@@ -1,17 +1,6 @@
-//! Cross-process serialization of USB-gadget disable/enable cycles.
-//!
-//! archiveloop holds an exclusive flock on [`GADGET_CYCLE_LOCK_PATH`] around
-//! every gadget teardown and bring-up. Rust code that cycles the gadget must
-//! hold the same lock for its whole disable/work/enable window. Interleaving
-//! the two sides can re-enable the gadget while cam_disk.bin is still
-//! mounted, which puts two writers on one block device and corrupts the
-//! filesystem the car records to.
-//!
-//! MUST NOT be taken inside [`crate::enable`]/[`crate::disable`]. The
-//! enable_gadget.sh and disable_gadget.sh shims curl into
-//! /api/system/gadget-enable|disable while archiveloop already holds the
-//! flock, so locking at that depth wedges the shim until its `--max-time 30`
-//! expires and fails the cycle. Only callers that own a complete cycle lock.
+//! Cross-process gadget-cycle lock shared with archiveloop. Hold it around an
+//! entire disable/work/enable sequence to prevent simultaneous block writers.
+//! Do not acquire inside enable/disable because locked shell shims call them.
 
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -28,9 +17,7 @@ pub struct CycleGuard {
     _file: File,
 }
 
-/// Acquire the gadget-cycle flock, waiting up to `timeout`. An archive media
-/// sync can hold it for minutes. Polls `LOCK_NB` rather than parking in
-/// `flock(2)` so the wait stays bounded. Blocking: run on a blocking thread.
+/// Acquire the flock with a bounded poll; call from a blocking thread.
 pub fn acquire(timeout: Duration) -> io::Result<CycleGuard> {
     acquire_path(Path::new(GADGET_CYCLE_LOCK_PATH), timeout)
 }
@@ -62,9 +49,7 @@ pub(crate) fn acquire_path(path: &Path, timeout: Duration) -> io::Result<CycleGu
 #[cfg(unix)]
 fn try_flock_exclusive(file: &File) -> io::Result<bool> {
     use std::os::unix::io::AsRawFd;
-    // Same primitive as shell `flock`: the lock lives on the open file
-    // description, so it also excludes other threads of this process and
-    // stays held across await points until the guard drops.
+    // The open file description holds the same lock used by shell flock.
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if rc == 0 {
         return Ok(true);

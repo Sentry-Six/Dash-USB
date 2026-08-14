@@ -3,15 +3,9 @@ name: Build & Release
 on:
   push:
     tags: ['v*']
-    # Work lands on main directly, not only through PRs, so without this a
-    # direct push compiles nothing until the next tag. `build` is guarded to
-    # skip the four ARM cross-builds here — a branch push runs `test` and
-    # `lint-web` only, and `release` stays tag-gated.
+    # Branch pushes run test and lint only; build and release remain tag-gated.
     branches: [main, main-dev]
-  # Compile-test pull requests (e.g. Dependabot bumps) so a breaking
-  # dependency update is caught in review instead of at the next release.
-  # Only the `test` job runs here — see its `if` guard on `build`. The
-  # release job is tag-gated, so PRs never publish a release.
+  # Compile-test pull requests without building or publishing releases.
   pull_request:
     branches: [main, main-dev]
   workflow_dispatch:
@@ -22,49 +16,19 @@ env:
 jobs:
   build:
     name: Build ${{ matrix.name }}
-    # PRs and direct branch pushes only need the `test` job (which compiles
-    # the whole workspace on the host) to catch breakage — skip the four
-    # expensive ARM cross-builds there. Allow-list rather than
-    # `!= 'pull_request'`, which would run the whole matrix on every push
-    # to main.
+    # Run the cross-build matrix only for releases or manual validation.
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
-    # Pin to 22.04 (glibc 2.35). `ubuntu-latest` now points at 24.04
-    # (glibc 2.39) and Pi OS Bookworm only ships glibc 2.36 — anything
-    # built on 24.04 fails on every Pi with:
-    #   /lib/.../libc.so.6: version `GLIBC_2.39' not found
-    # When 22.04 is eventually retired by GitHub, switch to a
-    # cargo-zigbuild or container-based build for explicit ABI control.
-    #
-    # aarch64 jobs run on `ubuntu-22.04-arm` (native arm64, ~10-15% faster
-    # link + no cross-toolchain to install). 32-bit ARM jobs stay on
-    # x86 `ubuntu-22.04` because (a) the sources-patching dance is already
-    # tested there, and (b) cross-compile aarch64→armhf has the same
-    # complexity as x86→armhf with no payoff.
+    # Ubuntu 22.04 keeps binaries compatible with Bookworm's glibc. aarch64
+    # builds natively; armv7 uses the existing x86 cross toolchain.
     runs-on: ${{ matrix.runs_on }}
     strategy:
       matrix:
-        # aarch64 is split into three CPU-tuned variants so each Pi runs
-        # code matched to its microarchitecture. The runtime picker script
-        # (pi-gen-sources/.../files/dashusb-pick-binary) selects the
-        # right one at boot based on /proc/cpuinfo:
+        # The runtime picker selects an aarch64 variant from /proc/cpuinfo:
         #   * a76 → Pi 5 (Cortex-A76, ARMv8.2 with LSE atomics)
         #   * a72 → Pi 4, Radxa ROCK 4C+ perf cluster (Cortex-A72)
         #   * a53 → Pi 3, Pi Zero 2 W, Allwinner H618 boards (Cortex-A53)
-        # The cpu field is consumed via the RUSTFLAGS env in the build step.
-        # cpu_features: LLVM's cortex-a53/a72/a76 CPU definitions all
-        # assume the OPTIONAL ARMv8 Cryptographic Extension (+aes,+sha2)
-        # — but Broadcom never licensed it: BCM2710 (Pi 3 / Zero 2 W,
-        # A53) and BCM2711 (Pi 4, A72) have no crypto instructions.
-        # RustCrypto's sha1/sha2 skip runtime CPU detection when the
-        # feature is enabled at compile time, so a build with crypto
-        # baked in executes SHA instructions unconditionally and dies
-        # with SIGILL on those boards. The graph reaches that code on
-        # ordinary traffic: sha1 via axum/tungstenite on every WebSocket
-        # handshake, sha2 via rust-embed for asset ETags, and ring via
-        # rustls on every HTTPS request. Strip the crypto features from
-        # a53/a72; software SHA is microseconds at our message sizes.
-        # a76 keeps crypto, since the Pi 5's BCM2712 does implement it
-        # (and the picker requires the `aes` hwcap before selecting a76).
+        # LLVM assumes optional ARMv8 crypto on a53/a72, but BCM2710/2711 lack
+        # it; disable AES/SHA to prevent SIGILL. BCM2712/a76 supports it.
         include:
           - name: ARM64 a53 (Pi 3 / Pi Zero 2 W / Allwinner H618)
             runs_on: ubuntu-22.04-arm
@@ -108,32 +72,17 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          # Two install paths depending on whether the host matches the
-          # target:
-          #
-          #   1. aarch64-* targets on `ubuntu-22.04-arm` → NATIVE build.
-          #      Basic build tools only. No foreign architectures, no
-          #      cross-toolchain, no sources patching.
-          #
-          #   2. armv7-* / arm-* targets on `ubuntu-22.04` (x86) →
-          #      CROSS-compile. The default Ubuntu sources are x86-only,
-          #      so we wholesale-rewrite sources.list to put amd64,i386
-          #      on archive.ubuntu.com and arm64,armhf on
-          #      ports.ubuntu.com (the only mirror that serves them).
-          #      Then enable foreign archs + install cross gcc.
+          # aarch64 builds natively; armv7 requires foreign-arch sources and GCC.
           case "${{ matrix.target }}" in
             aarch64-*)
-              # Native build path.
               sudo apt-get update -qq
               sudo apt-get install -y -qq \
                 brotli mold
               ;;
             armv7-*)
-              # Cross-compile path (x86 host → 32-bit ARM target).
               UBUNTU_CODENAME=$(lsb_release -cs)
               echo "Ubuntu codename: $UBUNTU_CODENAME"
-              # Wipe any existing sources so a stale [arch=] line on the
-              # runner image doesn't smuggle in a 404-bound fetch.
+              # Remove stale runner sources before defining each architecture.
               sudo rm -f /etc/apt/sources.list.d/ubuntu.sources
               sudo tee /etc/apt/sources.list >/dev/null <<EOF
           deb [arch=amd64,i386] http://archive.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME} main restricted universe multiverse
@@ -160,17 +109,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          # Invalidate the target cache whenever Cargo.lock OR the inputs
-          # to the embedded frontend change. rust-embed's rerun-if-changed
-          # is unreliable across cache restores, so any change that ends up
-          # in crates/sentryusb/static must force a clean cargo rebuild.
-          # The cpu suffix is part of the key because aarch64-a53 /-a72 /-a76
-          # all share the same target triple but produce distinct binaries
-          # (different RUSTFLAGS), so they must NOT share a target/ dir.
-          # runner.arch is in the key because the aarch64 jobs run on
-          # ARM-native runners while armv7/armv6 stay on x86 cross — the
-          # cached build artifacts are host-arch-specific and must not
-          # be reused across hosts.
+          # Include UI inputs, CPU flags, and host architecture to prevent stale
+          # or incompatible target artifacts across variants.
           key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ matrix.target }}-${{ matrix.cpu }}-${{ hashFiles('**/Cargo.lock', 'web/src/**', 'web/public/**', 'web/package-lock.json', 'web/package.json', 'web/index.html', 'web/vite.config.*', 'web/tsconfig*.json') }}
 
       - name: Set up Node.js
@@ -187,25 +127,18 @@ jobs:
           npm ci
           npm run build
           cd ..
-          # Verify the build actually produced an HTML entry point. If
-          # it didn't, refuse to continue rather than ship a binary with
-          # an empty embedded UI.
+          # Never ship a binary with an empty embedded UI.
           if [ ! -s "web/dist/index.html" ]; then
             echo "::error::web/dist/index.html missing or empty after npm run build"
             exit 1
           fi
           rm -rf crates/sentryusb/static
           cp -r web/dist crates/sentryusb/static
-          # Sanity-check the embedded dir before handing off to cargo.
           if [ ! -s "crates/sentryusb/static/index.html" ] || [ -z "$(ls -A crates/sentryusb/static/assets 2>/dev/null)" ]; then
             echo "::error::crates/sentryusb/static is empty or missing assets after copy"
             exit 1
           fi
-          # Pre-compress text-like assets so embed.rs can serve raw .br /
-          # .gz bytes without burning per-request CPU on the Pi Zero 2W.
-          # Skips already-compressed formats (woff2, png, jpg, ico) and
-          # files under 1 KB where compression isn't worth the binary
-          # bloat.
+          # Pre-compress text assets to avoid per-request work on Pi hardware.
           PRECOMP=0
           while IFS= read -r -d '' f; do
             case "$f" in
@@ -220,23 +153,12 @@ jobs:
           echo "Frontend rebuilt; embedded $(ls crates/sentryusb/static/assets | wc -l) asset(s); pre-compressed $PRECOMP file(s)"
 
       - name: Validate Cargo.lock
-        # cargo fetch resolves the lockfile against Cargo.toml and exits
-        # non-zero if Cargo.lock is genuinely broken. This catches lockfile
-        # corruption before the much slower cargo build step.
+        # Fail on lockfile inconsistency before the slower build.
         run: cargo fetch --target ${{ matrix.target }}
 
       - name: Build release binaries (dashusb)
-        # RUSTFLAGS overrides the per-target rustflags in .cargo/config.toml
-        # so each aarch64 matrix entry produces a binary tuned to its
-        # specific Cortex-A microarchitecture.
-        #
-        # `mold -run` wraps the build so mold intercepts every linker
-        # invocation in the subprocess tree. Used on aarch64 jobs
-        # (where the build is now native on ubuntu-22.04-arm) but
-        # skipped on armv7 because mold 1.x on Ubuntu 22.04 doesn't
-        # support the 32-bit ARM `armelf_linux_eabi` emulation. armv7
-        # keeps GNU ld; the aarch64 trio dominates total CI wall-clock
-        # so the bulk of the link-time win still lands.
+        # RUSTFLAGS tunes each variant. mold supports native aarch64, while
+        # Ubuntu 22.04's mold lacks armelf_linux_eabi for armv7.
         run: |
           export RUSTFLAGS="-C target-cpu=${{ matrix.cpu }} ${{ matrix.cpu_features }}"
           case "${{ matrix.target }}" in
@@ -249,9 +171,7 @@ jobs:
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: ${{ matrix.linker }}
 
       - name: Package binaries
-        # All artifacts use the same `artifact_suffix` so the in-app
-        # updater (update.rs) and the picker script can fetch them via a
-        # predictable URL pattern: dashusb-${suffix}.
+        # The updater and picker expect dashusb-${suffix} artifact names.
         run: |
           mkdir -p release
           cp target/${{ matrix.target }}/release/dashusb release/dashusb-${{ matrix.artifact_suffix }}
@@ -270,19 +190,14 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache cargo registry + build
-        # Without this the test job recompiles the whole workspace + every
-        # dependency from scratch on each run. rust-cache keys on the
-        # toolchain + Cargo.lock and evicts stale build artifacts so the
-        # cache stays lean. `cache-on-failure` still saves the cache when a
-        # test fails, so a flaky run doesn't cost a full cold rebuild next.
+        # Preserve dependencies even after a failed test run.
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
       - name: Run tests
         run: cargo test --workspace
 
-      # archiveloop is shell, so cargo never sees it. These extract the real
-      # function bodies out of the script, so they fail if the script drifts.
+      # Exercise archiveloop code that Cargo cannot see.
       - name: Run shell tests
         run: bash test/archiveloop-gadget-cycle.test.sh run/archiveloop
 
@@ -297,8 +212,7 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: Lint
-        # Warning budget covers the reviewed react-hooks compiler-era
-        # backlog (see eslint.config.js) — only ratchet this DOWN.
+        # Ratchet the reviewed warning budget downward only.
         run: |
           cd web
           npm ci
@@ -306,8 +220,7 @@ jobs:
 
   release:
     name: Create Release
-    # lint-web too: it is the only job that runs eslint, so without it a
-    # release can ship web code that never passed lint.
+    # Require the only job that runs eslint.
     needs: [build, test, lint-web]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-22.04
@@ -323,13 +236,7 @@ jobs:
       - name: List release files
         run: ls -lh release/
 
-      # softprops PATCHes an existing release with the explicit prerelease
-      # boolean below, so without this read a non-hyphenated tag would
-      # clobber a manually ticked pre-release back to full release.
-      # Unexpected gh failures abort rather than risk that clobber; a
-      # missing release (CI creating it fresh) proceeds with the flag unset.
-      # GH_REPO supplies the repo context — this job has no checkout step,
-      # so gh cannot infer it from a local git remote.
+      # Preserve a manual prerelease flag; GH_REPO is required without checkout.
       - name: Read existing pre-release flag
         id: relmeta
         env:
@@ -349,10 +256,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: release/*
-          # Release notes are written by hand; the generated body is only a
-          # "Full Changelog" compare link, which we never ship.
+          # Release notes are written manually.
           generate_release_notes: false
-          # Hyphenated tags are pre-releases by convention. The repository owner
-          # can also nominate one exact stable-looking tag as a pre-release, and
-          # a manually ticked pre-release on the existing release is preserved.
+          # Preserve manual prerelease state and the configured tag override.
           prerelease: ${{ contains(github.ref_name, '-') || vars.DASHUSB_PRERELEASE_TAG == github.ref_name || steps.relmeta.outputs.prerelease == 'true' }}

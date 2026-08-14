@@ -31,7 +31,7 @@ export function HealthCheckModal({ onClose }: { onClose: () => void }) {
       if (!res.ok) throw new Error(`Server responded with ${res.status}`)
       const data: HealthReport = await res.json()
       setReport(data)
-      // Auto-expand categories that have at least one warn/fail
+      // Expand categories containing warnings or failures.
       const exp: Record<string, boolean> = {}
       for (const cat of data.categories) {
         if (cat.items.some((i) => i.status !== "pass")) exp[cat.name] = true
@@ -44,8 +44,7 @@ export function HealthCheckModal({ onClose }: { onClose: () => void }) {
     }
   }
 
-  // The first check must run from an effect, not inline during render: an
-  // inline call re-fires on every render and loops into a blank modal.
+  // Start once after render to avoid a render-triggered request loop.
   useEffect(() => {
     void runCheck()
   }, [])

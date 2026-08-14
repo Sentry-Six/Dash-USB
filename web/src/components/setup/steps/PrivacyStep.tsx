@@ -3,28 +3,16 @@ import { ShieldCheck, Check, X, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 /**
- * Privacy disclosure and analytics opt-in. Two GDPR requirements ride on
- * this step:
- *
- * 1. Article 13 transparency at the point of collection: the disclosure
- *    table must list every outbound data flow before the user can click
- *    past this screen.
- *
- * 2. Article 21 right to object by automated means: the opt-in requires
- *    explicit affirmative action, so no pre-ticked default (CJEU Planet49,
- *    Art. 4(11)), and both buttons keep equal visual weight to avoid the
- *    dark-pattern asymmetry flagged by EDPB Guidelines 03/2022.
- *
- * The opt-in writes `analytics_opt_in` immediately on click, independent of
- * the wizard's Apply flow, so the choice survives backing out of the wizard
- * and the next update check already honours it.
+ * Shows outbound data flows before recording an explicit analytics choice.
+ * The preference is saved immediately, independently of the wizard's Apply
+ * flow, so it survives leaving setup.
  */
 export function PrivacyStep() {
   const [choice, setChoice] = useState<boolean | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Load existing value on mount so re-running setup shows the current state.
+  // Re-running setup shows the saved choice.
   useEffect(() => {
     fetch("/api/config/preference?key=analytics_opt_in")
       .then((r) => r.json())
@@ -32,8 +20,7 @@ export function PrivacyStep() {
         if (typeof data?.value === "boolean") setChoice(data.value)
       })
       .catch(() => {
-        // Pref not set yet. Leave it null so neither button is highlighted
-        // and the choice stays explicit.
+        // Leave an unset choice neutral.
       })
   }, [])
 
@@ -70,7 +57,7 @@ export function PrivacyStep() {
         does.
       </p>
 
-      {/* Article 13 transparency at the point of collection. */}
+      {/* Show outbound data flows before the choice. */}
       <div className="mt-8 w-full max-w-2xl rounded-xl border border-white/10 bg-white/[0.02] p-5">
         <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">
           What we send, when, and why
@@ -118,7 +105,7 @@ export function PrivacyStep() {
         </p>
       </div>
 
-      {/* Explicit affirmative action; must never be pre-ticked. */}
+      {/* Keep the unset state neutral. */}
       <div className="mt-6 w-full max-w-2xl rounded-xl border border-white/10 bg-white/[0.02] p-5">
         <p className="text-sm font-semibold text-slate-200">
           Help us count new installs?

@@ -32,7 +32,6 @@ info()  { echo -e "${BLUE}[INFO]${NC} $1"; }
 ok()    { echo -e "${GREEN}[OK]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
-# ── Parse arguments ──
 BUILD_32BIT=false
 LOCAL_BINARY=""
 for arg in "$@"; do
@@ -50,16 +49,14 @@ done
 
 if $BUILD_32BIT; then
     ARCH_LABEL="32-bit (armhf — Pi 3 with 32-bit Pi OS)"
-    # One binary, but SUFFIXES stays a list so the loops below are identical
-    # to the 64-bit path.
+    # Keep SUFFIXES iterable like the 64-bit path.
     SUFFIXES=("linux-armv7")
     CPUS=("cortex-a7")
     RUST_TARGET="armv7-unknown-linux-gnueabihf"
     CONFIG_FILE="pi-gen-config-32bit"
 else
     ARCH_LABEL="64-bit (arm64 — Pi 3/4/5/Zero 2)"
-    # Three per-CPU-tuned variants; the runtime picker selects one at every
-    # service start.
+    # The runtime picker selects a CPU-tuned variant at service start.
     SUFFIXES=("linux-arm64-a53" "linux-arm64-a72" "linux-arm64-a76")
     CPUS=("cortex-a53" "cortex-a72" "cortex-a76")
     RUST_TARGET="aarch64-unknown-linux-gnu"
@@ -70,16 +67,11 @@ info "Building $ARCH_LABEL image"
 
 command -v docker &>/dev/null || error "Docker is required. Install it first."
 
-# ── Step 1: Get the DashUSB binary variants ──
-#
-# VARIANT_PATHS[i] is the local path to the dashusb binary for SUFFIXES[i].
-# Step 4 injects them into pi-gen's stage_dashusb/files/.
+# VARIANT_PATHS[i] corresponds to SUFFIXES[i].
 VARIANT_PATHS=()
 
 if [ -n "$LOCAL_BINARY" ]; then
-    # One binary from the CLI, staged under every variant. A board that would
-    # prefer a more specific variant falls back through the picker's chain to
-    # whatever is actually present.
+    # Stage a supplied binary under every suffix so the picker always finds it.
     info "Using local binary: $LOCAL_BINARY (staged under all ${#SUFFIXES[@]} variant slot(s))"
     for sfx in "${SUFFIXES[@]}"; do
         VARIANT_PATHS+=("$LOCAL_BINARY")
@@ -94,10 +86,8 @@ elif command -v cross &>/dev/null && command -v node &>/dev/null; then
         mkdir -p "$SCRIPT_DIR/crates/sentryusb/static"
         cp -r dist/. "$SCRIPT_DIR/crates/sentryusb/static/"
     )
-    # Cross-compile once per CPU variant. RUSTFLAGS overrides the
-    # per-target-cpu setting in .cargo/config.toml. cargo keys its target/
-    # subdir on the triple alone, so each build's output moves to a per-CPU
-    # stash before the next iteration clobbers it.
+    # Cargo keys target output by triple, so stash each CPU variant before the
+    # next build replaces it. RUSTFLAGS overrides .cargo/config.toml.
     for i in "${!SUFFIXES[@]}"; do
         sfx="${SUFFIXES[$i]}"
         cpu="${CPUS[$i]}"
@@ -105,11 +95,8 @@ elif command -v cross &>/dev/null && command -v node &>/dev/null; then
         (
             cd "$SCRIPT_DIR"
             cargo clean --release --target "$RUST_TARGET" -p sentryusb 2>/dev/null || true
-            # a53/a72 (BCM2710/2711) lack the ARMv8 crypto extension, but
-            # LLVM's CPU defs assume it, and RustCrypto skips runtime
-            # detection when the feature is compile-time on: baked-in AES/SHA
-            # instructions SIGILL on those boards. Mirror build.yml and strip
-            # crypto everywhere except a76.
+            # LLVM assumes crypto for a53/a72, but BCM2710/2711 lack it;
+            # compiled AES/SHA instructions would SIGILL. Keep build.yml in sync.
             case "$cpu" in
                 cortex-a76) FEATURES="" ;;
                 *)          FEATURES=" -C target-feature=-aes,-sha2" ;;
@@ -134,12 +121,10 @@ else
     ok "Downloaded ${#SUFFIXES[@]} variant(s)"
 fi
 
-# Every staged variant must exist before the image build starts.
 for p in "${VARIANT_PATHS[@]}"; do
     [ -f "$p" ] || error "Missing dashusb variant at $p"
 done
 
-# ── Step 2: Clone pi-gen ──
 info "Setting up pi-gen..."
 rm -rf "$WORK_DIR"
 if $BUILD_32BIT; then
@@ -148,13 +133,11 @@ else
     git clone --depth 1 --branch arm64 https://github.com/RPi-Distro/pi-gen.git "$WORK_DIR"
 fi
 
-# ── Step 3: Prepare pi-gen with DashUSB config ──
 cd "$WORK_DIR"
 bash "$SCRIPT_DIR/pi-gen-sources/prepare.sh"
 
 cp "$SCRIPT_DIR/pi-gen-sources/$CONFIG_FILE" "$WORK_DIR/config"
 
-# ── Step 4: Inject the pre-built binaries and BLE daemon ──
 info "Injecting DashUSB binary variants into image build..."
 STAGE_FILES="$WORK_DIR/stage_dashusb/00-dashusb-tweaks/files"
 for i in "${!SUFFIXES[@]}"; do
@@ -164,7 +147,6 @@ for i in "${!SUFFIXES[@]}"; do
     info "  → staged dashusb-${sfx}"
 done
 
-# The picker chooses which variant runs at each service start.
 cp "$SCRIPT_DIR/pi-gen-sources/00-dashusb-tweaks/files/dashusb-pick-binary" \
     "$STAGE_FILES/dashusb-pick-binary"
 chmod +x "$STAGE_FILES/dashusb-pick-binary"
@@ -181,11 +163,9 @@ else
     sed -i 's/200 \* 1024 \* 1024/800 * 1024 * 1024/' "$WORK_DIR/export-image/prerun.sh"
 fi
 
-# ── Step 5: Build the image ──
 info "Building image with Docker (this takes 15-30 minutes)..."
 ./build-docker.sh
 
-# ── Step 6: Copy output ──
 IMAGE=$(find "$WORK_DIR/deploy" -name '*.img' | head -1)
 if [ -z "$IMAGE" ]; then
     error "Build failed — no image found in deploy/"

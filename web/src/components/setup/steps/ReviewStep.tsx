@@ -72,8 +72,7 @@ function formatReviewValue(key: string, value: string, data: StepProps["data"]):
 export function ReviewStep({ data, setupAlreadyFinished }: StepProps) {
   const configuredCount = Object.entries(data).filter(([k, v]) => !k.startsWith("_") && v && v.trim() !== "").length
 
-  // Locked once initial setup has completed. Shown greyed out with a
-  // "(locked)" suffix so the user sees why the value isn't editable.
+  // Root resizing is locked after initial setup.
   const lockedKeys = new Set(setupAlreadyFinished ? ["INCREASE_ROOT_SIZE"] : [])
 
   return (

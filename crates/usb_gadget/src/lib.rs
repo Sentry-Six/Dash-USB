@@ -1,7 +1,4 @@
-//! USB gadget control via Linux configfs.
-//!
-//! Replaces `enable_gadget.sh` and `disable_gadget.sh` with native Rust
-//! operations on `/sys/kernel/config/usb_gadget/dashusb`.
+//! USB mass-storage gadget control through Linux configfs.
 
 pub mod cycle_lock;
 pub mod snapshot;
@@ -14,11 +11,8 @@ use anyhow::{bail, Context, Result};
 use tracing::info;
 
 const GADGET_NAME: &str = "dashusb";
-// US English. MUST stay spelled `0x409`, matching the shell path. The kernel
-// parses `0x0409` and `0x409` to the same langid, but the configfs dentry
-// keeps whichever string was mkdir'd first. Spelling it `0x0409` here means
-// `disable()` cannot rmdir `strings/0x409`, the orphan dir pins libcomposite
-// forever, and the next `enable()` gets EEXIST.
+// Keep `0x409` spelling aligned with the shell path; configfs preserves the
+// literal dentry and mismatches prevent teardown.
 const LANG: &str = "0x409";
 const CFG: &str = "c";
 
@@ -44,14 +38,7 @@ fn write_file(path: &Path, content: &str) -> Result<()> {
         .with_context(|| format!("failed to write {}", path.display()))
 }
 
-/// Create `link -> target`, replacing any stale entry at `link` first.
-///
-/// Detect that entry with `symlink_metadata()`, which does NOT follow
-/// symlinks. A dangling link (a previous `disable()` left
-/// `configs/c.1/mass_storage.0` pointing at a torn-down
-/// `functions/mass_storage.0`) makes `Path::exists()` report false because it
-/// follows the link to the missing target; `symlink()` then fails with EEXIST
-/// because the link path itself still exists.
+/// Replace any existing link, including a dangling symlink.
 #[cfg(unix)]
 fn ensure_symlink(target: &Path, link: &Path) -> Result<()> {
     match link.symlink_metadata() {
@@ -121,19 +108,11 @@ pub fn enable() -> Result<()> {
         .args(["-q", "-r", "g_mass_storage"])
         .status();
 
-    // Existing and complete: only a UDC (re)bind is needed, since a prior
-    // enable can fail to bind on a busy UDC yet leave a valid config.
-    // Existing but INCOMPLETE (crashed mid-enable): tear down and rebuild,
-    // because binding a half-configured gadget enumerates a device with no
-    // LUNs.
+    // Rebind a complete gadget; rebuild an incomplete one before enumeration.
     if gadget.exists() {
         if gadget_dir_is_complete(&gadget) {
-            // Kernel 6.18+ closes the LUN backing file on UDC unbind, so a
-            // rebind without refreshing the LUN reports "(no medium)". Clear
-            // and rewrite each LUN's own current path so the kernel re-opens
-            // it. LUN numbering is compact (enable() skips missing images),
-            // so indexing DISK_IMAGES positionally would refresh the wrong
-            // LUN, or none, whenever an image is absent.
+            // Kernel 6.18+ closes media on unbind; rewrite each compact LUN's
+            // current path before rebinding.
             let func_dir = gadget.join("functions/mass_storage.0");
             for i in 0..DISK_IMAGES.len() {
                 let lun_file = func_dir.join(format!("lun.{}/file", i));
@@ -145,10 +124,7 @@ pub fn enable() -> Result<()> {
                     continue;
                 }
                 let _ = fs::write(&lun_file, "\n");
-                // Re-apply the profile's nofua setting while the medium is
-                // detached: a gadget dir built by an older version predates
-                // this policy (the fresh-build path below explains why the
-                // car needs it).
+                // Apply current nofua policy to gadgets created by older versions.
                 let nofua = if sentryusb_vehicle_profile::Profile::active().features.nofua {
                     "1"
                 } else {
@@ -165,10 +141,7 @@ pub fn enable() -> Result<()> {
         disable()?;
     }
 
-    // One modprobe call per module. On kernel 6.18+, passing both on a single
-    // command line parses the second name as a module parameter instead of
-    // loading it: `libcomposite: unknown parameter 'usb_f_mass_storage'
-    // ignored`.
+    // Load modules separately; kernel 6.18 parses the second name as a parameter.
     let _ = std::process::Command::new("modprobe")
         .arg("libcomposite")
         .status();
@@ -210,24 +183,11 @@ pub fn enable() -> Result<()> {
     for (image_path, label) in DISK_IMAGES {
         if Path::new(image_path).exists() {
             let lun_dir = func_dir.join(format!("lun.{}", lun));
-            // Create every LUN dir including lun.0: depending on the kernel's
-            // configfs version, lun.0 is NOT guaranteed to be auto-created
-            // when the mass_storage function is instantiated, and writing to
-            // `lun.0/file` before the dir exists silently fails.
+            // Some configfs versions do not create lun.0 automatically.
             fs::create_dir_all(&lun_dir)
                 .with_context(|| format!("failed to create lun.{} at {}", lun, lun_dir.display()))?;
-            // The car issues FUA (force-unit-access) writes, which the
-            // mass_storage function honors as synchronous flushes through its
-            // single-threaded worker. One slow flush under disk contention can
-            // exceed the car's SCSI timeout, making it drop the drive (X on
-            // the cam icon) until it is re-plugged. nofua=1 lets FUA writes
-            // complete as normal cached writes; the images are fsck'd on
-            // every gadget cycle, so that integrity tradeoff is already priced in.
-            //
-            // Best-effort: a kernel whose mass_storage function lacks the
-            // nofua attribute must not fail the whole enable. Missing nofua
-            // only leaves FUA stalls possible; failing here would leave the
-            // car with no drive at all.
+            // nofua avoids synchronous flushes exceeding the car's SCSI timeout;
+            // cycle fsck covers the tradeoff. Unsupported kernels continue best-effort.
             let nofua = if sentryusb_vehicle_profile::Profile::active().features.nofua {
                 "1"
             } else {
@@ -256,11 +216,7 @@ pub fn enable() -> Result<()> {
 
     info!("USB gadget configured with {} LUN(s)", lun);
 
-    // Kernel 6.18+ needs the configfs LUN file-attribute writes to propagate
-    // before the UDC bind activates the mass_storage function. Without the
-    // delay the function activates with "LUN: removable file: (no medium)"
-    // even though the file attribute reads back correctly. 3 s is the
-    // measured minimum on rockchip64.
+    // Kernel 6.18+ needs 3 s for LUN media propagation before UDC bind.
     std::thread::sleep(std::time::Duration::from_secs(3));
 
     bind_udc(&gadget)
@@ -279,10 +235,7 @@ fn bind_udc(gadget: &Path) -> Result<()> {
     for attempt in 1..=5 {
         match fs::write(&udc_path, &udc) {
             Ok(()) => {
-                // A sysfs write to `UDC` can return Ok even when the kernel
-                // silently rejected the bind (incomplete gadget config, UDC
-                // refused attachment). Read back to confirm the binding stuck
-                // and treat a mismatch as retryable, not a silent success.
+                // Confirm the kernel accepted the UDC bind; writes can falsely succeed.
                 match fs::read_to_string(&udc_path) {
                     Ok(s) if s.trim() == udc.trim() => {
                         info!("USB gadget bound to UDC: {}", udc);
@@ -326,10 +279,7 @@ fn bind_udc(gadget: &Path) -> Result<()> {
 
 /// Tear the gadget down in configfs. Equivalent to `disable_gadget.sh`.
 pub fn disable() -> Result<()> {
-    // Unload g_mass_storage FIRST so it releases the UDC before the UDC is
-    // deactivated. Left to the end, the kernel can keep the UDC bound, the
-    // UDC write below silently no-ops, and the next `enable()` hangs on
-    // "UDC busy" forever.
+    // Release g_mass_storage before deactivating UDC to avoid stale busy binds.
     let _ = std::process::Command::new("modprobe")
         .args(["-q", "-r", "g_mass_storage"])
         .status();
@@ -342,47 +292,25 @@ pub fn disable() -> Result<()> {
         return Ok(());
     }
 
-    // Deactivate the UDC by writing a newline, NOT a zero-byte string: some
-    // configfs UDC handlers reject empty writes outright. An already-unbound
-    // gadget (a prior `disable()` that ran halfway, or boot before the first
-    // enable) returns ENODEV, which is harmless and discarded.
+    // Write a newline; some UDC handlers reject a zero-byte unbind.
     let _ = fs::write(gadget.join("UDC"), "\n");
 
-    // Detach the function from the configuration first. While this symlink
-    // exists the kernel treats the function as in use: LUN `file` attributes
-    // are pinned read-only with EBUSY and `rmdir functions/mass_storage.0`
-    // fails. Removing the symlink unblocks the rest of the cascade.
+    // Detach the function before clearing LUNs or removing configfs nodes.
     let cfg_dir = gadget.join(format!("configs/{}.1", CFG));
     let _ = fs::remove_file(cfg_dir.join("mass_storage.0"));
     let cfg_strings = cfg_dir.join(format!("strings/{}", LANG));
     let _ = fs::remove_dir(&cfg_strings);
-    // Compat: binaries predating the LANG fix used `0x0409`, so installs that
-    // routed archiveloop through Rust (install-pi.sh shim, `dashusb gadget
-    // enable` CLI shim) have a literal `strings/0x0409` dir. Remove it too, or
-    // a hot-upgraded install keeps the orphan and pins libcomposite forever.
-    // NotFound is expected on shell-script installs.
+    // Remove the pre-fix `0x0409` dentry so it cannot pin libcomposite.
     let _ = fs::remove_dir(cfg_dir.join("strings/0x0409"));
 
-    // With the function detached, clear each LUN's `file` attribute to
-    // release its backing-file handle. Kernels that cascade-clean the
-    // function once its last symlink is removed (Pi 5 / Linux 6.x) may have
-    // dropped the LUN paths already; those writes are silently ignored. On
-    // kernels that do not cascade, this is what lets the LUN/function rmdirs
-    // below succeed instead of hitting EBUSY.
+    // Clear remaining LUN handles; ignore kernels that already removed them.
     let func_dir = gadget.join("functions/mass_storage.0");
     for i in 0..=4 {
         let _ = fs::write(func_dir.join(format!("lun.{}/file", i)), "\n");
     }
 
-    // Remove the non-default LUNs (lun.1 through lun.4) only. lun.0 is the
-    // *implicit* default LUN that the mass_storage function creates as part of
-    // its own configfs node: on most kernels `rmdir lun.0` returns EPERM, and
-    // lun.0 is released only when the parent `mass_storage.0` is removed.
-    // Attempting it anyway leaves lun.0 in place, so `rmdir mass_storage.0`
-    // fails, the gadget-root rmdir fails, configfs keeps pinning
-    // `libcomposite`, and the next `enable()` bails out on "Module
-    // libcomposite is in use" from `modprobe -r`. The web-UI toggle then looks
-    // like it errored and only a reboot unsticks it.
+    // Remove only explicit LUNs; implicit lun.0 disappears with mass_storage.0
+    // and often rejects direct rmdir with EPERM.
     for i in 1..=4 {
         let _ = fs::remove_dir(func_dir.join(format!("lun.{}", i)));
     }
@@ -398,9 +326,7 @@ pub fn disable() -> Result<()> {
         .args(["-r", "usb_f_mass_storage", "g_ether", "usb_f_ecm", "usb_f_rndis", "libcomposite"])
         .status();
 
-    // Every rmdir above is best-effort (`let _ =`), so residue from
-    // kernel-version quirks (lun.0 implicit-default behavior, cascade timing)
-    // is invisible to the caller. Log it so flakes stay diagnosable.
+    // Log best-effort configfs residue for kernel-specific diagnosis.
     if gadget.exists() {
         tracing::warn!(
             "disable() completed but {} still present (incomplete teardown)",
@@ -412,14 +338,7 @@ pub fn disable() -> Result<()> {
     Ok(())
 }
 
-/// True only when the gadget is bound to a UDC AND `lun.0/file` is populated.
-///
-/// Both signals are required. A UDC-only check reports "active" for a gadget
-/// that is bound but has lost its LUN backing file (a manual tear-down that
-/// removed `lun.0/file` without unbinding the UDC), so the idempotent
-/// `gadget_enable` API handler skips the full rebuild and the car stays
-/// plugged into a device with no LUNs. A partially-torn-down gadget must
-/// report inactive so the next enable call reconstructs it.
+/// Require both UDC binding and populated lun.0 so partial teardowns rebuild.
 pub fn is_active() -> bool {
     let root = Path::new("/sys/kernel/config/usb_gadget/dashusb");
     let udc_bound = fs::read_to_string(root.join("UDC"))

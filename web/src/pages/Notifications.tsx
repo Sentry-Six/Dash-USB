@@ -185,7 +185,6 @@ export default function Notifications() {
         body: JSON.stringify(updated),
       })
       if (!res.ok) {
-        // Rollback
         setSettings(settings)
       }
     } catch {

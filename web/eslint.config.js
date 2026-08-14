@@ -20,8 +20,7 @@ export default defineConfig([
       globals: globals.browser,
     },
     rules: {
-      // React Compiler-era diagnostics; compiler not in use, existing
-      // fetch-on-mount effects are stable. Warn until compiler adoption.
+      // Fetch-on-mount effects intentionally set state; surface them as warnings.
       'react-hooks/set-state-in-effect': 'warn',
       // Stale-closure detector — kept at error; intentional omissions get
       // inline suppressions with a reason.
@@ -35,8 +34,7 @@ export default defineConfig([
     },
   },
   {
-    // Context provider modules export a hook alongside the provider;
-    // only affects dev HMR granularity, not production.
+    // Context modules export both provider and hook; only development HMR differs.
     files: ['src/hooks/*.tsx'],
     rules: {
       'react-refresh/only-export-components': 'off',

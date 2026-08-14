@@ -16,9 +16,7 @@ const LEGACY_BOOT_PATH: &str = "/boot/dashusb.conf";
 
 /// First existing config path.
 ///
-/// `DASHUSB_CONFIG_PATH` replaces the on-Pi search chain entirely so the
-/// daemon can run off-Pi against a config in a writable location. Read
-/// once; unset means the probe loop runs live on every call.
+/// `DASHUSB_CONFIG_PATH` replaces the on-device search chain for development.
 pub fn find_config_path() -> &'static str {
     static ENV_OVERRIDE: OnceLock<Option<&'static str>> = OnceLock::new();
     let ov = ENV_OVERRIDE.get_or_init(|| {
@@ -38,7 +36,7 @@ pub fn find_config_path() -> &'static str {
     DEFAULT_CONFIG_PATH
 }
 
-/// Base directory for runtime state (preferences store, GPS fix cache).
+/// Base directory for runtime state such as the preferences store.
 /// `DASHUSB_MUTABLE_DIR` redirects it for off-Pi development; unset
 /// means `/mutable`.
 pub fn mutable_dir() -> &'static str {
@@ -54,9 +52,7 @@ pub fn mutable_dir() -> &'static str {
 
 /// Returns (active exports, commented-out exports).
 pub fn parse_file(path: &str) -> Result<(SetupConfig, SetupConfig)> {
-    // A missing conf is a valid starting state: pi-gen images ship only
-    // dashusb.conf.sample, and the wizard's first save creates the real
-    // file. Treat it as empty.
+    // The setup wizard creates the configuration on its first save.
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -83,27 +79,16 @@ pub fn parse_file(path: &str) -> Result<(SetupConfig, SetupConfig)> {
 /// `new_config` become active exports; previously active keys absent
 /// from it are commented out.
 pub fn write_file(path: &str, new_config: &SetupConfig) -> Result<()> {
-    // Reject the whole write if any key is not a plain shell identifier.
-    // Keys go into `export KEY=...` unquoted: `quote()` neutralizes
-    // hostile values, but a key containing a newline or `=` injects an
-    // extra export line into the bash-sourced config (smuggling in, say,
-    // a WEB_PASSWORD override via the pre-setup /api/setup/config PUT).
-    // Same rule parse_key_value enforces on read.
+    // Keys are emitted unquoted; shell identifiers prevent export-line
+    // injection. The parser enforces the same rule on read.
     if let Some(bad) = new_config.keys().find(|k| !is_valid_key(k)) {
         anyhow::bail!("refusing to write config: invalid key {:?}", bad);
     }
-    // Reject newline values: `quote()` would emit a literal multi-line
-    // bash string, but `parse_file()` is line-based and reads back only
-    // the first line, so the value silently truncates on the next load
-    // and the trailing lines become stray config. (A textarea-backed
-    // field like NOTIFICATION_COMMAND_* is the realistic source.)
+    // Line-based parsing cannot safely round-trip newline values.
     if let Some((k, _)) = new_config.iter().find(|(_, v)| v.contains(['\n', '\r'])) {
         anyhow::bail!("refusing to write config: value for {:?} contains a newline", k);
     }
-    // A missing conf is a valid starting state: pi-gen images ship only
-    // dashusb.conf.sample, and the wizard's first save creates the real
-    // file. Treat it as an empty template; every key lands via the
-    // append pass below.
+    // Treat a not-yet-created configuration as an empty template.
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -141,12 +126,7 @@ pub fn write_file(path: &str, new_config: &SetupConfig) -> Result<()> {
         }
     }
 
-    // Atomic write: tmp + fsync + rename. Streaming into a direct
-    // `fs::File::create` leaves a torn file on a power cut mid-write,
-    // which is real on a Pi that loses power the instant the car
-    // disconnects. A corrupt dashusb.conf will not parse on the next
-    // boot, so setup defaults everything to unset: archive URLs,
-    // hostnames, WiFi AP creds.
+    // Use tmp + fsync + rename to survive abrupt vehicle power loss.
     let tmp = format!("{}.tmp", path);
     {
         let mut file = fs::File::create(&tmp)
@@ -158,8 +138,7 @@ pub fn write_file(path: &str, new_config: &SetupConfig) -> Result<()> {
             }
             writer.flush()?;
         }
-        // fsync after the writer drops, so a crash cannot leave the
-        // rename below exposing an empty file.
+        // Flush the writer before syncing the file to persistent storage.
         let _ = file.sync_all();
     }
     if let Err(e) = fs::rename(&tmp, path) {
@@ -237,9 +216,7 @@ fn quote(s: &str) -> String {
     if s.is_empty() {
         return "''".to_string();
     }
-    // \n and \r are in SPECIAL so an embedded newline gets quoted and the
-    // file stays valid bash for `source` consumers. write_file rejects such
-    // values anyway; parse_file is line-based and cannot round-trip them.
+    // Keep this safe independently of write_file's newline rejection.
     const SPECIAL: &str = " \t\n\r'\"\\$!#&|;(){}[]<>?*~`";
     if !s.chars().any(|c| SPECIAL.contains(c)) {
         return s.to_string();
@@ -253,22 +230,16 @@ pub fn get_config_value(active: &SetupConfig, commented: &SetupConfig, key: &str
     active.get(key).or_else(|| commented.get(key)).cloned()
 }
 
-/// GitHub source for repository-sourced support files: the migration tarball
-/// fallback and the runtime-patches refresh. Release binaries are NEVER
-/// selected by this; they always come from tagged GitHub Releases.
+/// Source for migration and runtime-patch files, never release binaries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHubSource {
-    /// `owner/Dash-USB`. `REPO` in the active conf overrides the owner so a
-    /// fork can serve its own support files; the repo name stays fixed.
+    /// `owner/Dash-USB`; `REPO` overrides only the owner for forks.
     pub repo_slug: String,
     /// Tracking ref for non-binary fetches. `BRANCH` in the active conf,
     /// defaulting to `main`. Invalid values fall back to `main`.
     pub branch: String,
-    /// True only when the conf carries a valid BRANCH other than the
-    /// default. Callers that would otherwise prefer the branch copy of a
-    /// support file over the release-tag copy MUST check this: a device
-    /// that never chose a branch must keep tag-matched files rather than
-    /// silently tracking the default branch's tip.
+    /// Whether a non-default branch was explicitly selected. Default devices
+    /// must retain tag-matched support files.
     pub branch_explicit: bool,
 }
 
@@ -276,9 +247,7 @@ const DEFAULT_GITHUB_OWNER: &str = "Sentry-Six";
 const GITHUB_REPO_NAME: &str = "Dash-USB";
 const DEFAULT_GITHUB_BRANCH: &str = "main";
 
-/// Conservative git-ref charset. Values from dashusb.conf end up in URLs and
-/// as arguments to root-run shell, so anything outside this set falls back to
-/// the default rather than flowing onward.
+/// Restrict config-derived URL and privileged-shell ref components.
 fn valid_ref_component(s: &str, allow_slash: bool) -> bool {
     !s.is_empty()
         && s.len() <= 100
@@ -352,7 +321,7 @@ mod tests {
             assert_eq!(src.branch, "main", "branch {:?} must fall back", bad);
             assert_eq!(src.repo_slug, "Sentry-Six/Dash-USB", "owner {:?} must fall back", bad);
         }
-        // slash allowed in branch, not owner
+        // Branches may contain slashes; owners may not.
         let mut c = SetupConfig::new();
         c.insert("REPO".into(), "a/b".into());
         assert_eq!(resolve_github_source(&c).repo_slug, "Sentry-Six/Dash-USB");
@@ -426,9 +395,7 @@ mod tests {
 
     #[test]
     fn write_file_rejects_injection_key() {
-        // A key carrying a newline plus a second export would inject an
-        // arbitrary variable (e.g. WEB_PASSWORD) into the bash-sourced
-        // config. write_file must refuse the whole write.
+        // A newline key could inject a second shell export.
         let dir = std::env::temp_dir().join(format!(
             "dashusb-cfg-inject-{}-{}",
             std::process::id(),
@@ -445,7 +412,7 @@ mod tests {
         cfg.insert("EVIL\nexport WEB_PASSWORD".to_string(), "x".to_string());
         let r = write_file(path.to_str().unwrap(), &cfg);
         assert!(r.is_err(), "injection key must be rejected");
-        // The file must be untouched (no WEB_PASSWORD smuggled in).
+        // Rejected writes must leave the file untouched.
         let after = std::fs::read_to_string(&path).unwrap();
         assert!(!after.contains("WEB_PASSWORD"), "config must be unchanged");
 
@@ -453,8 +420,7 @@ mod tests {
         ok.insert("GOOD".to_string(), "2".to_string());
         assert!(write_file(path.to_str().unwrap(), &ok).is_ok());
 
-        // A newline in a VALUE can't round-trip the line-based parser, so
-        // write_file must reject it rather than silently truncate on reload.
+        // Newline values cannot round-trip the line-based format.
         let mut nl = SetupConfig::new();
         nl.insert("NOTIFICATION_COMMAND_START".to_string(), "line1\nline2".to_string());
         assert!(

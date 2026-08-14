@@ -11,72 +11,38 @@ use std::time::{Duration, Instant};
 
 use crate::router::AppState;
 
-// Status cache
-//
-// The dashboard polls /api/status every 2 s per open tab. Uncached, each call
-// forks 5-6 subprocesses (iwgetid, iwconfig, ip×2, ethtool, stat) for the
-// WiFi/Ethernet/disk info: measurable CPU and fork+exec page faults on a Pi
-// Zero 2 W, for data that barely changes.
-//
-// Only the slow parts are cached, with TTLs matching how often each value
-// realistically changes:
-//   * Network info (SSID, IP, signal, ethtool):  10 s
-//   * Disk space (total/free via statvfs):        5 s
-//
-// CPU temp, fan speed, uptime and gadget state stay live; they are cheap /sys
-// reads.
+// Cache shell-heavy network data for 10 s and disk data for 5 s; cheap sysfs
+// status remains live for the dashboard's 2 s polling interval.
 
 #[derive(Clone, Default)]
 struct CachedNetwork {
     wifi_ssid: String,
-    /// Channel frequency in Hz as a string ("5180000000" = 5.18 GHz), empty
-    /// when not connected or `iw` isn't installed. The iOS client formats it
-    /// via `formatFreqGHz`; the web UI ignores it. Cached with the rest of the
-    /// wifi info because it only changes on reconnect or roam.
+    /// Channel frequency in Hz, empty when unavailable.
     wifi_freq: String,
     wifi_ip: String,
     ether_ip: String,
     ether_speed: String,
-    /// Cached to avoid re-scanning /sys/class/net every poll. Signal strength
-    /// and throughput are deliberately NOT cached: `get_status` reads
-    /// `wifi_strength`/`wifi_signal_dbm` live from /proc/net/wireless (one
-    /// file read, no shell-out) and derives the bps values from the
-    /// net_sampler. Everything else here changes only on reconnect or cable
-    /// swap.
+    /// Interface metadata cached across polls; signal and throughput stay live.
     wifi_dev: String,
     eth_dev: String,
 }
 
-/// Live signal read from /proc/net/wireless, with no fork+exec.
-///
-/// Returns `(strength_as_X/70, signal_dbm)`. The `/70` denominator
-/// matches what mainline mac80211 drivers (Broadcom Cypress on Pi 4/5
-/// and Pi Zero 2 W, Realtek on most third-party chipsets) report as
-/// the max link quality; other drivers may scale slightly differently,
-/// in which case the WifiBars indicator is approximate but the dBm
-/// value the UI also shows is always exact.
-///
-/// /proc/net/wireless format:
-/// ```text
-/// Inter-| sta-|   Quality        |   Discarded packets               | Missed | WE
-///  face | tus | link level noise |  nwid  crypt   frag  retry   misc | beacon | 22
-///  wlan0: 0000   58.  -52.  -256        0      0      0      0    137        0
-/// ```
+/// Return live `(quality/70, dBm)` from /proc/net/wireless. Quality scaling is
+/// approximate across drivers; dBm is exact.
 fn read_wireless_quality(dev: &str) -> Option<(String, Option<i32>)> {
     let data = std::fs::read_to_string("/proc/net/wireless").ok()?;
     for line in data.lines().skip(2) {
         let line = line.trim_start();
-        // The kernel emits "wlan0:" with no space before the colon.
+        // Interface tokens end with a colon.
         let prefix = format!("{}:", dev);
         if !line.starts_with(&prefix) {
             continue;
         }
         let cols: Vec<&str> = line[prefix.len()..].split_whitespace().collect();
-        // [status, link, level, noise, ...]
         if cols.len() < 3 {
             return None;
         }
-        // Values end with a `.` (e.g. "58." for fixed-point); strip it.
+        // Kernel fixed-point values carry a trailing period.
         let link = cols[1].trim_end_matches('.').parse::<u32>().ok()?;
         let level = cols[2].trim_end_matches('.').parse::<i32>().ok();
         return Some((format!("{}/70", link), level));
@@ -112,8 +78,8 @@ const STORAGE_TTL: Duration = Duration::from_secs(5);
 /// to match the `stat --file-system` target it replaced.
 fn statvfs_backing_files() -> Option<(u64, u64)> {
     let path = std::ffi::CString::new("/backingfiles/.").ok()?;
-    // SAFETY: zero-init is the documented init pattern for libc structs;
-    // we check the return code before reading fields.
+    // SAFETY: zero-init is the documented pattern; fields are read only after
+    // checking the return code.
     let mut buf: libc::statvfs = unsafe { std::mem::zeroed() };
     let r = unsafe { libc::statvfs(path.as_ptr(), &mut buf) };
     if r != 0 {
@@ -175,10 +141,7 @@ struct PiStatus {
     /// -1 when unknown. Same signal the telemetry heartbeat uses.
     cam_last_write_secs: i64,
     wifi_ssid: String,
-    /// Frequency in Hz as a string (e.g. "5180000000" for 5.18 GHz).
-    /// Empty when not on WiFi or `iw` isn't installed. iOS renders this
-    /// as "5.2 GHz" in the dashboard Wi-Fi sub-line via `formatFreqGHz`;
-    /// the web UI doesn't currently use it.
+    /// Frequency in Hz, empty when unavailable.
     wifi_freq: String,
     wifi_strength: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -192,23 +155,14 @@ struct PiStatus {
     wifi_tx_bps: u64,
     ether_rx_bps: u64,
     ether_tx_bps: u64,
-    /// Stable per-device suffix derived from the system hostname (the
-    /// part after the final `-`, e.g. "dashusb-A3F1" → "A3F1"). iOS
-    /// uses this for the dashboard hero-bar identifier so devices paired
-    /// over WiFi (no BLE metadata path) still show "Dash USB-A3F1"
-    /// instead of bare "Dash USB". Empty if `/etc/hostname` is
-    /// unreadable or has no dash.
+    /// Hostname suffix used to identify WiFi-paired devices.
     device_suffix: String,
 }
 
 pub async fn get_status(
     State(state): State<AppState>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    // The sysfs/procfs reads are cheap, but the snapshot scan and
-    // cam_last_write_secs hit /backingfiles — seconds while an archive run
-    // saturates the disk. This is the endpoint the web UI's connection banner
-    // polls, so blocking an async worker here surfaces to the user as
-    // "Reconnecting". Run the whole synchronous FS half on the blocking pool.
+    // Snapshot metadata can block behind archive I/O; keep it off async workers.
     let mut s = match tokio::task::spawn_blocking(status_fs_snapshot).await {
         Ok(s) => s,
         Err(e) => {
@@ -225,10 +179,7 @@ pub async fn get_status(
         s.free_space = storage.free_space.to_string();
     }
 
-    // IPs, SSID and ether_speed come from the NETWORK_TTL cache. Signal
-    // strength, dBm (from /proc/net/wireless) and throughput (from the
-    // net_sampler loop) are read live every poll: a 10 s lag on a
-    // signal-strength indicator reads as broken.
+    // Cache stable interface metadata but keep signal and throughput live.
     let net = cached_network().await;
     s.wifi_ssid = net.wifi_ssid;
     s.wifi_freq = net.wifi_freq;
@@ -341,10 +292,7 @@ async fn cached_network() -> CachedNetwork {
 async fn compute_network_info() -> CachedNetwork {
     let mut info = CachedNetwork::default();
 
-    // Skip the shell queries when the interface is down: they cost 5-10 s on
-    // ethernet-only systems where wlan0 exists but is unconfigured. Only the
-    // SSID, IP and frequency are needed here; signal strength and dBm are read
-    // live from /proc/net/wireless on every status poll.
+    // Avoid slow shell queries for present-but-down interfaces.
     let wifi_dev = find_net_device("wl*");
     if !wifi_dev.is_empty() && iface_is_up(&wifi_dev) {
         info.wifi_dev = wifi_dev.clone();
@@ -373,9 +321,7 @@ async fn compute_network_info() -> CachedNetwork {
         if let Ok(out) = iw_r {
             for line in out.lines() {
                 let trimmed = line.trim();
-                // Format: `freq: 5180` (MHz). Convert to Hz string so iOS
-                // `Formatters.formatFreqGHz` can divide by 1e9 and render
-                // "5.2 GHz" without further parsing.
+                // Convert `freq: 5180` MHz to the API's Hz string.
                 if let Some(rest) = trimmed.strip_prefix("freq:") {
                     if let Ok(mhz) = rest.trim().parse::<u64>() {
                         info.wifi_freq = (mhz * 1_000_000).to_string();
@@ -481,10 +427,7 @@ pub async fn get_wifi_config(
     let mut connected = false;
     let mut source = String::new();
 
-    // 1. iwgetid first: it reads the current association out of the kernel
-    //    and returns instantly. `nmcli dev wifi` below triggers a full AP
-    //    SCAN, which takes seconds and briefly disrupts the link — a steep
-    //    price when the answer is almost always "the SSID we are already on".
+    // Query the current association before falling back to an NM scan.
     if let Ok(out) = sentryusb_shell::run("iwgetid", &["-r"]).await {
         let s = out.trim();
         if !s.is_empty() {
@@ -586,21 +529,8 @@ struct SnapshotScan {
     newest: Option<u64>,
 }
 
-/// Scan exactly one directory level: no recursion, no symlink follow.
-/// Snapshots always keep `snap.bin` at the top level
-/// (`/backingfiles/snapshots/snap-NNNNNN/snap.bin`), and a recursive walk
-/// descends through every snapshot's `mnt -> /tmp/snapshots/snap-NNN` symlink,
-/// which is an autofs mount (timeout=300s) that re-mounts the per-snapshot
-/// vfat loop device on first access. Each /api/status call after the autofs
-/// timeout then triggered up to 130 vfat mounts *and* walked the entire dashcam
-/// tree inside each one: 15,000+ openat syscalls per request, 5-15s TTFB.
-///
-/// Folds the mtime extremes rather than returning a sorted path list. The old
-/// version sorted LEXICALLY and read the first and last entries as
-/// oldest/newest, but slot numbers are not time-monotonic in the field — a
-/// reflash can leave a stale high-numbered snapshot sitting above a restarted
-/// sequence — so whenever the highest-numbered snapshot was the older one, the
-/// dashboard rendered its date range backwards.
+/// Scan only top-level snap.bin files without following autofs symlinks. Fold
+/// mtime extremes because slot numbers are not time-monotonic after reflashes.
 fn scan_snapshots() -> SnapshotScan {
     let mut scan = SnapshotScan { count: 0, oldest: None, newest: None };
     let base = std::path::Path::new("/backingfiles/snapshots/");
@@ -608,25 +538,18 @@ fn scan_snapshots() -> SnapshotScan {
         return scan;
     };
     for entry in entries.flatten() {
-        // Only consider entries that are themselves directories on the
-        // host filesystem. `file_type()` uses the dirent's d_type and
-        // does NOT follow symlinks, so the `mnt` autofs symlink inside
-        // each snapshot is never resolved here.
+        // file_type avoids following any symlink into autofs.
         let Ok(ft) = entry.file_type() else { continue };
         if !ft.is_dir() {
             continue;
         }
         let snap_bin = entry.path().join("snap.bin");
-        // Use symlink_metadata to avoid traversing into anything weird;
-        // snap.bin is always a regular file on the parent XFS. Reusing it for
-        // the mtime keeps this at the same syscall count as the old
-        // existence check.
+        // Read snap.bin metadata without following links.
         let Ok(meta) = std::fs::symlink_metadata(&snap_bin) else {
             continue;
         };
         scan.count += 1;
-        // A snapshot whose mtime is unreadable still counts; it just can't
-        // move the range.
+        // Unreadable mtimes still contribute to the count.
         let Ok(mtime) = meta.modified() else { continue };
         let Ok(d) = mtime.duration_since(std::time::UNIX_EPOCH) else {
             continue;
@@ -653,10 +576,7 @@ fn read_fan_speed() -> String {
     String::new()
 }
 
-/// Host-link state of the first UDC ("configured", "suspended",
-/// "not attached", ...). Empty when there is no UDC (non-gadget dev box).
-/// Shared with the health check so the pill and the health warning can
-/// never disagree about what the link state means.
+/// First UDC state, shared with health checks; empty when no UDC exists.
 pub(crate) fn read_udc_state() -> String {
     let Ok(entries) = std::fs::read_dir("/sys/class/udc") else {
         return String::new();
@@ -681,13 +601,8 @@ fn cam_last_write_secs() -> i64 {
         .unwrap_or(-1)
 }
 
-/// Last segment after the final `-` of the system hostname: "dashusb-A3F1" →
-/// "A3F1". iOS renders this as the device-specific dashboard identifier even
-/// when paired over WiFi; the BLE path has its own device-info channel, but
-/// WiFi-only pairing can only learn the suffix from /status. Empty when the
-/// hostname has no dash or `/etc/hostname` can't be read. The 8-char cap
-/// guards against hostnames whose post-dash segment is a fully-qualified
-/// domain piece rather than a stable identifier.
+/// Return the final hostname segment for WiFi-only device identification,
+/// capped at eight characters; empty when unavailable.
 fn read_device_suffix() -> String {
     let hostname = std::fs::read_to_string("/etc/hostname")
         .ok()
@@ -742,14 +657,7 @@ fn find_net_device(pattern: &str) -> String {
     String::new()
 }
 
-/// True when the kernel reports the interface in `operstate == "up"`.
-///
-/// Gates the shell queries above: `iwgetid`/`iwconfig`/`ip` can each block for
-/// several seconds on a present-but-DOWN interface (`wlan0` exists but no
-/// NetworkManager, or Skip-WiFi configured), adding up to 5-15s to
-/// `GET /api/status`. Companion apps probing this endpoint with a short HTTP
-/// timeout then fall back to BLE-only mode even though the Pi is reachable
-/// over ethernet.
+/// Gate slow network queries on kernel `operstate == "up"`.
 fn iface_is_up(dev: &str) -> bool {
     let path = format!("/sys/class/net/{}/operstate", dev);
     std::fs::read_to_string(&path)
@@ -758,9 +666,7 @@ fn iface_is_up(dev: &str) -> bool {
 }
 
 async fn disk_usage(path: &str) -> i64 {
-    // st_blocks * 512 is the true disk usage, correct for sparse files and
-    // reflink copies. Async so the tokio worker isn't blocked: the companion
-    // app polls this roughly every 15 s per device.
+    // st_blocks reflects sparse/reflink usage; run the filesystem call off-thread.
     if let Ok(out) = tokio::process::Command::new("stat")
         .args(["--format=%b", path])
         .output()

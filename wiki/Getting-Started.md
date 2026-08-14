@@ -1,8 +1,7 @@
 # Getting Started
 
-Total time: roughly **10–15 minutes** of hands-on work, plus the time it takes to download and flash Pi OS.
-
-> **There's no prebuilt Dash USB SD image yet.** You flash stock Raspberry Pi OS Lite first, then run the installer over SSH. A bundled image will come later — for now this is the only supported install path.
+> **There's no prebuilt Dash USB SD image yet.** Flash Raspberry Pi OS Lite,
+> then run the installer over SSH.
 
 ## 1. Flash the SD card
 
@@ -58,9 +57,10 @@ sudo -i
 curl -fsSL https://raw.githubusercontent.com/Sentry-Six/Dash-USB/main/install-pi.sh | bash
 ```
 
-> **Don't skip the `apt update && apt upgrade` step.** Pi OS images carry an apt cache from whenever the image was built. If Debian has published a point release since then, the cache points at `.deb` files that no longer exist on the mirrors and you'll see `404 Not Found` errors mid-install. The upgrade can take a couple of minutes — that's normal.
+> Run `apt update && apt upgrade` first to avoid stale package-index errors.
 
-The installer itself then takes 2–5 minutes. It downloads the Dash USB binary, sets up the system service, installs mDNS, and renames the Pi to `dashusb`. Your SSH session may drop near the end when the hostname changes — that's expected.
+The installer downloads Dash USB, configures its services and mDNS, and renames
+the Pi to `dashusb`. The SSH session may close when the hostname changes.
 
 ## 5. Open the web UI
 

@@ -1,9 +1,4 @@
-//! Live archive progress for the dashboard.
-//!
-//! archiveloop's progress monitor persists `/tmp/archive_status.json`
-//! (`{"phase":"archiving","current":N,"total":M}`) every ~5 s while a batch runs
-//! and clears it when the batch ends. Absent, stale (>120 s, meaning a crashed
-//! loop), or unparseable all report `{"phase":"idle"}`.
+//! Dashboard archive progress from archiveloop's temporary status file.
 
 use axum::http::StatusCode;
 use axum::Json;
@@ -16,8 +11,7 @@ pub async fn get_archive_status() -> (StatusCode, Json<serde_json::Value>) {
     (StatusCode::OK, Json(status))
 }
 
-/// None if the file is absent, stale, or invalid. Deletes it once its mtime is
-/// older than 120 s so a crashed archiveloop can't pin the UI on "archiving".
+/// Reject and remove status older than 120 seconds.
 fn read_archive_status() -> Option<serde_json::Value> {
     let meta = std::fs::metadata(STATUS_FILE).ok()?;
     if let Ok(modified) = meta.modified() {

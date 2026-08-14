@@ -34,8 +34,7 @@ export default function App() {
   )
 }
 
-/** Last-resort fallback: an uncaught render error unmounts the whole root
- *  and leaves a blank page with no way back. */
+/** Last-resort fallback for uncaught root render errors. */
 function CrashScreen({ error }: { error: Error }) {
   return (
     <div className="flex h-screen items-center justify-center bg-slate-950 p-4">
@@ -68,8 +67,7 @@ function AppContent() {
         if (data.setup_finished) {
           setAppState("ready")
         } else if (data.error) {
-          // Setup stopped on an error: show the terminal "fix and retry"
-          // state rather than the "Setting Up" spinner, which never ends.
+          // Replace the running spinner with the recoverable error state.
           setSetupError(data.error)
           setAppState("setup_error")
         } else if (data.setup_running) {
@@ -85,10 +83,7 @@ function AppContent() {
     return () => { cancelled = true }
   }, [])
 
-  // Never go straight to "ready" here. The backend sets
-  // DASHUSB_SETUP_FINISHED *before* its 5-second delay and final
-  // `systemctl reboot`, so the dashboard would load just as the Pi kills
-  // the network. Go to "finalizing" and let that effect await the reboot.
+  // The finished marker precedes the final reboot; wait for that reboot.
   useEffect(() => {
     if (appState !== "configuring") return
     const interval = setInterval(async () => {
@@ -98,8 +93,7 @@ function AppContent() {
         if (data.setup_finished) {
           setAppState("finalizing")
         } else if (data.error) {
-          // Failed mid-run (e.g. a config validation bail): surface it
-          // instead of spinning forever.
+          // Surface stopped setup instead of spinning indefinitely.
           setSetupError(data.error)
           setAppState("setup_error")
         }
@@ -110,10 +104,7 @@ function AppContent() {
     return () => clearInterval(interval)
   }, [appState])
 
-  // Redirect only after the server has dropped off (proving the final
-  // reboot started) and come back. Without the `wentDown` gate the very
-  // next poll flips to "ready" and the connection dies mid-navigation
-  // when the Pi finally reboots.
+  // Require an outage before accepting a response as post-reboot.
   useEffect(() => {
     if (appState !== "finalizing") return
     let wentDown = false
@@ -138,7 +129,6 @@ function AppContent() {
     )
   }
 
-  // Terminal "fix and retry" state for a setup that stopped on an error.
   if (appState === "setup_error") {
     const isConfig = setupError?.kind === "config"
     return (
@@ -189,7 +179,6 @@ function AppContent() {
     )
   }
 
-  // Setup is actively running (user refreshed during setup)
   if (appState === "configuring") {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-950">
@@ -213,9 +202,7 @@ function AppContent() {
     )
   }
 
-  // Setup finished but the Pi hasn't rebooted yet. Hold this screen until
-  // the network drops and recovers; redirecting now lands the user in a
-  // dashboard that is about to vanish.
+  // Hold until the network drops and recovers after final setup.
   if (appState === "finalizing") {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-950">
@@ -235,7 +222,6 @@ function AppContent() {
     )
   }
 
-  // Setup not done: show the wizard full screen.
   if (appState === "setup") {
     return (
       <div className="min-h-screen bg-slate-950 p-4">
@@ -244,7 +230,6 @@ function AppContent() {
     )
   }
 
-  // Show login when auth is required and the user isn't authenticated.
   if (authState === "loading") {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-950">

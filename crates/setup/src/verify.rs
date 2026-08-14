@@ -1,26 +1,6 @@
-//! Pre-setup sanity checks.
-//!
-//! Split into three phases so up-front detectable conditions fail loudly
-//! without false-failing on conditions the wizard is *about* to fix:
-//!
-//!   * [`early_verify`]: hardware model, XFS+reflink support, required config
-//!     keys. Runs BEFORE any destructive operation and BEFORE the dwc2 overlay
-//!     phase. Safe on a stock Pi OS image with no DashUSB-specific kernel
-//!     modules loaded yet.
-//!   * [`verify_udc`]: at least one UDC driver exposed under
-//!     `/sys/class/udc/`. MUST run **after** the dwc2 overlay phase has
-//!     completed (either "already set" or "just added + rebooted +
-//!     resuming"). On a fresh Pi OS image `dtoverlay=dwc2` is not yet in
-//!     `config.txt`, so `/sys/class/udc/` is empty and the check would always
-//!     false-fail on the very first pass.
-//!   * [`verify_disk_space`]: SD card or USB drive has enough room for the
-//!     backing-files partition. MUST run **after** the root partition shrink,
-//!     because on a fresh Pi OS install root fills the entire disk and
-//!     `sfdisk -F` reports 0 bytes free. The shrink is what creates the
-//!     required 8 GB; checking before it runs is a false-fail.
-//!
-//! On failure the returned `anyhow::Error` is logged and the runner aborts
-//! before touching the filesystem.
+//! Pre-setup checks ordered around state that setup itself creates.
+//! Hardware/XFS/config checks run first, UDC after the dwc2 reboot, and disk
+//! space after root shrinking. Failures stop before destructive operations.
 
 use std::path::Path;
 use std::time::Duration;
@@ -39,15 +19,9 @@ const MIN_SD_SPACE_BYTES: u64 = 8 * (1 << 30);
 /// drive.
 const MIN_USB_SIZE_BYTES: u64 = 59 * (1 << 30);
 
-/// Early sanity checks: hardware, XFS, config vars. Call before the dwc2
-/// overlay phase. Deliberately excludes checks that depend on kernel state the
-/// overlay and shrink phases establish; see [`verify_udc`] and
-/// [`verify_disk_space`] for those.
+/// Check hardware, XFS, and configuration before the dwc2 overlay phase.
 pub async fn early_verify(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> {
-    // Announce up-front: `check_xfs_support` takes 30-60s on a fresh Pi OS
-    // image (xfsprogs install plus the 1 GB truncate/mkfs/mount probe), and
-    // the wizard's phase list would otherwise sit empty for that whole window
-    // with no sign of progress. Idempotent: logged once per setup run.
+    // Announce before the slow XFS install and loopback probe.
     emitter.begin_phase("verify", "Verifying configuration");
     check_supported_hardware(env)?;
     check_xfs_support(emitter).await?;
@@ -55,26 +29,19 @@ pub async fn early_verify(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> 
     Ok(())
 }
 
-/// UDC driver presence check. MUST run **after** the dwc2 overlay phase has
-/// completed (the overlay was already in `config.txt`, or it was added and
-/// this is the post-reboot resume with it loaded). Fails loudly so the
-/// partition and gadget phases never run assuming the USB gadget will come up.
+/// Require a UDC after the dwc2 overlay phase and before partitioning.
 pub fn verify_udc() -> Result<()> {
     check_udc()
 }
 
-/// Disk-space availability check. MUST run **after** the root shrink phase has
-/// completed: on a fresh Pi OS image root fills the whole disk and there is
-/// zero unpartitioned space until shrink runs. Repeat runs take the fast path
-/// (backingfiles/mutable labels already present), a cheap O(1) query.
+/// Check disk space after root shrinking; existing labels take the fast path.
 pub async fn verify_disk_space(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> {
     check_available_space(env, emitter).await
 }
 
 fn check_supported_hardware(env: &SetupEnv) -> Result<()> {
-    // Non-Pi boards (RockPi, Radxa) are handled by other setup paths and pass
-    // through. Pi 2 has no USB gadget hardware. Pi Zero W (armv6) is too
-    // underpowered for the daemon and its build was retired.
+    // Other boards use separate paths; Pi 2 lacks gadget hardware and armv6
+    // has no supported build.
     match env.pi_model {
         PiModel::Pi5 | PiModel::Pi4 | PiModel::Pi3 | PiModel::PiZero2 => {
             Ok(())
@@ -89,7 +56,7 @@ fn check_supported_hardware(env: &SetupEnv) -> Result<()> {
         ),
         PiModel::Rock4CPlus => Ok(()),
         PiModel::Other => {
-            // RockPi, Radxa Zero, or a genuinely unknown board: pass through.
+            // Separate board-specific setup paths validate these later.
             Ok(())
         }
     }
@@ -120,8 +87,7 @@ fn check_udc() -> Result<()> {
 async fn check_xfs_support(emitter: &SetupEmitter) -> Result<()> {
     emitter.progress("Checking XFS support");
 
-    // Slowest step on a fresh Pi OS image (30-60s for apt-get), so log around
-    // it to keep the UI from looking hung. Skipped once the binary is on disk.
+    // Log the potentially slow xfsprogs installation.
     if sentryusb_shell::run("which", &["mkfs.xfs"]).await.is_err() {
         emitter.progress("Installing xfsprogs (this can take 30-60 seconds)...");
         crate::apt::apt_install(
@@ -135,10 +101,7 @@ async fn check_xfs_support(emitter: &SetupEmitter) -> Result<()> {
     let img = "/tmp/xfs.img";
     let mnt = "/tmp/xfsmnt";
 
-    // Clear leftovers from an interrupted run. A stuck mount at `mnt` makes
-    // the fresh mount below fail with "mount point busy", which would be
-    // misreported as "STOP: xfs does not support required features".
-    // Escalate: plain umount, then lazy umount, then bail.
+    // Clear interrupted probes so a busy mount is not misreported as no XFS.
     let _ = sentryusb_shell::run("umount", &[mnt]).await;
     if sentryusb_shell::run("findmnt", &[mnt]).await.is_ok() {
         let _ = sentryusb_shell::run("umount", &["-l", mnt]).await;
@@ -162,9 +125,7 @@ async fn check_xfs_support(emitter: &SetupEmitter) -> Result<()> {
     .await
     .context("truncate xfs test image")?;
 
-    // reflink=1 is the feature Dash USB needs (copy-on-write snapshots of the
-    // cam image). mkfs succeeding but mount failing means the kernel lacks
-    // the required features.
+    // The snapshot implementation requires XFS reflink support.
     emitter.progress("Formatting test image with XFS (reflink=1)");
     sentryusb_shell::run_with_timeout(
         Duration::from_secs(30),
@@ -219,13 +180,8 @@ async fn check_available_space(env: &SetupEnv, emitter: &SetupEmitter) -> Result
             ));
             check_available_space_usb(drive, emitter).await
         }
-        // A missing DATA_DRIVE MUST stay transient, not ConfigError.
-        // `env.data_drive` is the raw config value with no existence check
-        // (env.rs) and this is the first existence gate, so a USB/SSD that is
-        // merely slow to enumerate, or not back yet after a mid-setup reboot
-        // (realistic on a brownout-prone Pi), must self-heal via the
-        // auto-resume retry instead of hitting a "fix your config" wall. A
-        // genuine typo only loops; a transient absence recovers.
+        // Missing external media is transient because enumeration can lag a
+        // reboot; auto-resume retries it.
         Some(drive) => bail!(
             "STOP: DATA_DRIVE is set to {}, which does not exist.",
             drive
@@ -295,8 +251,7 @@ async fn check_available_space_sd(env: &SetupEnv, emitter: &SetupEmitter) -> Res
 async fn check_available_space_usb(drive: &str, emitter: &SetupEmitter) -> Result<()> {
     emitter.progress("Verifying that there is sufficient space available on the USB drive ...");
 
-    // Bound the call: a sleeping or I/O-erroring USB drive can hang lsblk
-    // indefinitely.
+    // Bound lsblk for sleeping or failing USB media.
     let lsblk_out = sentryusb_shell::run_with_timeout(
         Duration::from_secs(30),
         "lsblk",

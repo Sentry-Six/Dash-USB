@@ -37,8 +37,7 @@ pub async fn get_log(
         return (StatusCode::BAD_REQUEST, "invalid log name").into_response();
     }
 
-    // Reads up to 512 KB off the SD card: keep it off the reactor so a slow
-    // read can't stall the WebSocket heartbeat.
+    // Keep the bounded SD-card read off async workers.
     tokio::task::spawn_blocking(move || read_log_tail(name))
         .await
         .unwrap_or_else(|_| {
@@ -55,9 +54,7 @@ fn read_log_tail(name: String) -> Response {
 
     let mut file = match std::fs::File::open(&path) {
         Ok(f) => f,
-        // Known logs may legitimately be absent (archiveloop.log before a NAS
-        // is configured), so return an empty 200 and let the UI show "no log
-        // output". Unknown names still 404.
+        // Known but not-yet-created logs are empty; unknown names remain 404.
         Err(_) if known => {
             return (
                 StatusCode::OK,
@@ -100,9 +97,7 @@ fn read_log_tail(name: String) -> Response {
         .into_response()
 }
 
-// ---------------------------------------------------------------------------
 // Paged reads
-// ---------------------------------------------------------------------------
 
 /// Default and maximum lines per page. 50 keeps the first paint cheap on a
 /// slow transport, where the 512 KiB tail above cannot finish inside the
@@ -118,18 +113,8 @@ pub struct LogPageQuery {
     before: Option<u64>,
 }
 
-/// GET /api/logs/{name}/page?lines=50&before=<offset>
-///
-/// JSON sibling of `get_log` for incremental "load older lines" scrolling.
-/// Deliberately a separate route: `/api/logs/{name}` stays byte-for-byte
-/// text/plain for the web viewer and the download link.
-///
-/// `/api/logs/{name}` returns up to 512 KiB in one shot, which a constrained
-/// transport cannot deliver inside a client deadline — and the client then
-/// discards everything past the last few hundred lines anyway. The cursor
-/// rides in the body rather than a header so a proxy that drops response
-/// headers can still page. No client uses this yet; it exists so a future
-/// Dash Connect app has a log viewer that works over BLE.
+/// Cursor-based JSON log paging for constrained transports; the existing raw
+/// text endpoint remains unchanged.
 pub async fn get_log_page(
     State(_s): State<AppState>,
     Path(name): Path<String>,
@@ -176,8 +161,7 @@ fn read_log_page(name: String, lines: usize, before: Option<u64>) -> Response {
 
     let mut file = match std::fs::File::open(&path) {
         Ok(f) => f,
-        // Same rule as get_log: a known log that hasn't been created yet is an
-        // empty page, not an error.
+        // Known but not-yet-created logs return an empty page.
         Err(_) if known => return page_response(String::new(), 0),
         Err(_) => return page_error(StatusCode::NOT_FOUND, "Log file not found"),
     };
@@ -219,8 +203,7 @@ fn page_window(
         return Ok((String::new(), 0));
     }
 
-    // A trailing newline terminates the final line rather than separating two,
-    // so exclude it from the count.
+    // A trailing newline terminates rather than creates a line.
     let mut scan_end = end;
     let mut one = [0u8; 1];
     if file.seek(SeekFrom::Start(end - 1)).is_ok()
@@ -257,8 +240,7 @@ fn page_window(
         start = pos;
     }
 
-    // Hitting the byte cap before the line count means one page is enormous —
-    // return the bounded fragment rather than an empty page that stalls paging.
+    // Return a bounded fragment when one line exceeds the byte cap.
     if end - start > MAX_TAIL_BYTES {
         start = end - MAX_TAIL_BYTES;
     }

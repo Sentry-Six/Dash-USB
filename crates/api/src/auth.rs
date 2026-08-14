@@ -40,9 +40,7 @@ impl AuthState {
     }
 
     pub fn auth_required(&self) -> bool {
-        // BOTH must be set. A username with no password is unusable: no
-        // credential exists that would let anyone in, so gating the UI with
-        // 401s would only trap users who blanked one field to disable auth.
+        // Require both fields so partial configuration cannot lock out the UI.
         !self.inner.username.is_empty() && !self.inner.password.is_empty()
     }
 
@@ -161,9 +159,7 @@ impl AuthState {
 
         if let Ok(data) = serde_json::to_vec(&stored) {
             let _ = std::fs::write(path, data);
-            // Session tokens are bearer credentials, so keep the file 0600 and
-            // stop a non-root account or an over-broad backup reading them.
-            // /root is already 0700 on Pi OS; this is defense in depth.
+            // Session tokens are bearer credentials; persist them as 0600.
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -212,12 +208,7 @@ pub fn init_auth() -> AuthState {
     state
 }
 
-/// True when any DASHUSB_SETUP_FINISHED marker exists, which decides whether
-/// `/api/setup/*` is still reachable without credentials.
-///
-/// Both boot partition paths are checked: the wizard writes one or the other
-/// depending on whether `/dashusb` resolves to `/boot/firmware` (Bookworm and
-/// newer) or `/boot` (older images).
+/// Check both legacy and Bookworm setup-finished marker paths.
 fn setup_is_finished() -> bool {
     const MARKERS: &[&str] = &[
         "/dashusb/DASHUSB_SETUP_FINISHED",
@@ -250,12 +241,7 @@ pub async fn auth_middleware(
         }
     }
 
-    // Always exempt: login, logout, session check, and the status endpoints the
-    // frontend needs before it can decide whether to show the login screen or
-    // the wizard. These MUST work without a session cookie even on a fully
-    // set-up device. Drop `/api/setup/status` from the list and the SPA's
-    // initial routing call 401s, so it can't tell setup is finished and renders
-    // the SetupWizard on every page load.
+    // Initial routing and login endpoints must work before a session exists.
     const EXEMPT_ALWAYS: &[&str] = &[
         "/api/status",
         "/api/setup/status",
@@ -267,16 +253,8 @@ pub async fn auth_middleware(
         return next.run(req).await;
     }
 
-    // `/api/setup/*` is open only until the wizard finishes, since a freshly
-    // flashed device has no credentials yet. Once DASHUSB_SETUP_FINISHED exists
-    // these endpoints become privileged, or anyone on the LAN could repoint
-    // archive URLs, change hostnames, or re-run setup on a provisioned Pi.
-    //
-    // The wizard polls `/api/logs/setup` once a second to render the live log,
-    // so that path is exempt during setup too. Blocking it freezes the log
-    // mid-flow, right after auth is configured on the security step. Only the
-    // literal "setup" log name qualifies; every other `/api/logs/*` stays
-    // gated.
+    // Setup is unauthenticated only before FINISHED. Exempt its live log during
+    // provisioning, while all other log routes remain protected.
     if !setup_is_finished()
         && (path.starts_with("/api/setup/") || path == "/api/logs/setup")
     {

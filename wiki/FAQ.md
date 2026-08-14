@@ -8,7 +8,8 @@ Confirmed working on a 2026 model. GM's spec sheet says the drive must be USB 3.
 
 ## Does this void my GM warranty?
 
-We can't speak for GM — read your warranty terms if it matters. The Pi connects to a regular USB-C port the same way any USB drive does. It writes to itself, not to your car.
+Consult your warranty terms or GM for warranty guidance. The Pi connects through
+a regular USB-C port and writes only to its own storage.
 
 ## Does GM officially support this?
 
@@ -20,7 +21,10 @@ The software is **free for noncommercial use** under the PolyForm Noncommercial 
 
 ## Why does the car only keep 2 hours of footage?
 
-That's GM's firmware: it hard-deletes recordings older than a rolling ~2 hours from **any** USB drive, regardless of size. Dash USB exists to defeat exactly this — it snapshots the recordings every 15 minutes, before the rolling delete reaches them, and archives everything to your server. Your full footage history lives under **Viewer → Recordings** (organized by day) and on your archive server.
+GM firmware deletes recordings older than a rolling ~2 hours from **any** USB
+drive, regardless of size. Dash USB snapshots them every 15 minutes and archives
+them to your server. Preserved footage appears under **Viewer → Recordings** and
+on the archive server.
 
 ## When does the car actually record?
 
@@ -34,7 +38,7 @@ The car checks for a drive of **at least 64 GB with 32 GB available** and refuse
 
 Yes. Dash USB only needs internet for:
 - **First-time setup** (downloads the binary, installs system packages).
-- **Updates** (auto-update checks).
+- **Update checks and installs**.
 - Some **archive backends** (rclone to cloud storage).
 
 All local archive methods (CIFS, NFS, rsync to a LAN server) work offline.
@@ -49,10 +53,16 @@ To trigger manually, open the web UI and click the **Archive Sync** action at th
 
 Recommended: Raspberry Pi 4B, Pi 5. Should work: Pi Zero 2 W, Pi 3 Model A+.
 
+The installer also includes board-specific support for the Radxa ROCK 4C+;
+the [Getting Started](Getting-Started) guide covers Raspberry Pi OS.
+
 Not supported: Pi Zero W and Pi 1 (armv6, the installer will refuse), and the **Pi 3 Model B and B+**. The 3B/3B+ send their single USB channel through an onboard hub chip that provides Ethernet and the USB-A ports, so the micro-USB port is power-only and cannot act as a USB gadget. The 3A+ has no such chip, so its micro-USB port works.
 
-Anything else is uncharted — community help on [Discord](https://discord.gg/9QZEzVwdnt) is your best bet.
+Other hardware is undocumented; ask on [Discord](https://discord.gg/9QZEzVwdnt)
+for community experience.
 
 ## Is there a phone app?
 
-Mobile push notifications work today via the Sentry Connect push service — pair from **Settings → Notifications** in the web UI (see [Notifications](Notifications)). The Sentry Connect app's Bluetooth *device* pairing doesn't recognize Dash USB devices yet; a dedicated **Dash Connect** app is planned.
+Mobile push notifications use the Sentry Connect service. Pair from **Settings →
+Notifications** in the web UI (see [Notifications](Notifications)). Sentry
+Connect's Bluetooth device pairing does not currently recognize Dash USB.

@@ -23,17 +23,10 @@ interface Props {
   hostname?: string | null
 }
 
-/**
- * Settings > System: the admin and maintenance surface. Config backup,
- * export and raw config; the setup wizard and resources; the analytics
- * opt-in and its disclosure.
- */
+/** System administration, maintenance, and analytics disclosure. */
 export function SystemTab({ onOpenRawConfig, onOpenWizard, version, hostname }: Props) {
-  // Writes a bash-sourceable .conf: active settings as `export KEY='value'`,
-  // defaults commented out. Web UI preferences (the JSON kv-store at
-  // /mutable/.dashusb_preferences.json) are appended as `# preference:` lines
-  // so sourcing the file cannot pollute the bash namespace. Single quotes in
-  // values use the '\'' escape so the file stays valid bash.
+  // Export shell settings as quoted assignments and JSON preferences as
+  // comments, so sourcing the file cannot pollute the shell namespace.
   async function exportConfig(): Promise<void> {
     try {
       const [configRes, prefsRes] = await Promise.all([
@@ -180,12 +173,7 @@ export function SystemTab({ onOpenRawConfig, onOpenWizard, version, hostname }: 
   )
 }
 
-/**
- * Settings > System > Privacy. Reviewing the disclosure and flipping the
- * analytics opt-in must stay available at any time: this is the GDPR Art. 21
- * right-to-object mechanism for legitimate-interest processing, by automated
- * means and with no email required.
- */
+/** Keeps the disclosure and analytics preference available after setup. */
 function PrivacyCards() {
   const [choice, setChoice] = useState<boolean | null>(null)
   const [saving, setSaving] = useState(false)

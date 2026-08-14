@@ -1,10 +1,5 @@
-//! Config backup and restore.
-//!
-//! A backup is a JSON envelope holding `dashusb.conf`, the user preferences,
-//! SSH keys, rclone config and notification-device credentials:
-//! everything a user would otherwise re-enter after an SD-card
-//! reflash. A SHA-256 over that content gates rewrites so the backup dir
-//! doesn't fill with identical copies.
+//! Backup and restore of configuration, preferences, keys, and credentials.
+//! Content hashes suppress duplicate snapshots.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -23,12 +18,7 @@ const ARCHIVE_BACKUP_DIR: &str = "/mnt/archive/backups";
 const LAST_HASH_FILE: &str = "/mutable/backups/.last_hash";
 const BACKUP_VERSION: u32 = 1;
 
-// Paths included in a backup.
-//
-// New installs generate ed25519 at /root/.ssh/id_ed25519; older ones generated
-// RSA at /root/.ssh/id_rsa. A backup must pick up whichever exists, and a
-// restore must write the key back to the path matching its type. Check ed25519
-// first, then fall back to RSA so old backups still restore.
+// Prefer current ed25519 keys while retaining legacy RSA backup compatibility.
 const SSH_ED25519_PRIVATE_KEY: &str = "/root/.ssh/id_ed25519";
 const SSH_ED25519_PUBLIC_KEY: &str = "/root/.ssh/id_ed25519.pub";
 const SSH_RSA_PRIVATE_KEY: &str = "/root/.ssh/id_rsa";
@@ -36,9 +26,7 @@ const SSH_RSA_PUBLIC_KEY: &str = "/root/.ssh/id_rsa.pub";
 const RCLONE_CONFIG: &str = "/root/.config/rclone/rclone.conf";
 const NOTIFICATION_CREDS: &str = "/root/.dashusb/notification-credentials.json";
 
-/// Read whichever SSH keypair exists on disk. ed25519 wins when both are
-/// present (newer install ran ssh-keygen on top of an old RSA key). Returns
-/// `(private_pem, public_pem)`; either may be empty if no keypair is set up.
+/// Read an ed25519 keypair, falling back to legacy RSA.
 fn read_ssh_keypair() -> (String, String) {
     if std::path::Path::new(SSH_ED25519_PRIVATE_KEY).exists() {
         return (
@@ -133,9 +121,7 @@ async fn build_backup_data_async() -> Result<BackupData, String> {
     })
 }
 
-/// Hex SHA-256 over backup-relevant data only: time-varying fields are excluded
-/// and preferences are hashed in sorted key order, so identical snapshots hash
-/// identically.
+/// Stable SHA-256 over backup content, excluding time-varying metadata.
 fn compute_backup_hash(data: &BackupData) -> String {
     use ring::digest::{Context, SHA256};
     let mut ctx = Context::new(&SHA256);
@@ -184,23 +170,9 @@ fn write_backup_to_dir(dir: &str, data: &BackupData) -> Result<(), String> {
     Ok(())
 }
 
-/// Run `write` against a mounted `/mnt/archive`, owning the mount for the
-/// duration. The shared archive-mount flock serializes this against
-/// archiveloop's connect/disconnect scripts, so a mount created here can't be
-/// adopted by an archive cycle mid-write and archiveloop's `umount -f -l` can't
-/// land under an in-flight backup.
-///
-/// If the share wasn't mounted, mount it from fstab and unmount it again before
-/// releasing the lock. A CIFS mount left up after the car drives away goes
-/// stale ("host is down") and wedges the next archive cycle, which is what
-/// disconnect-archive.sh exists to prevent. A mount that was already up belongs
-/// to whoever made it (usually the archive cycle whose post-archive step called
-/// this) and is left alone. The unmount runs even when `write` fails, and an
-/// unmount failure is logged without masking the write result.
-///
-/// The transaction runs in its own spawned task: if the request future is
-/// cancelled by a client disconnect, the lock guard MUST NOT drop mid-write and
-/// skip the unmount, so the task detaches and finishes cleanup itself.
+/// Run a write under the shared archive-mount lock. Mount and clean up only
+/// when this call owns the mount; a detached task finishes cleanup after client
+/// cancellation.
 async fn with_archive_mounted<F, Fut>(write: F) -> Result<(), String>
 where
     F: FnOnce() -> Fut + Send + 'static,
@@ -243,9 +215,7 @@ where
             &["/mnt/archive"],
         )
         .await;
-        // findmnt is ground truth, not mount's exit status: a timed-out
-        // mount(8) may still have completed the kernel transition, and that
-        // mount is ours to clean up.
+        // A timed-out mount may still complete; findmnt determines ownership.
         if is_mounted().await {
             mounted_by_us = true;
         } else {
@@ -259,9 +229,7 @@ where
     let result = write().await;
 
     if mounted_by_us {
-        // Mirror disconnect-archive.sh: bounded, force and lazy, so a dead
-        // share can't hang the API. On failure the mount lingers, the same
-        // exposure as a crash mid-archive, so log it and move on.
+        // Bound force/lazy unmount so a dead share cannot hang the API.
         if let Err(e) = sentryusb_shell::run_with_timeout(
             Duration::from_secs(15),
             "umount",
@@ -424,8 +392,7 @@ pub async fn create_backup(
             .unwrap_or_default();
         match archive_system.as_str() {
             "cifs" | "nfs" => {
-                // Cloned: the write closure must be 'static so the
-                // transaction task can outlive a cancelled request.
+                // The transaction may outlive a cancelled request.
                 let data = data.clone();
                 with_archive_mounted(move || async move {
                     write_backup_to_dir(ARCHIVE_BACKUP_DIR, &data)
@@ -466,18 +433,13 @@ pub async fn create_backup(
     })))
 }
 
-/// Backups change at most daily, but the listing scans /backingfiles plus a
-/// possibly-network archive mount — seconds while an archive run owns the
-/// disk — so a short TTL makes repeat Settings visits instant.
+/// Cache potentially slow local/network listings for repeat Settings visits.
 const BACKUP_LIST_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 static BACKUP_LIST_CACHE: std::sync::Mutex<Option<(std::time::Instant, serde_json::Value)>> =
     std::sync::Mutex::new(None);
 
-/// Bumped on every invalidation. A scan that started before an invalidation
-/// must not publish its now-stale result: without this, a listing already in
-/// flight when a backup completes could store its pre-create snapshot with a
-/// fresh timestamp and hide the new backup for the whole TTL.
+/// Generation preventing in-flight stale scans from repopulating the cache.
 static BACKUP_LIST_GENERATION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
@@ -502,9 +464,7 @@ pub async fn list_backups(State(_s): State<AppState>) -> (StatusCode, Json<serde
 
     let started_at = BACKUP_LIST_GENERATION.load(std::sync::atomic::Ordering::SeqCst);
 
-    // The directory walks are synchronous and can touch a network mount, so
-    // keep them off the async worker — this endpoint being slow used to stall
-    // unrelated requests on the same runtime thread.
+    // Keep synchronous local/network walks off async workers.
     let body = match tokio::task::spawn_blocking(list_backups_blocking).await {
         Ok(v) => v,
         Err(e) => {
@@ -514,8 +474,8 @@ pub async fn list_backups(State(_s): State<AppState>) -> (StatusCode, Json<serde
             );
         }
     };
-    // Only publish if nothing invalidated while we scanned. The caller still
-    // gets this response; it just does not become the cached answer.
+    // Publish only scans that were not invalidated; callers still receive an
+    // uncached result.
     if BACKUP_LIST_GENERATION.load(std::sync::atomic::Ordering::SeqCst) == started_at {
         *BACKUP_LIST_CACHE.lock().unwrap() = Some((std::time::Instant::now(), body.clone()));
     }
@@ -552,7 +512,7 @@ fn list_backups_blocking() -> serde_json::Value {
     serde_json::to_value(result).unwrap_or_default()
 }
 
-/// Tries the archive dir first (the newer offsite copy), then the local SSD.
+/// Tries the archive directory first, then the local `/mutable` backup copy.
 /// Returns raw JSON with an `attachment` Content-Disposition.
 pub async fn get_backup(
     State(_s): State<AppState>,
@@ -647,10 +607,7 @@ pub async fn restore_backup(
                 std::fs::Permissions::from_mode(0o700),
             );
         }
-        // Match the on-disk filename to the embedded key type, so the restored
-        // pubkey lines up with the privkey and `ssh-keygen -y` works. Only an
-        // "RSA PRIVATE KEY" header selects the RSA paths; anything else is
-        // treated as ed25519, the default for new installs.
+        // Restore to a filename matching the embedded key type.
         let priv_pem = backup.ssh_private_key.trim_start();
         let is_rsa = priv_pem.starts_with("-----BEGIN RSA PRIVATE KEY-----");
         let (priv_path, pub_path) = if is_rsa {

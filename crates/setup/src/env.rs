@@ -24,11 +24,8 @@ impl PiModel {
             .replace('\0', "");
         let lower = model.to_lowercase();
 
-        // Every match REQUIRES the "raspberry pi" prefix so non-Pi boards
-        // whose model string happens to contain "zero" or "pi N" ("Radxa Zero
-        // 3W", "Radxa ROCK Pi 4") fall through to Other and take the non-Pi
-        // setup paths instead of inheriting Pi-specific config.txt, dwc2, and
-        // UDC assumptions.
+        // Require the vendor prefix so other boards do not take Pi-specific
+        // config.txt, dwc2, and UDC paths.
         if lower.contains("raspberry pi 5") {
             PiModel::Pi5
         } else if lower.contains("raspberry pi 4") {
@@ -77,10 +74,7 @@ impl PiModel {
     }
 }
 
-/// True if the device-tree `compatible` string contains `needle`. The model
-/// string alone can vary across vendor DTBs (e.g. "Radxa ROCK 4C+" vs
-/// "RADXA ROCK 4C Plus"), so `compatible` (e.g. `radxa,rock-4c-plus`) is the
-/// reliable fallback for board detection.
+/// Check device-tree compatibility when vendor model strings vary.
 fn dt_compatible_contains(needle: &str) -> bool {
     fs::read_to_string("/sys/firmware/devicetree/base/compatible")
         .map(|s| s.replace('\0', " ").to_lowercase().contains(needle))
@@ -110,10 +104,7 @@ impl SetupEnv {
 
         ensure_sentryusb_symlink()?;
 
-        // /dashusb first, preserving the user's chosen boot dir, then the
-        // canonical locations so a broken symlink left by a prior install
-        // cannot make every cmdline/config edit silently no-op. Bookworm puts
-        // the boot files under /boot/firmware; older images use /boot.
+        // Prefer /dashusb, then canonical current and legacy boot locations.
         let cmdline_path = [
             "/dashusb/cmdline.txt",
             "/boot/firmware/cmdline.txt",
@@ -135,18 +126,13 @@ impl SetupEnv {
         let boot_disk = detect_boot_disk().await.ok();
         let root_partition = detect_root_partition().await.ok();
 
-        // Only *active* (uncommented) exports count. Commented sample lines in
-        // dashusb.conf are documentation, not user choices; merging them in
-        // would run every optional phase (AP setup, extra drives) against
-        // sample defaults the user never picked.
+        // Commented sample exports are documentation, not selected settings.
         let config_path = sentryusb_config::find_config_path();
         let mut config = sentryusb_config::parse_file(config_path)
             .map(|(active, _commented)| active)
             .unwrap_or_default();
 
-        // Migrate legacy key names (lowercase and renamed settings). The old
-        // value is copied only when the new key is unset, so user edits to the
-        // new name always win.
+        // Current keys take precedence over migrated legacy names.
         migrate_legacy_config_keys(&mut config);
 
         let data_drive = config.get("DATA_DRIVE")
@@ -245,10 +231,7 @@ fn ensure_sentryusb_symlink() -> Result<()> {
 }
 
 async fn detect_boot_disk() -> Result<String> {
-    // `-p` already makes lsblk emit full paths ("/dev/sda"), so "/dev/" MUST
-    // NOT be prepended again: "/dev//dev/sda" makes every sfdisk call on it
-    // fail silently, cascading into bogus "not last partition" errors during
-    // the shrink phase.
+    // `lsblk -p` already emits the full device path.
     let output = sentryusb_shell::run(
         "lsblk", &["-dpno", "pkname", &detect_mount_source("/dashusb").await?],
     ).await?;

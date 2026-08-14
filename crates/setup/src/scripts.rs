@@ -103,11 +103,8 @@ cat "$optfile"
 "#;
 
 
-// archiveloop and its supporting scripts, vendored from `run/` at compile
-// time. Setup MUST write these out: dashusb-archive.service execs
-// /root/bin/archiveloop and nothing else installs it on a clean Pi OS
-// (`curl | bash install-pi.sh` does not run pi-gen), so a missing file means
-// a crashlooping service and no archive runs.
+// Embed archive scripts because dashusb-archive.service executes the installed
+// `/root/bin/archiveloop` even on systems not built through pi-gen.
 
 const ARCHIVELOOP: &str = include_str!("../../../run/archiveloop");
 const SEND_LIVE_ACTIVITY: &str = include_str!("../../../run/send-live-activity");
@@ -131,11 +128,7 @@ pub async fn install_runtime_scripts(emitter: &crate::SetupEmitter) -> Result<bo
         ("enable_gadget.sh", ENABLE_GADGET),
         ("disable_gadget.sh", DISABLE_GADGET),
         ("auto.dashusb", AUTO_SENTRYUSB),
-        // Archive-flow scripts common to every archive system. The
-        // per-system variants (archive-clips.sh, archive-is-reachable.sh,
-        // connect-archive.sh, disconnect-archive.sh) each ship their own
-        // copy and are installed by `archive::install_archive_scripts`
-        // according to ARCHIVE_SYSTEM.
+        // `archive::install_archive_scripts` installs backend-specific helpers.
         ("archiveloop", ARCHIVELOOP),
         ("send-live-activity", SEND_LIVE_ACTIVITY),
         ("send-push-message", SEND_PUSH_MESSAGE),

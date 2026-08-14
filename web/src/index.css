@@ -1,8 +1,6 @@
 @import "tailwindcss";
 
-/* Self-hosted fonts. Variable woff2 files cover all weights we use
-   (Inter 400-700, JetBrains Mono 400-500) in a single download each.
-   Latin subset only — the UI is English-only. */
+/* Self-hosted variable fonts, limited to the Latin UI subset. */
 @font-face {
   font-family: "Inter";
   font-style: normal;
@@ -28,7 +26,7 @@
   --color-accent: oklch(0.78 0.14 240);
   --color-accent-hover: oklch(0.84 0.13 240);
 
-  /* ── Dash USB palette: electric-blue accent (hue 240) ──────────── */
+  /* Electric-blue accent palette. */
   --color-blue-50: oklch(0.97 0.04 240);
   --color-blue-100: oklch(0.94 0.08 240);
   --color-blue-200: oklch(0.90 0.12 240);
@@ -41,7 +39,7 @@
   --color-blue-900: oklch(0.32 0.08 240);
   --color-blue-950: oklch(0.22 0.06 240);
 
-  /* ── Backgrounds: darkened slate scale ─────────────────────────── */
+  /* Dark slate backgrounds. */
   --color-slate-950: #07090c;
   --color-slate-900: #0b0e13;
   --color-slate-800: #10141b;
@@ -55,18 +53,11 @@
   --color-slate-50: #f0f2f5;
 }
 
-/* ── Liquid Glass — the app's surface look ──────────────────────────
-   Applied via <html data-style="liquid"> (set in index.html). Translucent frosted material with a bright specular top
-   edge, heavy backdrop blur + vibrancy, and ambient accent light behind
-   the cards so the glass has colour to refract. The body gradient follows
-   the chosen accent. (backdrop-filter is GPU-heavy — lovely on a laptop,
-   likely sluggish on the Pi itself.) */
+/* Liquid material selected by `<html data-style="liquid">`. */
 html[data-style="liquid"] {
   --radius-lg: 0.9rem; --radius-xl: 1.15rem; --radius-2xl: 1.5rem; --radius-3xl: 2rem;
 }
-/* Card brightness (--lg-glass) and ambient-glow intensity (--lg-glow):
-   the fallbacks here are the tuned defaults; the glow spans a wide band
-   across the whole top rather than a single corner blob. */
+/* --lg-glass controls card brightness; --lg-glow controls ambient light. */
 html[data-style="liquid"] body {
   background:
     radial-gradient(1600px 820px at 50% -30%, color-mix(in srgb, var(--color-accent) calc(var(--lg-glow, 1.5) * 20%), transparent), transparent 72%),
@@ -88,9 +79,7 @@ html[data-style="liquid"] .glass-card {
   box-shadow: inset 0 1px 0 rgb(255 255 255 / calc(var(--lg-glass, 0.02) * 3)), inset 0 -1px 1px rgba(255, 255, 255, 0.05), 0 12px 34px rgba(0, 0, 0, 0.45);
 }
 html[data-style="liquid"] .glass-sidebar {
-  /* Opaque base under the frost. backdrop-filter alone leaves this
-     see-through wherever it is not painted, and @supports cannot catch that:
-     Chrome reports support, then skips it with GPU rasterization off. */
+  /* Chrome may skip reported backdrop-filter support without GPU rasterization. */
   background:
     linear-gradient(rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.055)),
     rgba(7, 9, 12, 0.86);
@@ -98,8 +87,7 @@ html[data-style="liquid"] .glass-sidebar {
   -webkit-backdrop-filter: blur(26px) saturate(180%);
   border-right: 1px solid rgba(255, 255, 255, 0.10);
 }
-/* Browsers that report no backdrop-filter support get opaque panels instead
-   of transparent ones. Layout is unchanged, only the material. */
+/* Unsupported backdrop filters fall back to opaque surfaces. */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   html[data-style="liquid"] .glass-sidebar {
     background: rgba(7, 9, 12, 0.97);
@@ -144,19 +132,16 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Headings use Inter (matching SentryCloud) */
 h1, h2, h3, h4, h5, h6 {
   font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   font-weight: 600;
   letter-spacing: -0.02em;
 }
 
-/* Mono elements */
 code, pre, .font-mono {
   font-family: "JetBrains Mono", ui-monospace, monospace;
 }
 
-/* ── Glassmorphism card utility ─────────────────────────────────── */
 .glass-card {
   background: linear-gradient(180deg, #10141b 0%, #0b0e13 100%);
   backdrop-filter: blur(16px);
@@ -172,7 +157,6 @@ code, pre, .font-mono {
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
-/* Glass sidebar */
 .glass-sidebar {
   background: rgba(7, 9, 12, 0.92);
   backdrop-filter: blur(20px);
@@ -180,7 +164,6 @@ code, pre, .font-mono {
   border-right: 1px solid #1e242f;
 }
 
-/* ── Toggle switch ─────────────────────────────────────────────── */
 .toggle-switch {
   position: relative;
   width: 40px;
@@ -222,10 +205,8 @@ code, pre, .font-mono {
   outline-offset: 2px;
 }
 
-/* ── Tab bar ───────────────────────────────────────────────────── */
 .tab-bar {
-  /* Outer corner radius. The active pill derives its radius from this so
-     the two curves stay concentric (see .tab-item border-radius). */
+  /* Shared with the active pill to keep curves concentric. */
   --tab-radius: 12px;
   display: flex;
   gap: 2px;
@@ -238,9 +219,7 @@ code, pre, .font-mono {
 .tab-item {
   flex: 1;
   padding: 8px 12px;
-  /* Concentric with the container: subtract the 1px border + 3px padding
-     that sit between the outer edge and the pill, so the pill's corners
-     follow the container's curve instead of bulging past it. */
+  /* Subtract the border and padding from the shared outer radius. */
   border-radius: calc(var(--tab-radius) - 4px);
   font-size: 13px;
   font-weight: 500;
@@ -264,7 +243,6 @@ code, pre, .font-mono {
   box-shadow: 0 1px 8px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
-/* ── Section label ──────────────────────────────────────────────── */
 .section-label {
   font-family: "Inter", -apple-system, system-ui, sans-serif;
   font-size: 11px;
@@ -274,15 +252,11 @@ code, pre, .font-mono {
   color: #7a8294;
 }
 
-/* ── Progress bar animation ────────────────────────────────────── */
-
-
 /* Safe-area bottom padding for iOS notch devices */
 .pb-safe {
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
-/* ── Scrollbar styling ─────────────────────────────────────────── */
 ::-webkit-scrollbar {
   width: 5px;
   height: 5px;
@@ -308,14 +282,7 @@ code, pre, .font-mono {
   background: rgba(255, 255, 255, 0.2);
 }
 
-/* ────────────────────────────────────────────────────────────────
-   ▌ Redesign utilities — shared primitives for Dashboard/Settings
-   ──────────────────────────────────────────────────────────────── */
-
-/* StatusTile primitive — min-height gives short tiles a visual floor so
-   they don't look stunted next to fuller ones in the same row. Grid's
-   default align-items: stretch already makes neighbouring tiles match the
-   tallest in their row, so this only matters when the entire row is short. */
+/* min-height gives uniformly short status rows a visual floor. */
 .tile { padding: 14px; display: flex; flex-direction: column; gap: 10px; min-height: 140px; }
 .tile-header { display: flex; align-items: center; gap: 10px; }
 .tile-icon { flex: 0 0 auto; width: 32px; height: 32px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; }
@@ -328,15 +295,11 @@ code, pre, .font-mono {
 .tile-row > .sub { font-size: 10px; color: #7a8294; }
 .tile-divider { height: 1px; background: rgba(255,255,255,.04); margin: 2px 0; }
 
-/* Dashboard status tiles. Explicit 1 / 2 / 4 columns — never 3 — so the
-   4 tiles can't strand the last one in a 3+1 orphan row (which the old
-   auto-fit did across the whole ~960-1200px range). Phones get 1 column,
-   tablets/medium 2, desktop 4. */
+/* Use 1/2/4 columns so four tiles never form an orphaned 3+1 row. */
 .tile-grid { display: grid; grid-template-columns: 1fr; gap: 10px; }
 @media (min-width: 640px)  { .tile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (min-width: 1280px) { .tile-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 
-/* Banner stack */
 .banner { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 14px; border: 1px solid; }
 .banner-icon { width: 32px; height: 32px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; }
 .banner-body { flex: 1 1 auto; min-width: 0; }
@@ -345,13 +308,11 @@ code, pre, .font-mono {
 .banner--warn  { border-color: rgba(251,191,36,.22); background: rgba(251,191,36,.05); }
 .banner--update{ border-color: color-mix(in srgb, var(--color-accent) 28%, transparent); background: color-mix(in srgb, var(--color-accent) 5%, transparent); }
 
-/* Settings header strip + actions rail */
 .settings-strip { display: flex; align-items: center; gap: 14px; padding: 14px; }
 .actions-rail { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 12px; border: 1px solid #1e242f; background: #0b0e13; }
 .actions-rail .sep { flex: 1 1 auto; }
 
-/* Mobile actions rail: flex spacer collapses; danger chip keeps a
-   visual separator via border-left so destructive intent survives wrap. */
+/* Preserve a danger-action separator when the mobile spacer collapses. */
 @media (max-width: 520px) {
   .actions-rail .sep { display: none; }
   .actions-rail .action-chip--danger { margin-left: 4px; padding-left: 12px; border-left: 1px solid #1e242f; border-radius: 9px; }
@@ -368,7 +329,6 @@ code, pre, .font-mono {
   background: linear-gradient(to right, rgba(11,14,19,0), rgba(11,14,19,0.92));
 }
 
-/* Action chip — used in actions rail and elsewhere */
 .action-chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 9px; font-size: 12px; font-weight: 500; color: #b8bfcf; background: transparent; border: 0; cursor: pointer; transition: background .15s, color .15s; }
 .action-chip:hover { background: #161b24; color: #e6e9ef; }
 .action-chip:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -378,7 +338,6 @@ code, pre, .font-mono {
 .action-chip--accent:hover { background: color-mix(in srgb, var(--color-accent) 25%, transparent); color: var(--color-accent); }
 .action-chip[aria-pressed="true"] { background: color-mix(in srgb, var(--color-accent) 12%, transparent); color: var(--color-accent); }
 
-/* Modal primitive — replaces 3 inconsistently-built overlays */
 /* z-index above the mobile header (z-[500]) and nav drawer (z-[700]) —
    modals must cover the whole app chrome. */
 .modal-shell { position: fixed; inset: 0; background: rgba(0,0,0,.55); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 2000; }
@@ -389,7 +348,6 @@ code, pre, .font-mono {
 .modal-close:hover { background: #161b24; color: #e6e9ef; }
 .modal-body { padding: 16px; overflow: auto; }
 
-/* Severity halo helpers (status-aware icon backgrounds) */
 .halo-accent  { background: color-mix(in srgb, var(--color-accent) 15%, transparent); color: var(--color-accent); }
 .halo-amber   { background: rgba(251,191,36,.15); color: #fbbf24; }
 .halo-red     { background: rgba(248,113,113,.15); color: #f87171; }
@@ -397,32 +355,26 @@ code, pre, .font-mono {
 .halo-violet  { background: rgba(196,181,253,.15); color: #c4b5fd; }
 .halo-slate   { background: rgba(122,130,148,.12); color: #b8bfcf; }
 
-/* Mini segmented progress bar (Storage tile) */
 .seg-bar { height: 8px; border-radius: 999px; background: #161b24; overflow: hidden; display: flex; }
 .seg-bar > div { height: 100%; }
 .seg-bar > div:first-child { border-top-left-radius: 999px; border-bottom-left-radius: 999px; }
 .seg-bar > div:last-child  { border-top-right-radius: 999px; border-bottom-right-radius: 999px; }
 
-/* Generic progress bar */
 .bar { height: 6px; border-radius: 999px; background: #161b24; overflow: hidden; }
 .bar > div { height: 100%; border-radius: 999px; transition: width .4s; }
 
-/* Pill chip */
 .pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; letter-spacing: .04em; }
 .pill--accent { background: color-mix(in srgb, var(--color-accent) 15%, transparent); color: var(--color-accent); }
 .pill--slate  { background: rgba(122,130,148,.15); color: #b8bfcf; }
 
-/* Small text helpers */
 .t-xs   { font-size: 11px; color: #7a8294; }
 .t-sm   { font-size: 12px; color: #b8bfcf; }
 .t-md   { font-size: 13px; color: #e6e9ef; }
 .t-mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
 .t-num  { font-variant-numeric: tabular-nums; }
 
-/* Live indicator dot */
 @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:.35} }
 .dot-live { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: pulse-dot 1.4s ease-in-out infinite; }
 
-/* The Setup Wizard sits over the busy dashboard, so its glass uses a more
-   opaque fill (≈ level 5) than the global level-2 — less see-through. */
+/* Setup uses a more opaque surface over the dashboard. */
 .setup-wizard-glass { --lg-glass: 0.05; }

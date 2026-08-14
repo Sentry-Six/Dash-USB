@@ -1,6 +1,5 @@
 #!/bin/bash -eu
-# Send Live Activity start/update/end to paired iOS devices via the notification backend.
-# Uses both push-to-start (native) and silent push (fallback) for reliability.
+# Send Live Activity lifecycle events through native and silent fallback pushes.
 # Usage:
 #   send-live-activity start [total_files]
 #   send-live-activity update <phase> <current> <total> [eta_seconds]
@@ -19,7 +18,7 @@ DEVICE_NAME="${NOTIFICATION_TITLE:-DashUSB}"
 case "$ACTION" in
   start)
     TOTAL="${2:-0}"
-    # Push-to-start (native Live Activity start)
+    # Native push-to-start.
     curl -sf --connect-timeout 10 --max-time 30 -X POST \
       -H "Content-Type: application/json" \
       -H "X-Device-Secret: $MOBILE_PUSH_SECRET" \
@@ -30,7 +29,7 @@ case "$ACTION" in
         \"content_state\": {\"phase\": \"archiving\", \"current\": 0, \"total\": ${TOTAL}, \"isArchiving\": true, \"etaSeconds\": 0}
       }" \
       "${BACKEND_URL}/start-activity" > /dev/null 2>&1 || true
-    # Silent push fallback (wakes app to start activity)
+    # Silent fallback wakes the app.
     curl -sf --connect-timeout 10 --max-time 30 -X POST \
       -H "Content-Type: application/json" \
       -H "X-Device-Secret: $MOBILE_PUSH_SECRET" \
@@ -67,7 +66,7 @@ case "$ACTION" in
         \"event\": \"end\"
       }" \
       "${BACKEND_URL}/send-activity-update" > /dev/null 2>&1 || true
-    # Silent push fallback to end activity
+    # Silent fallback ends the activity.
     curl -sf --connect-timeout 10 --max-time 30 -X POST \
       -H "Content-Type: application/json" \
       -H "X-Device-Secret: $MOBILE_PUSH_SECRET" \

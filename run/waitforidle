@@ -1,7 +1,7 @@
 #!/bin/bash -eu
-# Block until the car pauses its writes through the mass-storage gadget, so a
-# snapshot lands between clips. Exits 0 once file-storage has written under
-# 500 KB/s for 5 consecutive seconds (or is gone), 1 after the 90s cap.
+# Wait up to 90 seconds for active mass-storage writes to settle before taking
+# a snapshot. Success requires observing a write, then seven one-second samples
+# below 500 KB/s, or the file-storage process exiting.
 
 PREVWRITTEN=-1
 
@@ -24,7 +24,7 @@ do
   WRITTEN=$(grep ^write_bytes "/proc/$PROC/io" | awk '{print $2}')
   if (( PREVWRITTEN == -1 ))
   then
-    # no previous measurement to diff against yet
+    # Seed the first measurement.
     PREVWRITTEN=$WRITTEN
     continue
   fi
@@ -39,7 +39,6 @@ do
         STATE=WRITING
         BURSTSIZE=$DELTA
       else
-        #log "waiting for first write"
         true
       fi
       ;;
@@ -51,7 +50,6 @@ do
         STATE=IDLE
         COUNT=0
       else
-        #log "still writing"
         BURSTSIZE=$((BURSTSIZE+DELTA))
       fi
       ;;
@@ -59,7 +57,7 @@ do
     IDLE)
       if (( DELTA > 500000 ))
       then
-        # writing again
+        # Return to the active-write state.
         log "going back to writing state"
         BURSTSIZE=$DELTA
         STATE=WRITING
@@ -71,7 +69,6 @@ do
           log "no writes seen in the last 5 seconds"
           exit 0
         else
-          #log "still not writing"
           true
         fi
       fi
@@ -81,4 +78,3 @@ done
 
 log "couldn't determine idle interval"
 exit 1
-

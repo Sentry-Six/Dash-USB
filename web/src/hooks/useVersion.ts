@@ -1,10 +1,6 @@
 import { useEffect, useState } from "react"
 
-/**
- * Current installed version of Dash USB, from `/api/system/version`.
- * Returns `null` until the first fetch settles, then the version string
- * (or "unknown" if the endpoint failed).
- */
+/** Installed version, null while loading and "unknown" on failure. */
 export function useVersion(): string | null {
   const [version, setVersion] = useState<string | null>(null)
 

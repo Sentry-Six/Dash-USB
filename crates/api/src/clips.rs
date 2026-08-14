@@ -1,4 +1,4 @@
-//! Clip listing and telemetry.
+//! Clip listing.
 
 use std::path::Path;
 
@@ -25,13 +25,7 @@ struct ClipEntry {
     files: Vec<String>,
 }
 
-/// Dated subfolders of a category directory (today just `Continuous/`), newest
-/// first.
-///
-/// `path().is_dir()` must follow symlinks: the snapshot symlink builder
-/// (`sentryusb_gadget::snapshot`) date-buckets the car's flat recording files
-/// into `YYYY-MM-DD/` folders whose entries are symlinks into reflink
-/// snapshots.
+/// Dated category folders newest-first, following snapshot symlinks.
 fn enumerate_event_dirs(base: &Path) -> Vec<String> {
     let mut dirs: Vec<String> = match std::fs::read_dir(base) {
         Ok(entries) => entries
@@ -109,10 +103,7 @@ pub async fn get_clips(
     }
     let limit = params.limit.unwrap_or(20).min(200);
 
-    // Dated clip folders are symlinks into on-demand (autofs) snapshot mounts,
-    // so the first read can block for seconds while the kernel mounts the
-    // image. Run it on the blocking pool or it stalls the async reactor and
-    // drops the WebSocket heartbeat ("Reconnecting to DashUSB…").
+    // Autofs-backed clip reads may block; keep them off async workers.
     let category = category.to_string();
     let before = params.before;
     let response = tokio::task::spawn_blocking(move || {
@@ -141,9 +132,7 @@ mod tests {
         assert_eq!(dirs, vec!["2025-02-23_09-12-00", "2025-02-22_17-58-00"]);
     }
 
-    /// Continuous recordings under `/mutable/Recordings` are dated
-    /// `YYYY-MM-DD/` subfolders (the snapshot symlink builder
-    /// date-buckets them from the parsed filename timestamps).
+    /// Continuous recordings are date-bucketed under `/mutable/Recordings`.
     #[test]
     fn lists_continuous_clips_from_dated_subdirs() {
         let root = TempDir::new().unwrap();
@@ -219,9 +208,7 @@ mod tests {
         assert_eq!(value[0]["hasMore"].as_bool().unwrap(), false);
     }
 
-    /// The real `/mutable/Recordings` clip entries are symlinks into
-    /// reflink snapshots, so `enumerate_event_dirs` must follow
-    /// symlinked directories.
+    /// Clip directories may be symlinks into reflink snapshots.
     #[cfg(unix)]
     #[test]
     fn list_clips_follows_symlinked_dirs() {

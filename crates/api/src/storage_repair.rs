@@ -1,25 +1,6 @@
-//! In-app XFS `backingfiles` storage repair.
-//!
-//! Recovers the external-SSD XFS partition behind `/backingfiles` when it will
-//! not mount (CRC or dirty-log corruption, typically after a power loss; see
-//! `docs/storage-repair-handoff.md` for the incident this mirrors). Same
-//! `xfs_repair` recovery a human would run over SSH, guard-railed for the web
-//! UI:
-//!
-//!   * The real backing device is resolved at runtime (never a hard-coded
-//!     `/dev/sda2`), and the repair MUST NOT touch the root disk.
-//!   * Offered only when `/backingfiles` lives on a *separate external* drive;
-//!     `external` in the health response gates the card.
-//!   * It MUST NEVER stop the `dashusb` service: that service is the web
-//!     server running this very handler. Only the archive loop and the USB
-//!     gadget are quiesced; the UI keeps serving from the separate root card.
-//!   * The non-destructive path runs automatically (`xfs_repair -n`, plain
-//!     `xfs_repair`, and a mount-to-replay-log retry) and HARD STOPS before
-//!     the destructive `xfs_repair -L`, which runs only when the user
-//!     explicitly re-submits with `confirm_destructive: true`.
-//!   * On success it lands in a "reboot required" state. Rebooting brings
-//!     storage and gadget back through the clean boot path; the live gadget
-//!     re-enable is the fragile part, a reboot is the reliable fix.
+//! Guarded XFS repair for an external `/backingfiles` device.
+//! Root disks are excluded, the web service remains running, and destructive
+//! `xfs_repair -L` requires explicit authorization. Success requires reboot.
 
 use std::time::Duration;
 
@@ -32,17 +13,14 @@ use tokio::process::Command;
 use crate::router::AppState;
 
 const BACKINGFILES: &str = "/backingfiles";
-/// XFS label the setup code stamps on the backingfiles partition
-/// (`mkfs.xfs -L backingfiles`); used to find the device when it isn't
-/// mounted (the corruption case).
+/// XFS label used to resolve an unmounted backingfiles partition.
 const XFS_LABEL: &str = "backingfiles";
 /// Bind/autofs mount points archiveloop exposes from inside `/backingfiles`.
 /// All must be released before the device can be unmounted.
 const SUBMOUNTS: &[&str] = &["/mnt/cam"];
 /// Writable partition where the human-readable repair transcript is kept.
 const REPAIR_LOG_DIR: &str = "/mutable";
-/// Per-command ceiling. `xfs_repair` on a large multi-TB SSD can take minutes;
-/// 5 min matches the wizard's xfs_repair budget.
+/// Five-minute ceiling for repair on multi-terabyte media.
 const CMD_TIMEOUT: Duration = Duration::from_secs(300);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -56,10 +34,7 @@ struct CmdResult {
     output: String,
 }
 
-/// Run a command capturing exit status plus combined stdout/stderr, never
-/// erroring on a non-zero exit. `sentryusb_shell::run` bails on any non-zero
-/// exit, which is unusable here: `xfs_repair -n` exits non-zero *precisely
-/// when it finds damage*, and that is the signal being read.
+/// Capture output and status because `xfs_repair -n` uses nonzero for damage.
 async fn run_capture(timeout: Duration, name: &str, args: &[&str]) -> CmdResult {
     let fut = Command::new(name).args(args).kill_on_drop(true).output();
     match tokio::time::timeout(timeout, fut).await {
@@ -142,10 +117,7 @@ fn needs_log_replay(out: &str) -> bool {
     l.contains("destroy the log") || l.contains("metadata changes in a log")
 }
 
-/// Marker recording that an auto repair already ran for the current
-/// corruption incident. Lives on /mutable (survives reboot + read-only
-/// root). Written BEFORE the repair starts so a crash mid-repair can't
-/// reboot-loop; cleared only by a boot where /backingfiles is mounted.
+/// Persistent incident marker written before auto-repair to prevent reboot loops.
 const AUTO_REPAIR_MARKER: &str = "/mutable/.storage_auto_repair_attempted";
 
 fn marker_exists(path: &str) -> bool {
@@ -166,9 +138,7 @@ fn clear_marker(path: &str) {
     let _ = std::fs::remove_file(path);
 }
 
-/// What the boot check should do, given the observed state. Pure: the caller
-/// gathers the inputs, including a one-shot mount retry that can flip
-/// `mounted` to true.
+/// Boot action after a one-shot mount retry and incident-marker check.
 #[derive(Debug, PartialEq, Eq)]
 enum BootAction {
     /// Feature off or storage not eligible: do nothing.
@@ -206,13 +176,8 @@ fn decide_boot_action(
     BootAction::Repair
 }
 
-/// Policy at the "regular repair finished" gate.
-///
-/// Interactive: `-L` is offered only when xfs_repair names the dirty log as
-/// the blocker, and runs only on the user's explicit confirmation; other
-/// failures are terminal errors. Auto: `-L` runs on ANY failure when the user
-/// pre-authorized it via the force toggle, otherwise it stops and asks for a
-/// manual force fix.
+/// Escalation policy: interactive mode allows `-L` only for a confirmed dirty
+/// log; auto mode allows it after any failure only when pre-authorized.
 #[derive(Debug, PartialEq, Eq)]
 enum Escalation {
     /// Repair succeeded; continue to verification.
@@ -241,11 +206,9 @@ fn escalation_action(rep_ok: bool, needs_replay: bool, auto: bool, force_allowed
 /// How a repair run terminates and who authorizes `-L`.
 #[derive(Clone, Copy)]
 pub(crate) enum RepairMode {
-    /// Web-UI flow: WS broadcasts only; hard stop before `-L` unless the
-    /// user re-submitted with confirm_destructive; user presses Reboot.
+    /// Web UI requires explicit `-L` confirmation and a manual reboot.
     Interactive { confirm_destructive: bool },
-    /// Boot-time flow: pushes notifications, runs `-L` on any regular
-    /// failure when pre-authorized, and reboots itself on success.
+    /// Boot mode can use pre-authorization and reboot after success.
     AutoBoot { force_allowed: bool },
 }
 
@@ -282,9 +245,7 @@ async fn notify_storage_repair(message: &str) {
 
 // Boot-time auto repair
 
-/// Settle delay before the boot check. Long enough for fstab mounts and
-/// device enumeration to finish; short enough that an unattended fix
-/// starts promptly after a corrupting power loss.
+/// Settle delay for fstab mounts and device enumeration.
 const BOOT_CHECK_DELAY: Duration = Duration::from_secs(20);
 
 /// Called once from the server binary's startup path.
@@ -292,12 +253,7 @@ pub fn spawn_boot_check(hub: sentryusb_ws::Hub) {
     tokio::spawn(async move { boot_check(hub, AUTO_REPAIR_MARKER).await });
 }
 
-/// Boot-time auto repair for /backingfiles, gated by the `storage_auto_repair`
-/// preference toggle. Detection signal: the fstab mount has already failed by
-/// the time this runs (XFS refuses corrupt filesystems at boot). A one-shot
-/// mount retry separates real corruption from a device that merely enumerated
-/// late; if that retry mounts, the filesystem is fine and nothing is repaired
-/// or rebooted.
+/// Auto-repair an enabled, still-unmounted backingfiles device after one mount retry.
 async fn boot_check(hub: sentryusb_ws::Hub, marker: &str) {
     tokio::time::sleep(BOOT_CHECK_DELAY).await;
 
@@ -313,7 +269,7 @@ async fn boot_check(hub: sentryusb_ws::Hub, marker: &str) {
     };
     let mut mounted = resolve_mount_source(&read_proc_mounts().await, BACKINGFILES).is_some();
 
-    // Mount retry: separates "corrupt" from "wasn't there when fstab ran".
+    // Distinguish corruption from late device enumeration.
     if auto_enabled && external && !mounted {
         if let Some(d) = &device {
             let r = run_capture(CMD_TIMEOUT, "mount", &[d.as_str(), BACKINGFILES]).await;
@@ -341,7 +297,7 @@ async fn boot_check(hub: sentryusb_ws::Hub, marker: &str) {
         }
         BootAction::Repair => {
             let device = device.expect("BootAction::Repair implies device_found");
-            // Belt-and-suspenders: same root-disk refusal as the HTTP handler.
+            // Repeat the HTTP handler's root-disk exclusion.
             if let Some(rp) = root_disk().await {
                 if parent_disk(&device) == rp {
                     tracing::error!(
@@ -378,20 +334,19 @@ async fn root_disk() -> Option<String> {
     Some(parent_disk(&canonicalize_dev(&src)))
 }
 
-/// Resolve the device backing `/backingfiles`. Prefers the live mount; falls
-/// back to the XFS label when the partition is corrupt and unmounted.
+/// Resolve backingfiles from its live mount, then its XFS label.
 async fn resolve_backing_device() -> Option<String> {
     let mounts = read_proc_mounts().await;
     if let Some(src) = resolve_mount_source(&mounts, BACKINGFILES) {
         return Some(canonicalize_dev(&src));
     }
-    // Not mounted (the corruption case): resolve by label from the superblock.
+    // Resolve an unmounted/corrupt filesystem by label.
     let r = run_capture(PROBE_TIMEOUT, "blkid", &["-L", XFS_LABEL]).await;
     let dev = r.output.trim();
     if r.ok && dev.starts_with("/dev/") {
         return Some(canonicalize_dev(dev));
     }
-    // Fallback: lsblk label scan.
+    // Fall back to an lsblk label scan.
     let r = run_capture(PROBE_TIMEOUT, "lsblk", &["-rno", "PATH,LABEL"]).await;
     for line in r.output.lines() {
         let mut f = line.split_whitespace();
@@ -423,10 +378,7 @@ async fn is_external(dev: &str) -> bool {
     }
 }
 
-/// True only for a genuine XFS *error* line for this device. A line must carry
-/// a real error keyword: matching anything that merely mentions the device
-/// makes the benign lines XFS prints on every mount/unmount ("Mounting V5
-/// Filesystem", "Ending clean mount") read as fresh errors after a repair.
+/// Match genuine device-specific XFS errors, excluding mount lifecycle chatter.
 fn is_xfs_error_line(line: &str, devbase: &str) -> bool {
     let l = line.to_ascii_lowercase();
     if !l.contains("xfs") || !l.contains(devbase) {
@@ -613,9 +565,7 @@ impl RepairLog {
     }
 }
 
-/// Validates synchronously (so the caller gets an immediate 4xx on a bad
-/// precondition) then spawns the repair, streaming progress over WS. Returns
-/// `{ "status": "started" }` on a valid request.
+/// Validate preconditions synchronously, then stream repair progress over WS.
 pub async fn storage_repair(State(s): State<AppState>, body: String) -> (StatusCode, Json<serde_json::Value>) {
     let req: RepairRequest = serde_json::from_str(&body).unwrap_or_default();
 
@@ -634,7 +584,7 @@ pub async fn storage_repair(State(s): State<AppState>, body: String) -> (StatusC
             "Storage repair is only available when camera storage is on a separate external drive.",
         );
     }
-    // Belt-and-suspenders: never aim the repair at the root disk.
+    // Repeat the eligibility check's root-disk exclusion.
     if let Some(rp) = root_disk().await {
         if parent_disk(&device) == rp {
             return crate::json_error(
@@ -678,7 +628,7 @@ async fn run_repair(hub: sentryusb_ws::Hub, device: String, mode: RepairMode) {
         format!("Repairing {device} (XFS backingfiles); auto={auto} force_allowed={force_allowed}"),
     );
 
-    // 1. Quiesce. NEVER stop the `dashusb` service: it is this web server.
+    // Quiesce archive and gadget, never this web server.
     log.line("quiesce", "Stopping the archive loop and USB gadget (the web UI stays up)…");
     let _ = run_capture(t, "systemctl", &["stop", "dashusb-archive"]).await;
     let _ = run_capture(t, "bash", &["-c", "killall archiveloop 2>/dev/null || true"]).await;
@@ -688,7 +638,7 @@ async fn run_repair(hub: sentryusb_ws::Hub, device: String, mode: RepairMode) {
         Err(e) => log.line("quiesce", format!("Gadget disable task error (continuing): {e}")),
     }
 
-    // 2. Release mounts so xfs_repair won't refuse on a busy device.
+    // Release mounts before repair.
     log.line("unmount", "Releasing mounts…");
     let mut mps: Vec<&str> = SUBMOUNTS.to_vec();
     mps.push(BACKINGFILES);
@@ -703,12 +653,12 @@ async fn run_repair(hub: sentryusb_ws::Hub, device: String, mode: RepairMode) {
         log.cmd("unmount", &format!("umount {device}"), &r);
     }
 
-    // 3. Read-only diagnosis.
+    // Diagnose without changes.
     log.line("dryrun", "Running read-only check (xfs_repair -n)…");
     let dry = run_capture(t, "xfs_repair", &["-n", &device]).await;
     log.cmd("dryrun", &format!("xfs_repair -n {device}"), &dry);
 
-    // 4. Non-destructive repair, with a mount-to-replay-log retry.
+    // Repair non-destructively, replaying the log by mount when needed.
     log.line("repair", "Attempting repair (xfs_repair)…");
     let mut rep = run_capture(t, "xfs_repair", &[&device]).await;
     log.cmd("repair", &format!("xfs_repair {device}"), &rep);
@@ -727,7 +677,7 @@ async fn run_repair(hub: sentryusb_ws::Hub, device: String, mode: RepairMode) {
         }
     }
 
-    // 5. Escalation gate: policy differs by mode (see escalation_action).
+    // Apply the mode-specific destructive escalation gate.
     let mut force_ran = false;
     match escalation_action(rep.ok, needs_log_replay(&rep.output), auto, force_allowed) {
         Escalation::Proceed | Escalation::Fail => {}
@@ -779,7 +729,7 @@ async fn run_repair(hub: sentryusb_ws::Hub, device: String, mode: RepairMode) {
         return;
     }
 
-    // 6. Verify contents, then unmount so the reboot mounts cleanly.
+    // Verify contents, then leave a clean reboot mount.
     log.line("verify", "Repair succeeded — verifying contents…");
     let mut cam_present = false;
     let mut lost_found = 0usize;
@@ -799,7 +749,7 @@ async fn run_repair(hub: sentryusb_ws::Hub, device: String, mode: RepairMode) {
         log.line("verify", "Could not mount after repair to verify — the reboot will retry the mount.");
     }
 
-    // 7. Reboot-required terminal state (the user initiates the reboot).
+    // Interactive mode stops in a reboot-required state.
     let log_file = persist_log(&log.buf);
     let message = if cam_present {
         "Repair complete. A reboot is required to bring camera storage back online.".to_string()
@@ -818,7 +768,7 @@ async fn run_repair(hub: sentryusb_ws::Hub, device: String, mode: RepairMode) {
         }),
     );
 
-    // 8. Auto mode finishes the job itself: notify, then reboot.
+    // Auto mode notifies, then reboots.
     if auto {
         let mut push = if force_ran { MSG_FORCE_SUCCESS } else { MSG_AUTO_SUCCESS }.to_string();
         if !cam_present {
@@ -826,9 +776,7 @@ async fn run_repair(hub: sentryusb_ws::Hub, device: String, mode: RepairMode) {
         }
         notify_storage_repair(&push).await;
         tracing::info!("[storage-boot] auto repair complete — rebooting");
-        // Same mechanism as POST /api/system/reboot. Notification dispatch
-        // above has already completed (bounded by the 30s provider timeout),
-        // so nothing is cut off by the reboot.
+        // Notifications finish before the same reboot mechanism used by the API.
         let _ = run_capture(t, "reboot", &[]).await;
     }
 }
@@ -872,8 +820,7 @@ tmpfs /run tmpfs rw 0 0";
     #[test]
     fn xfs_error_filter_ignores_benign_mount_lines() {
         let dev = "sda2";
-        // Benign lifecycle chatter: the lines a healthy remount prints, once
-        // wrongly reported to the user as "2 recent filesystem errors".
+        // Healthy mount lifecycle chatter.
         assert!(!is_xfs_error_line(
             "[Sun Jun 14 05:34:14 2026] XFS (sda2): Mounting V5 Filesystem b1a5fe90",
             dev
@@ -898,35 +845,34 @@ tmpfs /run tmpfs rw 0 0";
     #[test]
     fn decide_boot_action_covers_all_branches() {
         use BootAction::*;
-        // Toggle off → never touch anything.
+        // Disabled auto-repair never touches storage.
         assert_eq!(decide_boot_action(false, true, true, false, false), Skip("storage_auto_repair disabled"));
-        // No device (SSD unplugged / setup incomplete) → skip.
+        // Missing or incomplete storage is ineligible.
         assert_eq!(decide_boot_action(true, false, false, false, false), Skip("no backingfiles device found"));
-        // Not an external drive → skip (same gate as the manual card).
+        // Internal drives are ineligible.
         assert_eq!(decide_boot_action(true, true, false, false, false), Skip("backingfiles not on an external drive"));
-        // Healthy mount → clear any stale incident marker.
+        // Healthy mounts clear stale incident state.
         assert_eq!(decide_boot_action(true, true, true, true, false), ClearMarker);
         assert_eq!(decide_boot_action(true, true, true, true, true), ClearMarker);
-        // Corrupt again after a previous auto attempt → notify, don't loop.
+        // Do not loop after a previous attempt.
         assert_eq!(decide_boot_action(true, true, true, false, true), NotifyRepeatCorruption);
-        // Corrupt, first time → repair.
+        // First incident is eligible for repair.
         assert_eq!(decide_boot_action(true, true, true, false, false), Repair);
     }
 
     #[test]
     fn escalation_auto_forces_on_any_failure_interactive_only_on_dirty_log() {
         use Escalation::*;
-        // Success → proceed regardless of mode.
+        // Success proceeds in either mode.
         assert_eq!(escalation_action(true, false, true, true), Proceed);
         assert_eq!(escalation_action(true, true, false, false), Proceed);
-        // AUTO: -L on ANY failure when allowed (user's explicit choice),
-        // even when the output is not a dirty-log failure.
+        // Auto mode applies the user's broad force authorization.
         assert_eq!(escalation_action(false, false, true, true), RunForce);
         assert_eq!(escalation_action(false, true, true, true), RunForce);
-        // AUTO without the force toggle → stop and tell the user.
+        // Auto mode without force authorization stops.
         assert_eq!(escalation_action(false, false, true, false), StopNeedsForce);
         assert_eq!(escalation_action(false, true, true, false), StopNeedsForce);
-        // INTERACTIVE: -L only for a dirty log, and only when confirmed.
+        // Interactive force applies only to a confirmed dirty log.
         assert_eq!(escalation_action(false, true, false, true), RunForce);
         assert_eq!(escalation_action(false, true, false, false), StopNeedsForce);
         assert_eq!(escalation_action(false, false, false, true), Fail);

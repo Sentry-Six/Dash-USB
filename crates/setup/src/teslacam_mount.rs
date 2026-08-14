@@ -1,10 +1,5 @@
-//! Recordings web mount wiring.
-//!
-//! Bind-mounts /mutable/Recordings at /var/www/html/Recordings, where the Axum
-//! server's ServeDir route reads from. The cttseraser FUSE layer this replaced
-//! is no longer shipped, so a legacy `mount.ctts#` fstab entry is detected and
-//! removed on the first run after upgrade and pre-bind-mount installs migrate
-//! cleanly.
+//! Bind-mounts recordings into Axum's served path and removes legacy
+//! `mount.ctts#` fstab entries.
 
 use std::time::Duration;
 
@@ -18,8 +13,7 @@ const FSTAB_BIND_LINE: &str =
     "/mutable/Recordings /var/www/html/Recordings none bind,nofail,x-systemd.requires=/mutable 0 0";
 
 pub async fn configure_web_mount(emitter: &SetupEmitter) -> Result<bool> {
-    // Idempotency: nothing to do once the canonical bind entry is present and
-    // no legacy cttseraser entry remains.
+    // No-op only when the canonical entry exists without a legacy mount.
     let fstab = std::fs::read_to_string("/etc/fstab").unwrap_or_default();
     let fstab_has_bind = fstab.lines().any(|l| {
         !l.trim_start().starts_with('#')
@@ -57,9 +51,7 @@ pub async fn configure_web_mount(emitter: &SetupEmitter) -> Result<bool> {
     std::fs::create_dir_all("/mutable/Recordings")?;
     std::fs::create_dir_all("/var/www/html/Recordings")?;
 
-    // Replace any legacy cttseraser entry with the bind-mount entry, then
-    // clear systemd's cached failed state so the unit activates immediately
-    // (without requiring a reboot on upgrade).
+    // Clear cached mount failures so a migrated entry activates immediately.
     install_bind_mount_fstab()?;
     let _ = sentryusb_shell::run("systemctl", &["daemon-reload"]).await;
     let _ = sentryusb_shell::run(

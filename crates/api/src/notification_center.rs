@@ -1,11 +1,5 @@
-//! Notification center: history and type settings.
-//!
-//! - History events carry id, unix-ts, type, title, message, providers and
-//!   per-provider results. Newest first, capped at 500 entries.
-//! - Query params: `limit`, `offset`, and a `type` filter.
-//! - Settings live in the user-preferences map under `notify_<type>` keys.
-//! - Reads fall back from `/mutable/dashusb-notifications.json` to the legacy
-//!   `/mutable/.notification_history.json`.
+//! Paginated notification history and per-type preference gates. History is
+//! newest-first, capped at 500, with a legacy-path read fallback.
 
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -327,8 +321,7 @@ mod tests {
 
     #[test]
     fn settings_deserialize_defaults_storage_repair_on() {
-        // A PUT from an older UI omits storage_repair, which must default to
-        // enabled rather than failing deserialization.
+        // Older clients omit storage_repair; preserve its enabled default.
         let json = r#"{
             "archive_start": true, "archive_complete": true,
             "archive_error": true, "temperature": true,

@@ -69,16 +69,10 @@ export function ArchiveStep({ data, onChange }: StepProps) {
   const [testing, setTesting] = useState(false)
   const [testStage, setTestStage] = useState<string | null>(null)
   const [testResult, setTestResult] = useState<{ success: boolean; error?: string } | null>(null)
-  // Lifted here so the displayed key survives switching archive systems
-  // (CIFS to rsync and back). The file on disk persists either way; this
-  // only keeps the visible state across the conditional render.
+  // Preserve the displayed key while switching conditional backend forms.
   const [pubKey, setPubKey] = useState<string | null>(null)
 
-  // The backend broadcasts `archive_test_status` for the slow stages of Test
-  // Connection, mainly the on-demand `apt-get install` of nfs-common or
-  // cifs-utils when the userspace mount helper is missing. Without it the
-  // button sits on "Testing..." for up to 4 minutes, since apt can block on
-  // the dpkg frontend lock while setup runs concurrently.
+  // Surface slow dependency installation and mount-probe stages.
   useEffect(() => {
     if (!testing) return
     let ws: WebSocket | null = null

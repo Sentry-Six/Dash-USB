@@ -48,9 +48,7 @@ export default function Snapshots() {
   const [error, setError] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<Set<string>>(new Set())
   const [confirmId, setConfirmId] = useState<string | null>(null)
-  // Oldest first by default: the oldest snapshot is the one to delete to
-  // free space, so the top row is the most useful action. Re-sortable for
-  // browsing.
+  // Default to the snapshot most useful for freeing space.
   const [sortMode, setSortMode] = useState<SortMode>("oldest")
 
   const refresh = useCallback(async () => {
@@ -102,8 +100,7 @@ export default function Snapshots() {
         const body = await res.json().catch(() => ({}))
         throw new Error(body?.error || "Delete failed")
       }
-      // Drop the row optimistically and refresh in the background so the
-      // freed space lands on the gauge immediately.
+      // Remove immediately, then refresh authoritative space in the background.
       setSnapshots((prev) => prev.filter((s) => s.id !== id))
       setConfirmId(null)
       void refresh()
