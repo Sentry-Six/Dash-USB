@@ -132,6 +132,8 @@ fn list_files_blocking(params: ListParams) -> (StatusCode, Json<serde_json::Valu
     let mut dir_entries: Vec<(String, bool)> = match std::fs::read_dir(&clean_path) {
         Ok(entries) => entries
             .filter_map(|e| e.ok())
+            // Upload staging is incomplete and must not appear as a user file.
+            .filter(|entry| !entry.file_name().to_string_lossy().starts_with(".dashusb-upload-"))
             .map(|e| (e.file_name().to_string_lossy().to_string(), e.path().is_dir()))
             .collect(),
         Err(_) => {
@@ -272,131 +274,9 @@ pub async fn delete_file(State(_s): State<AppState>, Query(params): Query<Delete
     }
 }
 
-/// Stream a multipart `file` into the requested `path` without buffering it.
-pub async fn upload_file(
-    State(_s): State<AppState>,
-    mut multipart: axum::extract::Multipart,
-) -> (StatusCode, Json<serde_json::Value>) {
-    let mut dest_dir: Option<String> = None;
-    let mut filename: Option<String> = None;
-    let mut written: u64 = 0;
-    let mut file_written = false;
-
-    // Multipart field order is unspecified; stage until both fields are known.
-    let mut temp_path: Option<PathBuf> = None;
-
-    while let Ok(Some(mut field)) = multipart.next_field().await {
-        let name = field.name().unwrap_or("").to_string();
-        match name.as_str() {
-            "path" => {
-                if let Ok(v) = field.text().await {
-                    dest_dir = Some(v);
-                }
-            }
-            "file" => {
-                let fname = field
-                    .file_name()
-                    .unwrap_or("upload.bin")
-                    .to_string();
-                filename = Some(fname);
-
-                // Unique temp names prevent concurrent uploads from sharing data.
-                static UPLOAD_SEQ: std::sync::atomic::AtomicU64 =
-                    std::sync::atomic::AtomicU64::new(0);
-                let seq = UPLOAD_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let nanos = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0);
-                let tmp = std::env::temp_dir().join(format!(
-                    "dashusb-upload-{}-{}-{}",
-                    std::process::id(),
-                    seq,
-                    nanos
-                ));
-                let mut file = match tokio::fs::File::create(&tmp).await {
-                    Ok(f) => f,
-                    Err(e) => {
-                        return crate::json_error(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            &format!("Failed to create temp file: {}", e),
-                        );
-                    }
-                };
-
-                while let Ok(Some(chunk)) = field.chunk().await {
-                    use tokio::io::AsyncWriteExt;
-                    if let Err(e) = file.write_all(&chunk).await {
-                        let _ = tokio::fs::remove_file(&tmp).await;
-                        return crate::json_error(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            &format!("Failed to write chunk: {}", e),
-                        );
-                    }
-                    written += chunk.len() as u64;
-                }
-
-                use tokio::io::AsyncWriteExt;
-                let _ = file.flush().await;
-                temp_path = Some(tmp);
-                file_written = true;
-            }
-            _ => {}
-        }
-    }
-
-    if !file_written {
-        return crate::json_error(StatusCode::BAD_REQUEST, "Missing file in upload");
-    }
-    let filename = filename.unwrap_or_else(|| "upload.bin".to_string());
-    let dest_dir = match dest_dir {
-        Some(d) if !d.is_empty() => d,
-        _ => {
-            if let Some(tmp) = &temp_path { let _ = tokio::fs::remove_file(tmp).await; }
-            return crate::json_error(StatusCode::BAD_REQUEST, "Missing path parameter");
-        }
-    };
-
-    let dest_path = format!("{}/{}", dest_dir.trim_end_matches('/'), filename);
-    let (clean, allowed) = is_path_allowed(&dest_path);
-    if !allowed {
-        if let Some(tmp) = &temp_path { let _ = tokio::fs::remove_file(tmp).await; }
-        return crate::json_error(StatusCode::FORBIDDEN, "Access denied");
-    }
-
-    if let Some(parent) = clean.parent() {
-        if let Err(e) = tokio::fs::create_dir_all(parent).await {
-            if let Some(tmp) = &temp_path { let _ = tokio::fs::remove_file(tmp).await; }
-            return crate::json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("Failed to create directory: {}", e),
-            );
-        }
-    }
-
-    if let Some(tmp) = temp_path {
-        if let Err(_) = tokio::fs::rename(&tmp, &clean).await {
-            // rename fails across filesystems; fall back to copy+delete.
-            if let Err(e) = tokio::fs::copy(&tmp, &clean).await {
-                let _ = tokio::fs::remove_file(&tmp).await;
-                return crate::json_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    &format!("Failed to write file: {}", e),
-                );
-            }
-            let _ = tokio::fs::remove_file(&tmp).await;
-        }
-    }
-
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "name": filename,
-            "path": dest_path,
-            "size": written.to_string(),
-        })),
-    )
-}
+#[path = "files/upload.rs"]
+mod upload;
+pub use upload::upload_file;
 
 pub async fn download_file(State(_s): State<AppState>, Query(params): Query<DeleteParams>) -> impl IntoResponse {
     let (clean, allowed) = is_path_allowed(&params.path);

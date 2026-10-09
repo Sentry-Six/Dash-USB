@@ -176,9 +176,13 @@ pub async fn save_setup_config(
     let body = mirror_archive_server(body);
 
     let config_path = sentryusb_config::find_config_path();
-    match sentryusb_config::write_file(config_path, &body) {
-        Ok(()) => crate::json_ok(),
-        Err(e) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to write config: {}", e)),
+    match tokio::task::spawn_blocking(move || {
+        let _guard = crate::notification_providers::PROVIDER_CONFIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        sentryusb_config::write_file(config_path, &body)
+    }).await {
+        Ok(Ok(())) => crate::json_ok(),
+        Ok(Err(e)) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to write config: {}", e)),
+        Err(e) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Config task failed: {}", e)),
     }
 }
 
@@ -357,7 +361,7 @@ pub async fn test_archive(
             let pass = params.get("SHARE_PASSWORD").cloned().unwrap_or_default();
             let domain = params.get("SHARE_DOMAIN").cloned().unwrap_or_default();
             let cifs_ver = params.get("CIFS_VERSION").cloned().unwrap_or_default();
-            if server.is_empty() || share.is_empty() || user.is_empty() || pass.is_empty() {
+            if server.is_empty() || sentryusb_setup::archive::normalize_cifs_share(&share).is_empty() || user.is_empty() || pass.is_empty() {
                 return crate::json_error(StatusCode::BAD_REQUEST, "Missing required CIFS fields");
             }
             if let Err(e) = ensure_mount_helper(&s.hub, "cifs-utils", "/sbin/mount.cifs").await {
@@ -375,7 +379,8 @@ pub async fn test_archive(
             if !cifs_ver.is_empty() {
                 opts.push_str(&format!(",vers={}", cifs_ver));
             }
-            let src = format!("//{}/{}", server, share);
+            let looks_like_path = sentryusb_setup::archive::cifs_share_looks_like_path(&share);
+            let src = format!("//{}/{}", server, sentryusb_setup::archive::normalize_cifs_share(&share));
             let res = sentryusb_shell::run_with_timeout(
                 timeout, "mount", &["-t", "cifs", &src, tmp_dir, "-o", &opts],
             ).await;
@@ -385,7 +390,9 @@ pub async fn test_archive(
                 ).await;
             }
             let _ = std::fs::remove_dir(tmp_dir);
-            res.map(|_| ()).map_err(|e| e.to_string())
+            res.map(|_| ()).map_err(|e| if looks_like_path {
+                format!("Enter the SMB share name, e.g. Recordings, instead of a full NAS path. {e}")
+            } else { e.to_string() })
         }
         "rsync" => {
             let server = params.get("RSYNC_SERVER").cloned().unwrap_or_default();

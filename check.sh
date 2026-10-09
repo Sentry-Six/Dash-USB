@@ -10,6 +10,10 @@ shellcheck --exclude=SC1091 \
            ./pi-gen-sources/00-dashusb-tweaks/files/rc.local \
            ./pi-gen-sources/00-dashusb-tweaks/files/dashusb-pick-binary \
            ./run/archiveloop \
+           ./run/archive-control.sh \
+           ./run/mounted-archive-monitor.sh \
+           ./run/cam-disk-supervisor.sh \
+           ./run/wifi-watchdog.sh \
            ./run/remountfs_rw \
            ./run/send-push-message \
            ./run/temperature_monitor \

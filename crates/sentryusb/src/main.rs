@@ -34,6 +34,8 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Install this binary's bundled archive helpers without network access.
+    RefreshArchiveRuntime,
     /// USB gadget control (configfs + UDC bind/unbind).
     Gadget {
         #[command(subcommand)]
@@ -259,6 +261,10 @@ async fn shutdown_signal() {
 /// failures to stderr for archiveloop diagnostics.
 async fn run_subcommand(cmd: Command) -> i32 {
     match cmd {
+        Command::RefreshArchiveRuntime => match sentryusb_setup::archive_runtime::refresh_configured(std::path::Path::new("/root/bin")) {
+            Ok(()) => 0,
+            Err(error) => { eprintln!("Could not refresh archive runtime: {error:#}"); 1 }
+        },
         Command::Gadget { action } => run_gadget(action).await,
         Command::Snapshot { action } => run_snapshot(action).await,
         Command::Space { action } => run_space(action).await,

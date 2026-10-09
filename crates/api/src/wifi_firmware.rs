@@ -1,0 +1,693 @@
+//! Wi-Fi firmware updater for the Broadcom/Cypress CYW43455 combo radio.
+//!
+//! Raspberry Pi packages firmware 7.45.265 (built Aug 2023). Infineon ships a
+//! newer 7.45.286 (built Oct 2024) in its own repository, which Raspberry Pi
+//! cannot redistribute because it sits under a licence Infineon explicitly did
+//! not upstream to linux-firmware.git.
+//!
+//! Why we offer it: on a Pi 5 or Pi 4B the older firmware can wedge mid-archive. The
+//! kernel logs a burst of `CMD53 sg block write failed -84` plus
+//! `max tx seq number error`, after which the radio stays associated with a
+//! strong signal and normal receive speed while transmit collapses — and
+//! Bluetooth dies with it, because the two share one antenna through the
+//! chip's coexistence arbiter.
+//!
+//! Note this updater only touches the *Wi-Fi* image. The Bluetooth core of the
+//! same package runs its own separate patch (`BCM4345C0.hcd`, from the
+//! `bluez-firmware` package, loaded over UART) and is left alone. BLE can still
+//! benefit indirectly, because it shares the antenna with the WLAN core.
+//!
+//! Reloading the radio in place is not a reliable finish: it re-probes the chip
+//! over SDIO without power-cycling it, and can leave transmit far below normal.
+//! Measured on a Pi 5, a fresh boot sustains ~220 Mbit/s while a bus reset can
+//! land at ~40 Mbit/s with idle gateway latency inflated from 4 ms to a 43 ms
+//! average, at full PHY rate with zero errors or retries — roughly 11% airtime
+//! efficiency, which is what unaggregated traffic looks like. The outcome
+//! varies run to run, so the UI asks for a reboot after a successful install.
+//!
+//! Infineon's own changelog for this build (FMAC v2024_1115 release notes,
+//! section 2.3.6) lists no new features and four bug fixes, the first two of
+//! which line up with what was measured here:
+//!   * Fix for low throughput issue noticed with 5 Ghz
+//!   * Fix for low Rx PER
+//!   * Fix for low throughput issue noticed with SoftAP and STA concurrency
+//!   * Fix for memory loss issue noticed during WPA3 SAE-FT roam scenarios
+//! The compiled-in feature lists of 7.45.265 and 7.45.286 are byte-identical,
+//! so this is purely bug fixes within the same feature set. None of them claims
+//! to fix the SDIO CMD53 errors that *trigger* the wedge, so whether the wedge
+//! still recurs on 7.45.286 is untested and needs sustained real-world use to
+//! answer. What is established is that 7.45.286 installs and rolls back cleanly
+//! and performs on par with the stock image (207-212 vs 221-231 Mbit/s).
+//!
+//! The install is deliberately survivable. Reloading the radio drops Wi-Fi for
+//! ~20 s, which kills the very HTTP connection that started the install, so
+//! the work runs detached and every step is persisted to `/mutable` where the
+//! UI can pick it back up once it reconnects. If the radio does not come back,
+//! restoration of the saved image and another radio reload are attempted.
+//!
+//! The new image is also pinned with `dpkg-divert`, because the file belongs to
+//! the `firmware-brcm80211` package and any later `apt upgrade` of it would
+//! otherwise quietly restore 7.45.265 and reintroduce the fault. The diversion
+//! sends the packaged copy to a `.distrib` sidecar and leaves ours at the path
+//! the driver loads; removing the diversion puts the packaged file back.
+
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+use axum::Json;
+use axum::extract::State;
+use axum::http::StatusCode;
+use serde::{Deserialize, Serialize};
+use tracing::{info, warn};
+
+use crate::router::AppState;
+
+/// CYW43455 build validated by the upstream Sentry USB firmware updater.
+const TARGET_VERSION: &str = "7.45.286";
+/// Pinned to a release tag, never a moving branch.
+const FW_URL: &str = "https://raw.githubusercontent.com/Infineon/ifx-linux-firmware/release-v6.1.145-2026_0108/firmware/cyfmac43455-sdio.bin";
+const FW_SHA256: &str = "eaff8d2b6d2501bb5c477ba343900c7487af915898eac13bc91b33b1285dadce";
+const FW_SIZE: u64 = 616_233;
+
+/// The symlink the driver follows. The real file it lands on varies by distro,
+/// so it is always resolved rather than assumed.
+const FW_LINK: &str = "/usr/lib/firmware/brcm/brcmfmac43455-sdio.bin";
+/// Same path without the extension, for building the board-specific variant.
+const FW_BASE: &str = "/usr/lib/firmware/brcm/brcmfmac43455-sdio";
+const BACKUP_DIR: &str = "/mutable/wifi-firmware";
+const STATE_FILE: &str = "/mutable/wifi-firmware/state.json";
+
+/// Guards a second install starting mid-flight — the first is holding the
+/// radio down and the two would fight over the same file.
+static INSTALL_RUNNING: AtomicBool = AtomicBool::new(false);
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct InstallState {
+    /// idle | running | success | failed | rolled_back
+    pub state: String,
+    pub step: String,
+    pub progress: u8,
+    pub message: String,
+    pub updated_at: i64,
+}
+
+impl Default for InstallState {
+    fn default() -> Self {
+        InstallState {
+            state: "idle".into(),
+            step: String::new(),
+            progress: 0,
+            message: String::new(),
+            updated_at: 0,
+        }
+    }
+}
+
+/// Wall-clock time the kernel booted, from `/proc/stat`'s `btime`.
+fn boot_time() -> Option<i64> {
+    let s = std::fs::read_to_string("/proc/stat").ok()?;
+    s.lines()
+        .find_map(|l| l.strip_prefix("btime "))
+        .and_then(|v| v.trim().parse::<i64>().ok())
+}
+
+fn read_state() -> InstallState {
+    let state = std::fs::read_to_string(STATE_FILE)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    reconcile_state(state, INSTALL_RUNNING.load(Ordering::SeqCst))
+}
+
+fn reconcile_state(mut state: InstallState, running: bool) -> InstallState {
+    if state.state == "running" && !running {
+        state.state = "failed".into();
+        state.message = "The firmware operation was interrupted. Retry it or restore the saved firmware.".into();
+    }
+    state
+}
+
+/// Persist progress where it survives the Wi-Fi drop, and mirror it to any
+/// still-connected WebSocket client so the progress bar moves live.
+fn set_state(hub: &sentryusb_ws::Hub, state: &str, step: &str, progress: u8, message: &str) {
+    let s = InstallState {
+        state: state.into(),
+        step: step.into(),
+        progress,
+        message: message.into(),
+        updated_at: chrono::Utc::now().timestamp(),
+    };
+    let _ = std::fs::create_dir_all(BACKUP_DIR);
+    if let Ok(json) = serde_json::to_string(&s) {
+        let tmp = format!("{}.tmp", STATE_FILE);
+        if std::fs::write(&tmp, &json).is_ok() {
+            let _ = std::fs::rename(&tmp, STATE_FILE);
+        }
+    }
+    hub.broadcast("wifi_firmware_status", &s);
+    info!("[wifi-fw] {} {}% {}", step, progress, message);
+}
+
+// ── board / firmware detection ────────────────────────────────────────────
+
+fn board_model() -> String {
+    for p in [
+        "/proc/device-tree/model",
+        "/sys/firmware/devicetree/base/model",
+    ] {
+        if let Ok(s) = std::fs::read_to_string(p) {
+            let s = s.trim_end_matches('\0').trim().to_string();
+            if !s.is_empty() {
+                return s;
+            }
+        }
+    }
+    String::new()
+}
+
+/// Boards this is offered on. The Pi 5 and the Pi 4 Model B load the *same*
+/// CYW43455 image, so the fix applies identically to both — the public reports
+/// of this failure (raspberrypi/linux#4161 and #4552) are in fact Pi 4B.
+///
+/// Deliberately excluded: the Pi 400 ships its own board-specific 43455 image
+/// rather than the shared one, and the Pi 3B / Zero W (43430) and Zero 2 W
+/// (43436) are different chips entirely. The match is on "4 model b" rather
+/// than "raspberry pi 4" precisely so it cannot catch a Pi 400.
+fn board_supported() -> bool {
+    model_supported(&board_model())
+}
+
+fn model_supported(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    m.starts_with("raspberry pi 5 model b") || m.starts_with("raspberry pi 4 model b")
+}
+
+/// First entry of the device-tree `compatible` list, e.g. `raspberrypi,5-model-b`.
+fn dt_compatible_first() -> Option<String> {
+    let raw = std::fs::read_to_string("/proc/device-tree/compatible").ok()?;
+    raw.split('\0')
+        .next()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Resolve the file the driver actually loads. brcmfmac asks for a
+/// board-specific name first (`…-sdio.raspberrypi,5-model-b.bin`, built from
+/// the device-tree `compatible`) and only then the generic one, so resolve in
+/// that same order: on a board that ships its own image, writing the generic
+/// file would silently do nothing.
+fn resolve_fw_path() -> Option<PathBuf> {
+    if let Some(board) = dt_compatible_first() {
+        let specific = format!("{}.{}.bin", FW_BASE, board);
+        if let Some(p) = std::fs::canonicalize(&specific)
+            .ok()
+            .filter(|p| p.is_file())
+        {
+            return Some(p);
+        }
+    }
+    std::fs::canonicalize(FW_LINK).ok().filter(|p| p.is_file())
+}
+
+/// dpkg parks the packaged file here once the path is diverted, so its
+/// presence is a reliable "our image is pinned" signal.
+fn distrib_path(fw_path: &Path) -> PathBuf {
+    let mut p = fw_path.as_os_str().to_os_string();
+    p.push(".distrib");
+    PathBuf::from(p)
+}
+
+fn is_pinned(fw_path: &Path) -> bool {
+    distrib_path(fw_path).exists()
+}
+
+/// Divert the packaged path so `apt upgrade` of firmware-brcm80211 can never
+/// overwrite the firmware we install. `--rename` moves the current file aside
+/// to `.distrib`, which is why the backup is taken before this runs.
+async fn pin_firmware(fw_path: &Path) -> bool {
+    if is_pinned(fw_path) {
+        return true;
+    }
+    let path = fw_path.to_string_lossy().to_string();
+    match sentryusb_shell::run("dpkg-divert", &["--local", "--rename", "--add", &path]).await {
+        Ok(_) => {
+            info!("[wifi-fw] pinned {} against package upgrades", path);
+            true
+        }
+        Err(e) => {
+            // Non-Debian hosts have no dpkg-divert; the install still works,
+            // it just isn't protected from a future package upgrade.
+            warn!("[wifi-fw] could not pin firmware ({e}) — an apt upgrade may revert it");
+            false
+        }
+    }
+}
+
+/// Undo the diversion, putting the distribution's own file back at the path.
+async fn unpin_firmware(fw_path: &Path) {
+    if !is_pinned(fw_path) {
+        return;
+    }
+    // `--rename --remove` refuses to clobber, so our image has to go first.
+    let _ = std::fs::remove_file(fw_path);
+    let path = fw_path.to_string_lossy().to_string();
+    if let Err(e) =
+        sentryusb_shell::run("dpkg-divert", &["--local", "--rename", "--remove", &path]).await
+    {
+        warn!("[wifi-fw] could not remove the firmware diversion: {e}");
+    }
+}
+
+/// Pull the `Version: 7.45.xxx` banner out of a firmware image. The blob keeps
+/// it as plain text, so a bounded scan beats parsing the container format.
+fn version_in_blob(path: &Path) -> Option<String> {
+    let data = std::fs::read(path).ok()?;
+    version_from_bytes(&data)
+}
+
+fn version_from_bytes(data: &[u8]) -> Option<String> {
+    let needle = b"Version: ";
+    let i = data.windows(needle.len()).position(|w| w == needle)?;
+    let rest = &data[i + needle.len()..];
+    let end = rest.iter().position(|c| !c.is_ascii_graphic()).unwrap_or(rest.len());
+    std::str::from_utf8(&rest[..end])
+        .ok()
+        .map(|s| s.to_string())
+}
+
+/// The version the radio is running right now, from the driver's boot banner.
+async fn running_version() -> Option<String> {
+    let out = sentryusb_shell::run("dmesg", &[]).await.ok()?;
+    let line = out
+        .lines()
+        .filter(|l| l.contains("preinit_dcmds: Firmware"))
+        .next_back()?;
+    let idx = line.find("version ")?;
+    line[idx + "version ".len()..]
+        .split_whitespace()
+        .next()
+        .map(|s| s.to_string())
+}
+
+/// Look for the signature of the wedge in the kernel log, so the warning can
+/// say "this happened to you" rather than "this might happen to you".
+async fn symptom_detected() -> Option<String> {
+    let out = sentryusb_shell::run("dmesg", &[]).await.ok()?;
+    let hits = out
+        .lines()
+        .filter(|l| {
+            l.contains("brcmfmac")
+                && (l.contains("CMD53")
+                    || l.contains("brcmf_sdio_txfail")
+                    || l.contains("max tx seq number error")
+                    || l.contains("RXHEADER FAILED"))
+        })
+        .count();
+    if hits == 0 {
+        return None;
+    }
+    Some(format!(
+        "{} Wi-Fi bus error{} in this boot's kernel log",
+        hits,
+        if hits == 1 { "" } else { "s" }
+    ))
+}
+
+// ── status ────────────────────────────────────────────────────────────────
+
+/// GET /api/system/wifi-firmware
+pub async fn get_status(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
+    let model = board_model();
+    let supported = board_supported();
+    let fw_path = resolve_fw_path();
+    let installed = fw_path.as_deref().and_then(version_in_blob);
+    let running = running_version().await;
+    let symptom = symptom_detected().await;
+
+    let on_target =
+        installed.as_deref() == Some(TARGET_VERSION) || running.as_deref() == Some(TARGET_VERSION);
+
+    // A successful install only still needs a reboot if it happened during the
+    // *current* boot. Reloading the radio in place can leave it transmitting
+    // well below normal, but once the machine has been restarted since, the
+    // job is finished and nagging about it would be wrong.
+    let st = read_state();
+    let reboot_pending =
+        st.state == "success" && boot_time().map(|b| st.updated_at > b).unwrap_or(false);
+    // Eligible only where the work can actually be done: a supported board
+    // whose firmware file resolved, not already on the newer build.
+    let eligible = supported && fw_path.is_some() && !on_target;
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "eligible": eligible,
+            "supported_board": supported,
+            "model": model,
+            "running_version": running,
+            "installed_version": installed,
+            "target_version": TARGET_VERSION,
+            "up_to_date": on_target,
+            "symptom_detected": symptom.is_some(),
+            "symptom_detail": symptom,
+            "can_rollback": Path::new(&format!("{}/stock.bin", BACKUP_DIR)).exists(),
+            "reboot_pending": reboot_pending,
+            "pinned": fw_path.as_deref().map(is_pinned).unwrap_or(false),
+            "install": st,
+        })),
+    )
+}
+
+// ── install ───────────────────────────────────────────────────────────────
+
+/// POST /api/system/wifi-firmware/install
+pub async fn install(State(s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
+    if !board_supported() {
+        return crate::json_error(
+            StatusCode::BAD_REQUEST,
+            "This update only applies to the Raspberry Pi 5 and Pi 4 Model B.",
+        );
+    }
+    let Some(fw_path) = resolve_fw_path() else {
+        return crate::json_error(
+            StatusCode::BAD_REQUEST,
+            "Could not locate the Wi-Fi firmware file on this system.",
+        );
+    };
+    if INSTALL_RUNNING.swap(true, Ordering::SeqCst) {
+        return crate::json_error(
+            StatusCode::CONFLICT,
+            "A firmware install is already running.",
+        );
+    }
+
+    let recovery_guard = match crate::archive_mount_lock::acquire_path(
+        Path::new("/run/dashusb_wifi_watchdog.lock"), Duration::ZERO,
+    ) {
+        Ok(guard) => guard,
+        Err(error) => {
+            INSTALL_RUNNING.store(false, Ordering::SeqCst);
+            return crate::json_error(StatusCode::CONFLICT, &format!("Wi-Fi recovery is busy or unavailable: {error}"));
+        }
+    };
+    let hub = s.hub.clone();
+    tokio::spawn(async move {
+        let _recovery_guard = recovery_guard;
+        if let Err(e) = run_install(&hub, &fw_path).await {
+            warn!("[wifi-fw] install failed: {e}");
+            set_state(&hub, "failed", "failed", 100, &e.to_string());
+        }
+        INSTALL_RUNNING.store(false, Ordering::SeqCst);
+    });
+
+    (
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({
+            "started": true,
+            "note": "Wi-Fi drops for about 20 seconds while the radio reloads."
+        })),
+    )
+}
+
+async fn run_install(hub: &sentryusb_ws::Hub, fw_path: &Path) -> anyhow::Result<()> {
+    set_state(hub, "running", "download", 5, "Downloading firmware…");
+
+    let client = reqwest::Client::builder()
+        .user_agent(concat!(
+            "dashusb-wifi-firmware/",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .timeout(Duration::from_secs(120))
+        .build()?;
+    let bytes = client
+        .get(FW_URL)
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
+
+    set_state(hub, "running", "verify", 30, "Verifying download…");
+    verify_download(&bytes, FW_SIZE, FW_SHA256)?;
+
+    set_state(hub, "running", "backup", 45, "Backing up current firmware…");
+    let _ = sentryusb_shell::run("mount", &["-o", "remount,rw", "/"]).await;
+    std::fs::create_dir_all(BACKUP_DIR)?;
+    let stock = format!("{}/stock.bin", BACKUP_DIR);
+    // Only ever capture the *original* image, so repeated runs can't overwrite
+    // the rollback target with the new firmware.
+    if !Path::new(&stock).exists() {
+        let backup_tmp = format!("{stock}.tmp");
+        std::fs::copy(fw_path, &backup_tmp)?;
+        std::fs::rename(backup_tmp, &stock)?;
+    }
+    // Stage the complete image before diverting the original packaged path.
+    let temporary = fw_path.with_extension("dashusb-new");
+    std::fs::write(&temporary, &bytes)?;
+
+    set_state(hub, "running", "install", 55, "Installing firmware…");
+    // Pin before writing: the diversion renames the packaged file out of the
+    // way, so writing first would only get that write moved aside.
+    let pinned = pin_firmware(fw_path).await;
+    if let Err(error) = std::fs::rename(&temporary, fw_path) {
+        unpin_firmware(fw_path).await;
+        let _ = std::fs::copy(&stock, fw_path);
+        return Err(error.into());
+    }
+    let _ = sentryusb_shell::run("sync", &[]).await;
+    if !pinned {
+        warn!("[wifi-fw] firmware installed but not pinned — a package upgrade may revert it");
+    }
+
+    set_state(hub, "running", "reload", 65, "Reloading the Wi-Fi radio…");
+    let reloaded = reload_radio().await;
+    if let Err(error) = &reloaded {
+        warn!("[wifi-fw] radio reload failed, restoring saved firmware: {error}");
+    }
+
+    set_state(
+        hub,
+        "running",
+        "wait",
+        80,
+        "Waiting for Wi-Fi to come back…",
+    );
+    if reloaded.is_ok() && wait_for_wifi().await {
+        let ver = running_version()
+            .await
+            .unwrap_or_else(|| TARGET_VERSION.to_string());
+        // The reload restores the driver default (power save on).
+        let _ = sentryusb_shell::run("iw", &["dev", "wlan0", "set", "power_save", "off"]).await;
+        set_state(
+            hub,
+            "success",
+            "done",
+            100,
+            &format!("Wi-Fi firmware {} is now running.", ver),
+        );
+        return Ok(());
+    }
+
+    // The radio did not come back — restore the old image and reload again.
+    set_state(
+        hub,
+        "running",
+        "rollback",
+        90,
+        "Wi-Fi did not return — restoring previous firmware…",
+    );
+    unpin_firmware(fw_path).await;
+    std::fs::copy(&stock, fw_path)?;
+    let _ = sentryusb_shell::run("sync", &[]).await;
+    let _ = reload_radio().await;
+    let recovered = wait_for_wifi().await;
+    set_state(
+        hub,
+        "rolled_back",
+        "rollback",
+        100,
+        if recovered {
+            "The new firmware did not work. The previous version was restored and Wi-Fi is back."
+        } else {
+            "The new firmware did not work. The previous version was restored — please reboot the Pi."
+        },
+    );
+    Ok(())
+}
+
+/// Ask brcmfmac to re-probe the chip, which reloads the firmware image from
+/// disk. The phy index increments on every reprobe (phy0 → phy1 → …), so it is
+/// resolved fresh each time rather than remembered.
+async fn reload_radio() -> anyhow::Result<()> {
+    let phy = std::fs::read_to_string("/sys/class/net/wlan0/phy80211/name")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if phy.is_empty() {
+        anyhow::bail!("could not determine the Wi-Fi phy to reload");
+    }
+    let node = format!("/sys/kernel/debug/ieee80211/{}/reset", phy);
+    if !Path::new(&node).exists() {
+        anyhow::bail!("this kernel does not expose the Wi-Fi reset control");
+    }
+    std::fs::write(&node, b"1")?;
+    Ok(())
+}
+
+/// Associated *and* actually passing traffic — association alone can come back
+/// while the link is unusable, which is the whole failure we're fixing.
+async fn wait_for_wifi() -> bool {
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    for _ in 0..45 {
+        let linked = sentryusb_shell::run_with_timeout(Duration::from_secs(3), "iw", &["dev", "wlan0", "link"])
+            .await
+            .map(|o| o.contains("Connected to"))
+            .unwrap_or(false);
+        if linked {
+            let gw = sentryusb_shell::run_with_timeout(
+                Duration::from_secs(5),
+                "bash",
+                &[
+                    "-c",
+                    "gateway=$(ip -4 route show default dev wlan0 | awk '$1 == \"default\" && $2 == \"via\" {print $3; exit}'); [ -n \"$gateway\" ] && ping -I wlan0 -c1 -W2 -q \"$gateway\"",
+                ],
+            )
+            .await;
+            if gw.is_ok() {
+                return true;
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    false
+}
+
+/// POST /api/system/wifi-firmware/rollback
+pub async fn rollback(State(s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
+    if !board_supported() {
+        return crate::json_error(StatusCode::BAD_REQUEST, "This update only applies to the Raspberry Pi 5 and Pi 4 Model B.");
+    }
+    let Some(fw_path) = resolve_fw_path() else {
+        return crate::json_error(
+            StatusCode::BAD_REQUEST,
+            "Could not locate the Wi-Fi firmware file.",
+        );
+    };
+    let stock = format!("{}/stock.bin", BACKUP_DIR);
+    if !Path::new(&stock).exists() {
+        return crate::json_error(
+            StatusCode::BAD_REQUEST,
+            "No previous firmware is saved on this device.",
+        );
+    }
+    if INSTALL_RUNNING.swap(true, Ordering::SeqCst) {
+        return crate::json_error(
+            StatusCode::CONFLICT,
+            "A firmware operation is already running.",
+        );
+    }
+
+    let recovery_guard = match crate::archive_mount_lock::acquire_path(
+        Path::new("/run/dashusb_wifi_watchdog.lock"), Duration::ZERO,
+    ) {
+        Ok(guard) => guard,
+        Err(error) => {
+            INSTALL_RUNNING.store(false, Ordering::SeqCst);
+            return crate::json_error(StatusCode::CONFLICT, &format!("Wi-Fi recovery is busy or unavailable: {error}"));
+        }
+    };
+    let hub = s.hub.clone();
+    tokio::spawn(async move {
+        let _recovery_guard = recovery_guard;
+        set_state(
+            &hub,
+            "running",
+            "rollback",
+            40,
+            "Restoring the previous firmware…",
+        );
+        let _ = sentryusb_shell::run("mount", &["-o", "remount,rw", "/"]).await;
+        // Hand the path back to dpkg before restoring, so future upgrades of
+        // firmware-brcm80211 manage this file normally again.
+        unpin_firmware(&fw_path).await;
+        let ok = std::fs::copy(&stock, &fw_path).is_ok();
+        let _ = sentryusb_shell::run("sync", &[]).await;
+        if ok {
+            set_state(&hub, "running", "reload", 70, "Reloading the Wi-Fi radio…");
+            let _ = reload_radio().await;
+            let back = wait_for_wifi().await;
+            set_state(
+                &hub,
+                "success",
+                "done",
+                100,
+                if back {
+                    "Previous Wi-Fi firmware restored."
+                } else {
+                    "Previous Wi-Fi firmware restored — please reboot the Pi."
+                },
+            );
+        } else {
+            set_state(
+                &hub,
+                "failed",
+                "rollback",
+                100,
+                "Could not restore the previous firmware.",
+            );
+        }
+        INSTALL_RUNNING.store(false, Ordering::SeqCst);
+    });
+
+    (
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({"started": true})),
+    )
+}
+
+fn verify_download(bytes: &[u8], expected_size: u64, expected_sha256: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(bytes.len() as u64 == expected_size, "unexpected firmware size {} (expected {})", bytes.len(), expected_size);
+    let sum = hex::encode(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref());
+    anyhow::ensure!(sum == expected_sha256, "firmware checksum mismatch — refusing to install");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn firmware_gate_excludes_other_broadcom_boards() {
+        for model in ["Raspberry Pi 5 Model B Rev 1.0", "Raspberry Pi 4 Model B Rev 1.4"] {
+            assert!(model_supported(model));
+        }
+        for model in ["Raspberry Pi 400 Rev 1.0", "Raspberry Pi Zero 2 W Rev 1.0", "Raspberry Pi 3 Model B Plus Rev 1.3", "Raspberry Pi Compute Module 4", "Radxa ROCK 4C+", "", "Raspberry Pi 500 Rev 1.0"] {
+            assert!(!model_supported(model), "{model} is not a supported firmware target");
+        }
+    }
+
+    #[test]
+    fn firmware_download_must_match_both_size_and_digest() {
+        let bytes = b"fixture firmware";
+        let sum = hex::encode(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref());
+        assert!(verify_download(bytes, bytes.len() as u64, &sum).is_ok());
+        assert!(verify_download(bytes, bytes.len() as u64 + 1, &sum).is_err());
+        assert!(verify_download(b"altered firmware", bytes.len() as u64, &sum).is_err());
+    }
+
+    #[test]
+    fn identifies_firmware_version_in_binary_contents() {
+        assert_eq!(version_from_bytes(b"\0\xffVersion: 7.45.286\0tail"), Some("7.45.286".into()));
+        assert_eq!(version_from_bytes(b"Version: 7.45.286"), Some("7.45.286".into()));
+        assert_eq!(version_from_bytes(b"not a firmware image"), None);
+    }
+
+    #[test]
+    fn interrupted_operations_do_not_leave_ui_locked_after_server_restart() {
+        let active = InstallState { state: "running".into(), ..Default::default() };
+        assert_eq!(reconcile_state(active.clone(), true).state, "running");
+        assert_eq!(reconcile_state(active, false).state, "failed");
+        let complete = InstallState { state: "success".into(), ..Default::default() };
+        assert_eq!(reconcile_state(complete, false).state, "success");
+    }
+}

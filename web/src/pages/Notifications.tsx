@@ -1,34 +1,28 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from "react"
 import {
-  Bell,
-  BellOff,
-  CheckCircle2,
-  AlertTriangle,
-  XCircle,
-  Trash2,
-  X,
-  Settings,
-  Clock,
   Archive,
+  Battery,
+  Wrench,
+  XCircle,
+  CheckCircle2,
+  X,
+  Trash2,
   Thermometer,
   Download,
-  Battery,
   Filter,
+  Bell,
+  BellOff,
   Loader2,
-  Info,
-  Wrench,
+  Clock,
+  Settings,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { NotificationHistoryItem, type NotificationEvent } from "@/components/notifications/NotificationHistoryItem"
 
-interface NotificationEvent {
-  id: string
-  ts: number
-  type: string
-  title: string
-  message: string
-  providers: string[]
-  results: Record<string, string>
-}
+const ProviderConfigSection = lazy(() => import("@/components/notifications/ProviderConfigSection").then(module => ({ default: module.ProviderConfigSection })))
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
 
 interface NotificationSettings {
   archive_start: boolean
@@ -47,7 +41,9 @@ interface HistoryResponse {
   offset: number
 }
 
-type Tab = "history" | "settings"
+type Tab = "history" | "events" | "delivery"
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const NOTIFICATION_TYPES = [
   { key: "archive_start", label: "Archive Started", description: "When file archiving begins", icon: Archive },
@@ -95,15 +91,6 @@ function typeBgColor(type: string): string {
   }
 }
 
-function providerStatusIcon(results: Record<string, string>) {
-  const values = Object.values(results)
-  if (values.length === 0) return null
-  const allOk = values.every(v => v === "ok")
-  const allError = values.every(v => v !== "ok")
-  if (allOk) return <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
-  if (allError) return <XCircle className="h-3.5 w-3.5 text-red-400" />
-  return <AlertTriangle className="h-3.5 w-3.5 text-amber-400" />
-}
 
 function relativeTime(ts: number): string {
   const now = Math.floor(Date.now() / 1000)
@@ -115,66 +102,88 @@ function relativeTime(ts: number): string {
   return new Date(ts * 1000).toLocaleDateString()
 }
 
-function absoluteTime(ts: number): string {
-  return new Date(ts * 1000).toLocaleString()
-}
+
+// ─── Main component ───────────────────────────────────────────────────────────
 
 export default function Notifications() {
-  const [activeTab, setActiveTab] = useState<Tab>("history")
+  const [activeTab, setActiveTab] = useState<Tab>(() => {
+    const tab = new URLSearchParams(window.location.search).get("tab")
+    return tab === "delivery" ? "delivery" : tab === "events" || tab === "settings" ? "events" : "history"
+  })
+  function selectTab(tab: Tab) {
+    if (tab !== activeTab) {
+      if (tab === "history") { setLoading(true); setHistoryError("") }
+      if (tab === "events") { setSettingsLoading(true); setSettingsError("") }
+    }
+    setActiveTab(tab)
+    const url = new URL(window.location.href)
+    url.searchParams.set("tab", tab)
+    window.history.replaceState(window.history.state, "", url)
+  }
   const [events, setEvents] = useState<NotificationEvent[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [historyError, setHistoryError] = useState("")
   const [settings, setSettings] = useState<NotificationSettings | null>(null)
   const [savingSettings, setSavingSettings] = useState(false)
+  const [settingsError, setSettingsError] = useState("")
+  const [settingsLoading, setSettingsLoading] = useState(true)
+  const settingsSaving = useRef(false)
+  const historyRequest = useRef<AbortController | null>(null)
+  const settingsRequest = useRef<AbortController | null>(null)
   const [typeFilter, setTypeFilter] = useState<string>("")
   const [confirmClear, setConfirmClear] = useState(false)
   const [offset, setOffset] = useState(0)
   const PAGE_SIZE = 50
 
-  const loadHistory = useCallback(async (currentOffset = 0, filter = typeFilter) => {
-    setLoading(true)
-    try {
-      const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(currentOffset) })
-      if (filter) params.set("type", filter)
-      const res = await fetch(`/api/notifications/history?${params}`)
-      if (!res.ok) throw new Error("Failed to load history")
-      const data: HistoryResponse = await res.json()
-      setEvents(data.events || [])
-      setTotal(data.total)
-    } catch {
-      setEvents([])
-      setTotal(0)
-    } finally {
-      setLoading(false)
-    }
-  }, [typeFilter])
+  const loadHistory = useCallback(async (currentOffset = 0, filter = "") => {
+    historyRequest.current?.abort()
+    const controller = new AbortController()
+    historyRequest.current = controller
+    const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(currentOffset) })
+    if (filter) params.set("type", filter)
+    return fetch(`/api/notifications/history?${params}`, { signal: controller.signal })
+      .then(async res => {
+        if (!res.ok) throw new Error("Failed to load history")
+        const data: HistoryResponse = await res.json()
+        if (controller.signal.aborted) return
+        setEvents(data.events || [])
+        setTotal(data.total)
+      })
+      .catch(() => { if (!controller.signal.aborted) setHistoryError("Could not load notification history. Retry, or check the device logs. Clear All will permanently reset history.") })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
+  }, [])
 
   const loadSettings = useCallback(async () => {
-    try {
-      const res = await fetch("/api/notifications/settings")
-      if (!res.ok) throw new Error("Failed to load settings")
-      const data: NotificationSettings = await res.json()
-      setSettings(data)
-    } catch {
-      setSettings({
-        archive_start: true,
-        archive_complete: true,
-        archive_error: true,
-        temperature: true,
-        update: true,
-        rtc_battery: true,
-        storage_repair: true,
+    if (settingsSaving.current) return
+    settingsRequest.current?.abort()
+    const controller = new AbortController()
+    settingsRequest.current = controller
+    return fetch("/api/notifications/settings", { signal: controller.signal })
+      .then(async res => {
+        if (!res.ok) throw new Error("Failed to load settings")
+        const data: NotificationSettings = await res.json()
+        if (!NOTIFICATION_TYPES.every(({ key }) => typeof data[key] === "boolean")) throw new Error("Invalid event settings")
+        if (!controller.signal.aborted) setSettings(data)
       })
-    }
+      .catch(() => { if (!controller.signal.aborted) setSettingsError("Could not load event settings. Retry before making changes.") })
+      .finally(() => { if (!controller.signal.aborted) setSettingsLoading(false) })
   }, [])
 
   useEffect(() => {
-    loadHistory(0)
-    loadSettings()
-  }, [loadHistory, loadSettings])
+    if (activeTab === "history") void loadHistory(offset, typeFilter)
+    return () => { historyRequest.current?.abort() }
+  }, [activeTab, offset, typeFilter, loadHistory])
+  useEffect(() => {
+    if (activeTab === "events") void loadSettings()
+    return () => { settingsRequest.current?.abort() }
+  }, [activeTab, loadSettings])
 
+  // Save settings
   async function handleToggle(key: keyof NotificationSettings) {
-    if (!settings) return
+    if (!settings || settingsSaving.current || settingsLoading || settingsError) return
+    settingsSaving.current = true
+    settingsRequest.current?.abort()
     const updated = { ...settings, [key]: !settings[key] }
     setSettings(updated)
     setSavingSettings(true)
@@ -186,14 +195,18 @@ export default function Notifications() {
       })
       if (!res.ok) {
         setSettings(settings)
+        setSettingsError("Could not save event settings. Retry to reload the saved values.")
       }
     } catch {
       setSettings(settings)
+      setSettingsError("Could not save event settings. Retry to reload the saved values.")
     } finally {
+      settingsSaving.current = false
       setSavingSettings(false)
     }
   }
 
+  // Clear all history
   async function handleClearAll() {
     if (!confirmClear) {
       setConfirmClear(true)
@@ -201,55 +214,69 @@ export default function Notifications() {
       return
     }
     try {
-      await fetch("/api/notifications/history", { method: "DELETE" })
+      const response = await fetch("/api/notifications/history", { method: "DELETE" })
+      if (!response.ok) throw new Error("Clear failed")
+      historyRequest.current?.abort()
+      setLoading(false)
       setEvents([])
       setTotal(0)
       setOffset(0)
-    } catch { /* ignore */ }
+      setHistoryError("")
+    } catch {
+      setHistoryError("Could not clear notification history. Retry or check the device logs.")
+    }
     setConfirmClear(false)
   }
 
+  // Delete single notification
   async function handleDeleteOne(id: string) {
-    setEvents(prev => prev.filter(e => e.id !== id))
-    setTotal(prev => prev - 1)
     try {
-      await fetch(`/api/notifications/history/${id}`, { method: "DELETE" })
+      const response = await fetch(`/api/notifications/history/${id}`, { method: "DELETE" })
+      if (!response.ok) throw new Error("Dismiss failed")
+      setEvents(prev => prev.filter(e => e.id !== id))
+      setTotal(prev => Math.max(0, prev - 1))
     } catch {
-      loadHistory(offset)
+      setHistoryError("Could not dismiss this notification. Retry or check the device logs.")
     }
   }
 
+  // Filter change
   function handleFilterChange(filter: string) {
+    if (filter !== typeFilter || offset !== 0) { setLoading(true); setHistoryError("") }
     setTypeFilter(filter)
     setOffset(0)
-    loadHistory(0, filter)
   }
 
+  // Pagination
   function handlePage(direction: "next" | "prev") {
     const newOffset = direction === "next" ? offset + PAGE_SIZE : Math.max(0, offset - PAGE_SIZE)
+    if (newOffset !== offset) { setLoading(true); setHistoryError("") }
     setOffset(newOffset)
-    loadHistory(newOffset)
   }
 
   const TABS = [
     { id: "history" as const, label: "History", icon: Clock },
-    { id: "settings" as const, label: "Settings", icon: Settings },
+    { id: "events" as const, label: "Events", icon: Settings },
+    { id: "delivery" as const, label: "Delivery", icon: Bell },
   ]
 
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-slate-100">Notifications</h1>
         <p className="mt-1 text-sm text-slate-500">
-          View notification history and configure which events trigger alerts
+          History, alert types and delivery settings
         </p>
       </div>
 
+      {/* Tab bar */}
       <div className="tab-bar">
         {TABS.map((tab) => (
           <button
             key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
+            onClick={() => selectTab(tab.id)}
+            aria-pressed={activeTab === tab.id}
             className={cn("tab-item flex items-center justify-center gap-2", activeTab === tab.id && "active")}
           >
             <tab.icon className="h-3.5 w-3.5 hidden sm:block" />
@@ -258,23 +285,18 @@ export default function Notifications() {
         ))}
       </div>
 
+      {/* ── History Tab ──────────────────────────────────────────────── */}
       {activeTab === "history" && (
         <div className="space-y-4">
+          {/* Toolbar */}
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            {/* Filter */}
             <div className="flex items-center gap-2">
               <Filter className="h-4 w-4 text-slate-500" />
-              <select
-                value={typeFilter}
-                onChange={e => handleFilterChange(e.target.value)}
-                className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm text-slate-300 outline-none transition-colors focus:border-blue-500/50"
-              >
-                <option value="">All types</option>
-                {NOTIFICATION_TYPES.map(t => (
-                  <option key={t.key} value={t.key}>{t.label}</option>
-                ))}
-              </select>
+              <select aria-label="Notification type" value={typeFilter} onChange={e => handleFilterChange(e.target.value)} className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-200"><option value="">All types</option>{NOTIFICATION_TYPES.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}</select>
               {typeFilter && (
                 <button
+                  aria-label="Clear notification filter"
                   onClick={() => handleFilterChange("")}
                   className="rounded-md p-1 text-slate-500 transition-colors hover:bg-white/5 hover:text-slate-300"
                 >
@@ -283,15 +305,16 @@ export default function Notifications() {
               )}
             </div>
 
+            {/* Clear all */}
             <button
               onClick={handleClearAll}
-              disabled={events.length === 0}
+              disabled={events.length === 0 && !historyError}
               className={cn(
                 "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
                 confirmClear
                   ? "bg-red-500/20 text-red-400 hover:bg-red-500/30"
                   : "border border-white/10 bg-white/5 text-slate-400 hover:bg-white/10 hover:text-slate-300",
-                events.length === 0 && "cursor-not-allowed opacity-50"
+                events.length === 0 && !historyError && "cursor-not-allowed opacity-50"
               )}
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -299,9 +322,15 @@ export default function Notifications() {
             </button>
           </div>
 
-          {loading ? (
+          {/* Events list */}
+          {loading && events.length === 0 ? (
             <div className="flex items-center justify-center py-16">
               <Loader2 className="h-6 w-6 animate-spin text-blue-400" />
+            </div>
+          ) : historyError ? (
+            <div role="alert" className="glass-card space-y-3 p-5 text-sm text-amber-300">
+              <p>{historyError}</p>
+              <button onClick={() => { setLoading(true); setHistoryError(""); void loadHistory(offset, typeFilter) }} className="rounded-lg border border-white/10 px-3 py-1.5 text-slate-200">Retry</button>
             </div>
           ) : events.length === 0 ? (
             <div className="glass-card flex flex-col items-center justify-center py-16 text-center">
@@ -320,65 +349,18 @@ export default function Notifications() {
                 const color = typeColor(event.type)
                 const bg = typeBgColor(event.type)
                 return (
-                  <div
-                    key={event.id}
-                    className="glass-card group relative overflow-hidden p-4 transition-colors hover:bg-white/[0.04]"
-                  >
-                    <button
-                      onClick={() => handleDeleteOne(event.id)}
-                      className="absolute right-3 top-3 rounded-md p-1 text-slate-600 opacity-0 transition-all hover:bg-white/10 hover:text-slate-400 group-hover:opacity-100"
-                      title="Dismiss"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-
-                    <div className="flex gap-3">
-                      <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-xl", bg)}>
-                        <Icon className={cn("h-4.5 w-4.5", color)} />
-                      </div>
-
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className={cn("text-xs font-semibold uppercase tracking-wider", color)}>
-                            {typeLabel(event.type)}
-                          </span>
-                          {providerStatusIcon(event.results)}
-                        </div>
-                        <p className="mt-0.5 text-sm text-slate-300 leading-relaxed">{event.message}</p>
-
-                        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
-                          <span className="text-xs text-slate-600" title={absoluteTime(event.ts)}>
-                            {relativeTime(event.ts)}
-                          </span>
-                          {event.providers.length > 0 && (
-                            <div className="flex flex-wrap gap-1">
-                              {event.providers.map(p => {
-                                const status = event.results[p]
-                                return (
-                                  <span
-                                    key={p}
-                                    className={cn(
-                                      "rounded-md px-1.5 py-0.5 text-[10px] font-medium",
-                                      status === "ok"
-                                        ? "bg-emerald-500/10 text-emerald-400"
-                                        : "bg-red-500/10 text-red-400"
-                                    )}
-                                  >
-                                    {p.replace(/_/g, " ")}
-                                  </span>
-                                )
-                              })}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+                  <NotificationHistoryItem
+                    key={event.id} event={event} onDismiss={handleDeleteOne}
+                    icon={<Icon className={cn("h-4.5 w-4.5", color)} />}
+                    label={typeLabel(event.type)} color={color} background={bg}
+                    timeLabel={relativeTime(event.ts)}
+                  />
                 )
               })}
             </div>
           )}
 
+          {/* Pagination */}
           {total > PAGE_SIZE && (
             <div className="flex items-center justify-between pt-2">
               <button
@@ -403,25 +385,17 @@ export default function Notifications() {
         </div>
       )}
 
-      {activeTab === "settings" && settings && (
+      {activeTab === "delivery" && <div className="space-y-4">
+        <Suspense fallback={<p role="status" className="text-sm text-slate-400">Loading providers…</p>}><ProviderConfigSection /></Suspense>
+      </div>}
+      {activeTab === "events" && settingsError && <div role="alert" className="glass-card p-4 text-sm text-rose-300">
+        <p>{settingsError}</p>
+        <button type="button" className="mt-2 text-blue-400" disabled={savingSettings} onClick={() => { setSettingsLoading(true); setSettingsError(""); void loadSettings() }}>Retry</button>
+      </div>}
+      {activeTab === "events" && !settings && !settingsError && <p role="status" className="text-sm text-slate-400">Loading event settings…</p>}
+      {activeTab === "events" && settings && (
         <div className="space-y-4">
-          <div className="glass-card overflow-hidden p-5">
-            <div className="flex items-start gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-500/15">
-                <Info className="h-5 w-5 text-blue-400" />
-              </div>
-              <div>
-                <p className="text-sm text-slate-300">
-                  Toggle which events trigger notifications. Disabling a type will prevent it
-                  from being sent to <em>all</em> providers (Pushover, Discord, mobile, etc.).
-                </p>
-                <p className="mt-1 text-xs text-slate-600">
-                  To configure notification providers, use the Setup Wizard in Settings.
-                </p>
-              </div>
-            </div>
-          </div>
-
+          <p className="text-sm text-slate-400">Choose which events send alerts to your configured providers.</p>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {NOTIFICATION_TYPES.map((nt) => {
               const Icon = nt.icon
@@ -445,7 +419,10 @@ export default function Notifications() {
                   </div>
                   <button
                     onClick={() => handleToggle(nt.key as keyof NotificationSettings)}
-                    disabled={savingSettings}
+                    disabled={savingSettings || settingsLoading || !!settingsError}
+                    role="switch"
+                    aria-checked={enabled}
+                    aria-label={nt.label}
                     className={cn(
                       "relative h-6 w-11 shrink-0 rounded-full transition-colors",
                       enabled ? "bg-blue-500" : "bg-white/10"

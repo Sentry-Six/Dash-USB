@@ -8,6 +8,7 @@ pub mod partition;
 pub mod disk_images;
 pub mod system;
 pub mod archive;
+pub mod archive_runtime;
 pub mod network;
 pub mod readonly;
 pub mod scripts;

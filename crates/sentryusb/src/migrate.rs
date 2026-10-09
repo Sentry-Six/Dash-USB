@@ -17,7 +17,14 @@ pub async fn run_startup_migration() {
         Ok(v) => v.trim().to_string(),
         Err(_) => return,
     };
-    if current_version.is_empty() || current_version == "dev" {
+    if current_version.is_empty() || current_version == "dev" || !installed_device() {
+        return;
+    }
+
+    // Upgrade from an older updater must receive this binary's helpers even
+    // offline, and even if an existing per-version migration marker is present.
+    // Only an installed device may touch /root/bin; local previews never do.
+    if !refresh_bundled_archive_runtime().await {
         return;
     }
 
@@ -140,6 +147,11 @@ pub async fn run_startup_migration() {
                     info!("[migrate] runtime-patches script not present (pre-bootstrap install) — skipping; OTA path will populate it");
                 }
 
+                // Hardware patches may edit archive scripts. The final on-disk
+                // generation must match this binary rather than a tarball fallback.
+                if !refresh_bundled_archive_runtime().await {
+                    return;
+                }
                 let _ = tokio::fs::create_dir_all(MIGRATE_DIR).await;
                 if let Err(e) = tokio::fs::write(&marker_file, b"migrated\n").await {
                     warn!("[migrate] Failed to write marker {}: {}", marker_file, e);
@@ -194,6 +206,42 @@ fn heal_temperature_unit_key() {
     }
 }
 
+fn installed_device() -> bool {
+    cfg!(target_os = "linux")
+        && std::env::var_os("DASHUSB_CONFIG_PATH").is_none()
+        && std::env::var_os("DASHUSB_MUTABLE_DIR").is_none()
+        && std::env::current_exe().is_ok_and(|path| path.starts_with("/opt/dashusb"))
+        && std::path::Path::new(sentryusb_config::find_config_path()).is_file()
+}
+
+async fn refresh_bundled_archive_runtime() -> bool {
+    let directory = std::path::Path::new("/root/bin");
+    match sentryusb_setup::archive_runtime::configured_is_current(directory) {
+        Ok(true) => return true,
+        Ok(false) => {},
+        Err(error) => {
+            warn!("[migrate] Cannot select bundled archive helpers: {error:#}");
+            return false;
+        },
+    }
+    let _ = sentryusb_shell::run("/root/bin/remountfs_rw", &[]).await;
+    let _ = sentryusb_shell::run("mount", &["-o", "remount,rw", "/"]).await;
+    let refreshed = tokio::task::spawn_blocking(move || {
+        sentryusb_setup::archive_runtime::refresh_configured(directory)
+    }).await;
+    match refreshed {
+        Ok(Ok(())) => {
+            // Archive service starts independently of the API. Atomic replacement
+            // lets an already running shell retain its old inode until its next
+            // normal start; never restart it mid-transfer or cycle the USB gadget.
+            info!("[migrate] Matching archive helpers installed offline; active recording and archive services left running");
+            true
+        },
+        Ok(Err(error)) => { warn!("[migrate] Bundled archive refresh failed: {error:#}"); false },
+        Err(error) => { warn!("[migrate] Archive refresh task failed: {error}"); false },
+    }
+}
+
 fn build_migration_script() -> String {
     // Arguments: tag and fallback URLs, optional patch URL, tag and branch
     // refs, then the path where the selected ref is reported.
@@ -226,35 +274,9 @@ if ! curl -fsSL "$TARBALL_URL" | tar xz --strip-components=1 -C "$TMPDIR" 2>/dev
   USED_REF="$BRANCH_REF"
 fi
 
-# ── Update run/ scripts ──
-if [ -d "$TMPDIR/run" ]; then
-  for f in "$TMPDIR"/run/*; do
-    [ -f "$f" ] || continue
-    name=$(basename "$f")
-    cp "$f" "/root/bin/$name"
-    chmod +x "/root/bin/$name"
-  done
-fi
-
-# ── Update archive module scripts ──
-ARCHIVE_SYSTEM=""
-for conf in /root/dashusb.conf /dashusb/dashusb.conf; do
-  if [ -f "$conf" ]; then
-    ARCHIVE_SYSTEM=$(grep -m1 'ARCHIVE_SYSTEM=' "$conf" 2>/dev/null | tail -1 | sed "s/.*ARCHIVE_SYSTEM=//;s/['\"]//g;s/#.*//" | tr -d ' ') || true
-    [ -n "$ARCHIVE_SYSTEM" ] && break
-  fi
-done
-if [ -n "$ARCHIVE_SYSTEM" ]; then
-  subdir="${{ARCHIVE_SYSTEM}}_archive"
-  if [ -d "$TMPDIR/run/$subdir" ]; then
-    for f in "$TMPDIR/run/$subdir"/*; do
-      [ -f "$f" ] || continue
-      name=$(basename "$f")
-      cp "$f" "/root/bin/$name"
-      chmod +x "/root/bin/$name"
-    done
-  fi
-fi
+# Runtime and backend scripts are installed offline from the running binary.
+# Do not copy run/* from a tag/branch tarball over that matched generation.
+# Compatibility wrappers below are not part of the bundled archive runtime.
 
 # ── Update setup-dashusb (kept as compatibility wrapper) ──
 if [ -f "$TMPDIR/setup/pi/setup-dashusb" ]; then
@@ -416,6 +438,9 @@ mod tests {
             "script must report the ref it actually installed from"
         );
 
+        assert!(!script.contains("for f in \"$TMPDIR\"/run/*"), "tarball must not overwrite bundled runtime");
+        assert!(!script.contains("subdir=\"${ARCHIVE_SYSTEM}_archive\""), "tarball must not overwrite backend selection");
+        assert!(script.contains("setup/pi/envsetup.sh"), "keep unbundled compatibility wrapper migration");
         let dir = std::env::temp_dir().join("dashusb-migrate-test");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("migration.sh");

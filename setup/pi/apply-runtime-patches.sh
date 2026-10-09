@@ -440,6 +440,24 @@ apply_4cplus_wifi_nvram_fix() {
 
 # ── Run all patches ─────────────────────────────────────────────────────
 
+# The updater from an older Dash release already invokes this helper before
+# reboot. Let the newly installed binary provide its matching runtime offline.
+apply_bundled_archive_runtime() {
+    local binary help
+    for binary in /opt/dashusb/dashusb-current /opt/dashusb/dashusb; do
+        [ -x "$binary" ] || continue
+        help=$("$binary" --help 2>/dev/null) || continue
+        if [[ "$help" == *refresh-archive-runtime* ]]; then
+            /root/bin/remountfs_rw >/dev/null 2>&1 || true
+            "$binary" refresh-archive-runtime || return 1
+            log "Installed archive helpers bundled with the running release"
+            return 0
+        fi
+    done
+    # Downgrades and older installers retain their existing compatibility path.
+    return 0
+}
+
 # Run every patch, then report failure if any patch failed.
 PATCH_FAILURES=0
 run_patch() {
@@ -457,6 +475,7 @@ run_patch apply_backingfiles_bfq
 run_patch apply_hardware_watchdog
 run_patch apply_archive_mount_lock_scripts
 run_patch apply_4cplus_wifi_nvram_fix
+run_patch apply_bundled_archive_runtime
 
 # Every patch must check its board, preconditions, and idempotence marker.
 

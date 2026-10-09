@@ -1,4 +1,5 @@
-import { createContext, useContext, useEffect, useRef, useState } from "react"
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react"
+import { createLivenessProbe } from "@/lib/liveness"
 import { wsClient } from "@/lib/ws"
 
 export type ConnectionState = "connected" | "reconnecting" | "disconnected"
@@ -19,85 +20,81 @@ export function useConnectionStatus() {
 
 export function ConnectionProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<ConnectionState>("connected")
-  const disconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const httpOk = useRef(true)
-  const httpFailCount = useRef(0)
-
-  // HTTP is authoritative because WebSockets reconnect routinely. Require two
-  // failures for reconnecting and three for disconnected to absorb slow I/O.
-  function evaluate() {
-    if (httpOk.current) {
-      if (disconnectTimer.current) {
-        clearTimeout(disconnectTimer.current)
-        disconnectTimer.current = null
-      }
-      httpFailCount.current = 0
-      setState("connected")
-    } else if (httpFailCount.current >= 3) {
-      setState("disconnected")
-    } else if (httpFailCount.current >= 2) {
-      setState("reconnecting")
-    }
-  }
+  const retryRef = useRef<(() => void) | null>(null)
+  const retry = useCallback(() => retryRef.current?.(), [])
 
   useEffect(() => {
-    wsClient.connect()
-  }, [])
-
-  useEffect(() => {
+    const probe = createLivenessProbe()
     let mounted = true
-    // Prevent overlapping polls from counting one stall twice.
-    let inFlight = false
+    let failures = 0
+    let interval: ReturnType<typeof setInterval> | null = null
+    let active: { controller: AbortController; timeout: ReturnType<typeof setTimeout> } | null = null
 
-    async function poll() {
-      if (inFlight) return
-      inFlight = true
-      try {
-        const controller = new AbortController()
-        // Include time queued behind browser video connections.
-        const timeout = setTimeout(() => controller.abort(), 15000)
-        // Default priority prevents streaming traffic from indefinitely deferring health checks.
-        const res = await fetch("/api/status", {
-          signal: controller.signal,
-        } as RequestInit)
-        clearTimeout(timeout)
-        if (mounted) {
-          httpOk.current = res.ok
-          if (res.ok) httpFailCount.current = 0
-          else httpFailCount.current++
-          evaluate()
-        }
-      } catch {
-        if (mounted) {
-          httpOk.current = false
-          httpFailCount.current++
-          evaluate()
-        }
-      } finally {
-        inFlight = false
+    function cancelProbe() {
+      const previous = active
+      active = null
+      if (previous) {
+        clearTimeout(previous.timeout)
+        previous.controller.abort()
       }
     }
 
-    poll()
-    const iv = setInterval(poll, 8000)
-    return () => { mounted = false; clearInterval(iv) }
-  }, [])
+    async function poll(force = false) {
+      if (!mounted || (!force && (document.hidden || active))) return
+      // Manual retry supersedes the old request; its late result cannot undo it.
+      cancelProbe()
+      const controller = new AbortController()
+      const request = { controller, timeout: setTimeout(() => controller.abort(), 15000) }
+      active = request
+      let ok = false
+      try {
+        ok = (await probe(controller.signal)).ok
+      } catch {
+        // A timeout/network failure is counted below only for the active probe.
+      } finally {
+        clearTimeout(request.timeout)
+        if (mounted && active === request) {
+          active = null
+          // HTTP is authoritative: WebSockets can reconnect during healthy I/O.
+          // Two failures show reconnecting; three show disconnected.
+          failures = ok ? 0 : failures + 1
+          if (ok) setState("connected")
+          else if (failures >= 3) setState("disconnected")
+          else if (failures >= 2) setState("reconnecting")
+        }
+      }
+    }
 
-  function retry() {
-    wsClient.reconnect()
-    setState("reconnecting")
-    fetch("/api/status")
-      .then((res) => {
-        httpOk.current = res.ok
-        if (res.ok) httpFailCount.current = 0
-        evaluate()
-      })
-      .catch(() => {
-        httpOk.current = false
-        httpFailCount.current++
-        evaluate()
-      })
-  }
+    function stopPolling() {
+      if (interval !== null) clearInterval(interval)
+      interval = null
+      cancelProbe()
+    }
+
+    function onVisibilityChange() {
+      stopPolling()
+      if (!document.hidden) {
+        void poll()
+        interval = setInterval(() => { void poll() }, 8000)
+      }
+    }
+
+    wsClient.connect()
+    retryRef.current = () => {
+      wsClient.reconnect()
+      setState("reconnecting")
+      void poll(true)
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange)
+    onVisibilityChange()
+    return () => {
+      mounted = false
+      retryRef.current = null
+      document.removeEventListener("visibilitychange", onVisibilityChange)
+      stopPolling()
+      wsClient.disconnect()
+    }
+  }, [])
 
   return (
     <ConnectionContext.Provider value={{ state, retry }}>

@@ -63,6 +63,7 @@ for community experience.
 
 ## Is there a phone app?
 
-Mobile push notifications use the Sentry Connect service. Pair from **Settings →
-Notifications** in the web UI (see [Notifications](Notifications)). Sentry
-Connect's Bluetooth device pairing does not currently recognize Dash USB.
+No. Open `http://dashusb.local` in your phone or computer's browser to use
+Dash USB. For phone alerts, configure a supported notification provider such
+as ntfy or Pushover under **Notifications → Delivery**. See
+[Notifications](Notifications) for setup details.

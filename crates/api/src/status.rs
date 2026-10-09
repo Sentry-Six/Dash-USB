@@ -10,6 +10,96 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::router::AppState;
+mod supply_voltage;
+
+/// A cheap liveness check, independent of disk, network, and hardware sampling.
+pub async fn liveness() -> impl axum::response::IntoResponse {
+    ([(axum::http::header::CACHE_CONTROL, "no-store")],
+        Json(serde_json::json!({"ok": true})))
+}
+
+#[derive(Clone, Serialize)]
+pub struct ManagedStorageHealth {
+    pub state: &'static str,
+    pub message: String,
+    pub reserve_bytes: u64,
+    pub free_bytes: u64,
+    pub total_bytes: u64,
+    pub cleanup_state: String,
+    pub cleanup_sampled_at: Option<u64>,
+}
+
+impl ManagedStorageHealth {
+    fn unknown() -> Self {
+        Self { state: "unknown", message: "Storage status unavailable".into(), reserve_bytes: 0,
+            free_bytes: 0, total_bytes: 0, cleanup_state: "unknown".into(), cleanup_sampled_at: None }
+    }
+}
+
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
+}
+
+pub(crate) fn mount_writable(mounts: &str, path: &str) -> Option<bool> {
+    mounts.lines().find_map(|line| {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        (fields.get(1).copied() == Some(path)).then(|| fields.get(3)
+            .is_some_and(|opts| opts.split(',').any(|o| o == "rw")))
+    })
+}
+
+fn storage_verdict(mounted: Option<bool>, total: u64, free: u64, cleanup: &str, inode_stalled: bool) -> (&'static str, &'static str) {
+    if mounted.is_none() { return ("fail", "Recording storage is not mounted"); }
+    if mounted == Some(false) { return ("fail", "Recording storage is read-only"); }
+    if total == 0 { return ("unknown", "Storage capacity unavailable"); }
+    if free == 0 { return ("fail", "Recording storage is full"); }
+    if inode_stalled { return ("fail", "Clip index cleanup needs attention"); }
+    let reserve = (10 * 1024 * 1024 * 1024u64).saturating_add(total / 33);
+    if free < reserve {
+        return match cleanup {
+            "failed" => ("warn", "Automatic cleanup could not restore recording headroom"),
+            "unknown" => ("warn", "Recording headroom is low; cleanup status unavailable"),
+            _ => ("recovering", "Automatic cleanup is restoring recording headroom"),
+        };
+    }
+    ("healthy", "Storage managed automatically")
+}
+
+pub fn managed_storage_health() -> ManagedStorageHealth {
+    static CACHE: OnceLock<Mutex<Option<(ManagedStorageHealth, Instant)>>> = OnceLock::new();
+    let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
+    if let Some((health, at)) = &*cache {
+        if at.elapsed() < Duration::from_secs(5) { return health.clone(); }
+    }
+    let health = read_managed_storage_health();
+    *cache = Some((health.clone(), Instant::now()));
+    health
+}
+
+fn read_managed_storage_health() -> ManagedStorageHealth {
+    let mut health = ManagedStorageHealth::unknown();
+    let Ok(mounts) = std::fs::read_to_string("/proc/mounts") else { return health; };
+    let mounted = mount_writable(&mounts, "/backingfiles");
+    // Never mistake the root filesystem beneath a missing mount for recording storage.
+    let (total, free) = if mounted.is_some() { statvfs_backing_files().unwrap_or_default() } else { (0, 0) };
+    if let Some(value) = std::fs::read_to_string("/run/dashusb_storage_cleanup.json").ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok()) {
+        health.cleanup_sampled_at = value["sampled_at"].as_u64();
+        if health.cleanup_sampled_at.is_some_and(|at| unix_seconds().saturating_sub(at) < 120) {
+            health.cleanup_state = value["state"].as_str().unwrap_or("unknown").to_string();
+        }
+    }
+    let (state, message) = storage_verdict(mounted, total, free, &health.cleanup_state,
+        std::path::Path::new("/run/dashusb_inode_stall").exists());
+    health.state = state;
+    health.message = message.into();
+    health.total_bytes = total;
+    health.free_bytes = free;
+    health.reserve_bytes = (10 * 1024 * 1024 * 1024u64).saturating_add(total / 33);
+    health
+}
+
+
 
 // Cache shell-heavy network data for 10 s and disk data for 5 s; cheap sysfs
 // status remains live for the dashboard's 2 s polling interval.
@@ -151,6 +241,9 @@ struct PiStatus {
     ether_speed: String,
     sbc_model: String,
     fan_speed: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    supply_voltage: Option<f64>,
+    storage_health: ManagedStorageHealth,
     wifi_rx_bps: u64,
     wifi_tx_bps: u64,
     ether_rx_bps: u64,
@@ -173,6 +266,8 @@ pub async fn get_status(
         }
     };
 
+    s.supply_voltage = supply_voltage::get();
+    s.storage_health = tokio::task::spawn_blocking(managed_storage_health).await.unwrap_or_else(|_| ManagedStorageHealth::unknown());
     let storage = cached_storage().await;
     if storage.total_space > 0 {
         s.total_space = storage.total_space.to_string();
@@ -227,6 +322,8 @@ fn status_fs_snapshot() -> PiStatus {
         ether_speed: String::new(),
         sbc_model: String::new(),
         fan_speed: String::new(),
+        supply_voltage: None,
+        storage_health: ManagedStorageHealth::unknown(),
         wifi_rx_bps: 0,
         wifi_tx_bps: 0,
         ether_rx_bps: 0,
@@ -693,4 +790,49 @@ pub fn get_sbc_model() -> String {
         }
     }
     "unknown".to_string()
+}
+
+#[cfg(test)]
+mod storage_verdict_regressions {
+    use super::{mount_writable, storage_verdict};
+
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    #[test]
+    fn high_snapshot_usage_with_recording_reserve_is_healthy() {
+        // 95% used previously appeared red, although the managed reserve fits.
+        let (state, message) = storage_verdict(Some(true), 1000 * GIB, 50 * GIB, "healthy", false);
+        assert_eq!(state, "healthy");
+        assert_eq!(message, "Storage managed automatically");
+    }
+
+    #[test]
+    fn missing_readonly_full_and_stalled_storage_are_explicit_failures() {
+        for (mounted, free, stalled, expected_message) in [
+            (None, 50 * GIB, false, "Recording storage is not mounted"),
+            (Some(false), 50 * GIB, false, "Recording storage is read-only"),
+            (Some(true), 0, false, "Recording storage is full"),
+            (Some(true), 50 * GIB, true, "Clip index cleanup needs attention"),
+        ] {
+            assert_eq!(storage_verdict(mounted, 1000 * GIB, free, "healthy", stalled), ("fail", expected_message));
+        }
+        assert_eq!(storage_verdict(Some(true), 0, 0, "healthy", false), ("unknown", "Storage capacity unavailable"));
+    }
+
+    #[test]
+    fn low_reserve_distinguishes_cleanup_recovery_from_missing_or_failed_cleanup() {
+        let verdict = |cleanup| storage_verdict(Some(true), 1000 * GIB, 5 * GIB, cleanup, false);
+        assert_eq!(verdict("recovering"), ("recovering", "Automatic cleanup is restoring recording headroom"));
+        assert_eq!(verdict("healthy").0, "recovering");
+        assert_eq!(verdict("unknown"), ("warn", "Recording headroom is low; cleanup status unavailable"));
+        assert_eq!(verdict("failed"), ("warn", "Automatic cleanup could not restore recording headroom"));
+    }
+
+    #[test]
+    fn root_capacity_cannot_substitute_for_a_missing_backingfiles_mount() {
+        let mounts = "/dev/root / ext4 rw,relatime 0 0\n/dev/sda1 /backingfiles-old ext4 rw 0 0\n/dev/sda2 /mutable ext4 rw 0 0\n";
+        assert_eq!(mount_writable(mounts, "/backingfiles"), None);
+        assert_eq!(mount_writable("/dev/sda1 /backingfiles ext4 ro,relatime 0 0\n", "/backingfiles"), Some(false));
+        assert_eq!(mount_writable("/dev/sda1 /backingfiles ext4 rw,relatime 0 0\n", "/backingfiles"), Some(true));
+    }
 }
