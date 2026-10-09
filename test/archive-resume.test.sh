@@ -9,8 +9,16 @@ mkdir -p "$work/tmp" "$work/mutable" "$work/bin"
 extract() {
   awk -v name="$1" '$0 ~ "^function " name "([ (]|$)" {keep=1} keep {print} keep && /^}/ {exit}' run/archiveloop
 }
+rewrite_fixture_paths() {
+  # Replace each original prefix once. On Linux the fixture itself is under
+  # /tmp, so sequential substitutions would rewrite an already-inserted path.
+  python3 -c 'import re, sys
+root = sys.argv[1]
+paths = {"/root/bin/": root + "/bin/", "/mutable/": root + "/mutable/", "/tmp/": root + "/tmp/"}
+sys.stdout.write(re.sub(r"/root/bin/|/mutable/|/tmp/", lambda match: paths[match.group()], sys.stdin.read()))' "$work"
+}
 for name in archive_start_summary archive_finish_summary archive_resume_context write_archive_checkpoint finish_archive_checkpoint archive_progress_monitor archive_recordings sortfile intersect prunefile filterfile convert_seconds_to_nice_time cancel_archive_cleanup; do
-  eval "$(extract "$name" | sed "s@/root/bin/@$work/bin/@g; s@/mutable/@$work/mutable/@g; s@/tmp/@$work/tmp/@g")"
+  eval "$(extract "$name" | rewrite_fixture_paths)"
 done
 checkpoint="$work/mutable/archive_in_progress.json"
 printf '%s\n' 'Continuous/a.mp4' 'Continuous/b.mp4' 'Continuous/c.mp4' > "$work/full"
