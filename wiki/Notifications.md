@@ -8,10 +8,12 @@ Dash USB can send you push notifications when:
 - A post-archive temperature report, when enabled
 - Storage repair completes or requires manual action
 
-Configure providers in the [Setup Wizard](Setup-Wizard-Guide#6-notifications) — re-run it anytime from **Settings → System → Setup Wizard**. Mobile app push pairing lives in **Settings → Notifications**.
+Configure providers under **Notifications → Delivery** or in the
+[Setup Wizard](Setup-Wizard-Guide#6-notifications). Choose which events send
+alerts under **Notifications → Events**.
 
-You can enable multiple providers. Credential-based providers are enabled when
-their fields are filled; Mobile App uses an explicit checkbox.
+You can enable multiple providers. Fill a provider's required fields to enable
+it, or clear them to disable it. Dash USB has no companion mobile app.
 
 ## Providers
 
@@ -107,18 +109,11 @@ Generic — POSTs a JSON payload to any URL. Useful for Home Assistant, n8n, Nod
 |-------|---------|
 | Webhook URL | `http://homeassistant.local:8123/api/webhook/dashusb` |
 
-### Mobile App
-Push notifications to your phone via the Sentry Connect push service.
-
-To pair: open **Settings → Notifications → Mobile Notifications** in the web UI, generate a pairing code, and enter it in the app under **Settings → Pair for Notifications**.
-
-> Notification pairing works through Sentry Connect. Its Bluetooth device
-> pairing does not currently recognize Dash USB and is not required for push.
-
 ---
 
 ## Testing notifications
 
-**Settings → Notifications → Mobile Notifications → Send Test Notification** fires a test push to your paired phone.
-
-For the other providers, the quickest end-to-end check is to trigger an archive run: click **Archive Sync** at the top of the **Settings** page and watch for the "Archiving started" message on every enabled provider.
+To check configured providers, trigger an archive run: click **Archive Sync**
+at the top of **Settings** and watch for the archive-start message on each
+enabled provider. **Notifications → History** shows delivery results and
+expandable error details.

@@ -1,0 +1,130 @@
+name: ARM dependency checks
+
+# Catch target-specific dependency and linker failures before a release tag.
+# Ordinary source, frontend and documentation changes retain the main checks.
+on:
+  push:
+    branches: [main, main-dev]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '**/build.rs'
+      - '.cargo/**'
+      - '.github/workflows/arm-dependencies.yml'
+      - '.github/workflows/build.yml'
+  pull_request:
+    branches: [main, main-dev]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '**/build.rs'
+      - '.cargo/**'
+      - '.github/workflows/arm-dependencies.yml'
+      - '.github/workflows/build.yml'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  compile:
+    name: Compile ${{ matrix.name }}
+    # Match the release hosts to retain Bookworm-compatible glibc requirements.
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # a72/a76 use the same native path. The a53 build also exercises the
+          # mandatory AES/SHA exclusions for older Raspberry Pi processors.
+          - name: ARM64 a53 dependency smoke
+            runs_on: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            cpu: cortex-a53
+            cpu_features: '-C target-feature=-aes,-sha2'
+            linker: cc
+          - name: ARMv7 dependency smoke
+            runs_on: ubuntu-22.04
+            target: armv7-unknown-linux-gnueabihf
+            cpu: cortex-a7
+            cpu_features: ''
+            linker: arm-linux-gnueabihf-gcc
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install target build dependencies
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          case "$BUILD_TARGET" in
+            aarch64-*)
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq --no-remove mold
+              ;;
+            armv7-*)
+              UBUNTU_CODENAME=$(lsb_release -cs)
+              # Scope each Ubuntu index to architectures the mirror provides.
+              sudo rm -f /etc/apt/sources.list.d/ubuntu.sources
+              sudo tee /etc/apt/sources.list >/dev/null <<EOF_APT
+          deb [arch=amd64,i386] https://archive.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME} main restricted universe multiverse
+          deb [arch=amd64,i386] https://archive.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME}-updates main restricted universe multiverse
+          deb [arch=amd64,i386] https://archive.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME}-backports main restricted universe multiverse
+          deb [arch=amd64,i386] https://security.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME}-security main restricted universe multiverse
+          EOF_APT
+              sudo tee /etc/apt/sources.list.d/ports.list >/dev/null <<EOF_APT
+          deb [arch=arm64,armhf] https://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_CODENAME} main restricted universe multiverse
+          deb [arch=arm64,armhf] https://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_CODENAME}-updates main restricted universe multiverse
+          deb [arch=arm64,armhf] https://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_CODENAME}-security main restricted universe multiverse
+          EOF_APT
+              sudo dpkg --add-architecture armhf
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq --no-remove gcc-arm-linux-gnueabihf
+              ;;
+            *) echo "Unsupported target: $BUILD_TARGET" >&2; exit 1 ;;
+          esac
+
+      - name: Cache Cargo dependency smoke builds
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          # Placeholder builds must never share a release artifact cache key.
+          key: ${{ runner.os }}-${{ runner.arch }}-arm-dependency-smoke-${{ matrix.target }}-${{ matrix.cpu }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '.cargo/**') }}
+
+      - name: Supply compile-only frontend
+        # The main workflow still builds and tests the real frontend. These
+        # binaries are never packaged, uploaded, or used by a release job.
+        run: |
+          mkdir -p crates/sentryusb/static
+          printf '%s\n' '<!DOCTYPE html><html><body>Dependency compile check</body></html>' > crates/sentryusb/static/index.html
+
+      - name: Compile and link target binary
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+          RUSTFLAGS: -C target-cpu=${{ matrix.cpu }} ${{ matrix.cpu_features }}
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: ${{ matrix.linker }}
+        run: |
+          set -euo pipefail
+          cargo fetch --locked --target "$BUILD_TARGET"
+          case "$BUILD_TARGET" in
+            aarch64-*) mold -run cargo build --locked --release --target "$BUILD_TARGET" -p sentryusb ;;
+            armv7-*) cargo build --locked --release --target "$BUILD_TARGET" -p sentryusb ;;
+            *) echo "Unsupported target: $BUILD_TARGET" >&2; exit 1 ;;
+          esac

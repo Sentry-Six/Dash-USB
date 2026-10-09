@@ -118,23 +118,7 @@ const WAITFORIDLE: &str = include_str!("../../../run/waitforidle");
 pub async fn install_runtime_scripts(emitter: &crate::SetupEmitter) -> Result<bool> {
     let _ = std::fs::create_dir_all("/root/bin");
 
-    let scripts: &[(&str, &str)] = &[
-        ("remountfs_rw", REMOUNTFS_RW),
-        ("mountoptsforimage", MOUNTOPTSFORIMAGE),
-        ("mountimage", MOUNTIMAGE),
-        ("make_snapshot.sh", MAKE_SNAPSHOT),
-        ("release_snapshot.sh", RELEASE_SNAPSHOT),
-        ("manage_free_space.sh", MANAGE_FREE_SPACE),
-        ("enable_gadget.sh", ENABLE_GADGET),
-        ("disable_gadget.sh", DISABLE_GADGET),
-        ("auto.dashusb", AUTO_SENTRYUSB),
-        // `archive::install_archive_scripts` installs backend-specific helpers.
-        ("archiveloop", ARCHIVELOOP),
-        ("send-live-activity", SEND_LIVE_ACTIVITY),
-        ("send-push-message", SEND_PUSH_MESSAGE),
-        ("temperature_monitor", TEMPERATURE_MONITOR),
-        ("waitforidle", WAITFORIDLE),
-    ];
+    let scripts = archive_runtime_scripts();
 
     let all_current = scripts.iter().all(|(name, content)| {
         let path = format!("/root/bin/{}", name);
@@ -162,4 +146,29 @@ pub async fn install_runtime_scripts(emitter: &crate::SetupEmitter) -> Result<bo
 
     emitter.progress("Runtime scripts installed.");
     Ok(true)
+}
+
+/// Bundled support files shared by setup and offline update refresh.
+pub fn archive_runtime_scripts() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("remountfs_rw", REMOUNTFS_RW),
+        ("mountoptsforimage", MOUNTOPTSFORIMAGE),
+        ("mountimage", MOUNTIMAGE),
+        ("make_snapshot.sh", MAKE_SNAPSHOT),
+        ("release_snapshot.sh", RELEASE_SNAPSHOT),
+        ("manage_free_space.sh", MANAGE_FREE_SPACE),
+        ("enable_gadget.sh", ENABLE_GADGET),
+        ("disable_gadget.sh", DISABLE_GADGET),
+        ("auto.dashusb", AUTO_SENTRYUSB),
+        // `archive::install_archive_scripts` installs backend-specific helpers.
+        ("archive-control.sh", include_str!("../../../run/archive-control.sh")),
+        ("mounted-archive-monitor.sh", include_str!("../../../run/mounted-archive-monitor.sh")),
+        ("cam-disk-supervisor.sh", include_str!("../../../run/cam-disk-supervisor.sh")),
+        ("wifi-watchdog.sh", include_str!("../../../run/wifi-watchdog.sh")),
+        ("archiveloop", ARCHIVELOOP),
+        ("send-live-activity", SEND_LIVE_ACTIVITY),
+        ("send-push-message", SEND_PUSH_MESSAGE),
+        ("temperature_monitor", TEMPERATURE_MONITOR),
+        ("waitforidle", WAITFORIDLE),
+    ]
 }

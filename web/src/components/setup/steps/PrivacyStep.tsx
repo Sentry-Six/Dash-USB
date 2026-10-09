@@ -75,12 +75,6 @@ export function PrivacyStep() {
             why="Count gross install volume on the server"
             note="Anonymous. There's nothing to opt out of."
           />
-          <FlowRow
-            when="If you enable iOS push notifications"
-            what="A randomly-generated device pairing ID"
-            why="Routing push notifications to your phone"
-            note="Not tied to your hardware. Cleared when you unpair."
-          />
         </div>
         <p className="mt-4 text-[11px] leading-relaxed text-slate-500">
           Full policy:{" "}

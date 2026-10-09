@@ -110,7 +110,6 @@ By default, Dash USB sends **no device identifier** to our servers. Here's every
 |---|---|---|
 | Daily update check | Software version, CPU arch, board model | None by default |
 | Once per install | Empty ping (no body) | None — anonymous counter |
-| iOS push pairing (if enabled) | Random pairing ID | Not tied to hardware |
 
 The only way a device fingerprint is sent is if you explicitly opt in to
 **Settings → System → Analytics opt-in** (default: off).

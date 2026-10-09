@@ -535,6 +535,18 @@ async fn self_update(
         }
     }
 
+    // Refresh from the newly installed binary after remote hardware patches,
+    // so its archive service and helpers always come from the same release.
+    // Older versions used for a downgrade may not provide this subcommand.
+    let supports_runtime_refresh = sentryusb_shell::run_with_timeout(
+        std::time::Duration::from_secs(10), &dest, &["--help"],
+    ).await.is_ok_and(|help| help.contains("refresh-archive-runtime"));
+    if supports_runtime_refresh {
+        sentryusb_shell::run_with_timeout(
+            std::time::Duration::from_secs(30), &dest, &["refresh-archive-runtime"],
+        ).await.map_err(|error| anyhow::anyhow!("Archive runtime refresh failed; update reboot stopped: {error}"))?;
+    }
+
     if install_warnings.is_empty() {
         Ok(format!(
             "Updated to {}.",

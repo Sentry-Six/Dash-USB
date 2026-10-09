@@ -285,11 +285,6 @@ function PrivacyCards() {
             what="Empty ping (no body, no identifier)"
             note="Anonymous gross-install counter."
           />
-          <FlowRow
-            when="iOS push pairing"
-            what="A random pairing ID"
-            note="Not tied to your hardware."
-          />
         </div>
         <div className="tile-divider" />
         <div className="flex flex-col gap-1">

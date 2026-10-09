@@ -415,3 +415,4 @@ mod tests {
         assert_eq!(fs::read_link(&link).unwrap(), new_target);
     }
 }
+pub mod reflink;

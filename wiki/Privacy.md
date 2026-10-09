@@ -50,24 +50,7 @@ whether a device-derived identifier ever leaves your Pi.
   before first boot: `sudo touch /mutable/.beaconed`. Network-block
   `api.sentry-six.com` if you want to be sure.
 
-### 3. Mobile push notifications (opt-in)
-
-- **Endpoint:** `https://notifications.sentry-six.com/*`
-- **Sent:** Pairing sends a random `device_id`, `device_secret`, pairing code,
-  and hostname. Notifications send that ID and secret plus the title, message,
-  category, and archive progress when applicable.
-- **Identifier:** `device_id` is generated locally from random bytes and is not
-  derived from hardware.
-- **Purpose:** Routing push notifications from your Pi to your phone.
-- **Legal basis:** Consent — you actively enabled this feature.
-- **Retention:** Pairings and APNS tokens remain until unpaired or invalidated.
-  The device registration (`device_id`, secret, and hostname) remains while the
-  Pi is active and is deleted on request.
-- **How to disable:** Don't pair, or remove paired devices under
-  `Settings → Notifications` to stop delivery. Request registration deletion
-  through `privacy@sentry-six.com`.
-
-### 4. Automatic time-zone lookup
+### 3. Automatic time-zone lookup
 
 - **Endpoint:** `GET https://sentry-six.com/api/geoip/me`
 - **Sent:** No request body; the service necessarily receives the source IP.
@@ -90,9 +73,6 @@ whether a device-derived identifier ever leaves your Pi.
   The `fingerprint` key is inserted only when the preference is `true`.
 - Install beacon: same file → `spawn_install_beacon()`. The POST is
   bodyless and gated on `/mutable/.beaconed`.
-- Notification pairing: `crates/api/src/notifications.rs` →
-  `register_code_with_backend()`; delivery is in
-  `crates/notify/src/sentry_connect.rs` and `run/send-live-activity`.
 - Time-zone lookup: `crates/setup/src/system.rs` →
   `resolve_timezone_via_geoip()`.
 
