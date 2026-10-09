@@ -1,15 +1,5 @@
-//! Reflink-backed copy-on-write captures of the cam disk image, plus the
-//! bookkeeping that makes them browseable from the web UI and
-//! `/mutable/Recordings/`.
-//!
-//! Per snapshot: `cp --reflink` the live image, optional fsck, read-only
-//! mount through autofs, TOC-diff against the previous snapshot (identical
-//! means discard), then one symlink per clip matching the vehicle profile
-//! under `/mutable/Recordings/Continuous/<YYYY-MM-DD>/`. That link tree is
-//! what archiveloop archives and the Viewer plays.
-//!
-//! The car rolling-deletes footage on the live drive (2 h on GM). Snapshots
-//! taken inside that window are the only reason footage outlives it.
+//! Reflink snapshots, TOC deduplication, and profile-driven recording links.
+//! The link tree feeds both archiveloop and the Viewer after the live drive rolls over.
 
 use std::path::Path;
 use std::time::Duration;
@@ -36,15 +26,7 @@ pub(crate) fn acquire_mgmt_lock() -> std::io::Result<super::cycle_lock::CycleGua
     )
 }
 
-/// Create a snapshot of the cam disk plus the symlink and TOC bookkeeping
-/// the archive loop and the Viewer need.
-///
-/// `skip_fsck` skips the fsck pass; archiveloop sets it after a reboot so
-/// fsck does not run twice in quick succession.
-///
-/// Returns `Some(name)` for a fresh snapshot, or `None` when the capture is
-/// byte-equivalent to the previous one, in which case the reflink is
-/// deleted rather than accumulating identical copies.
+/// Create a snapshot and its TOC/link bookkeeping. Return `None` for a duplicate.
 pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
     let _mgmt = acquire_mgmt_lock()?;
     let _ = std::fs::create_dir_all(SNAPSHOTS_DIR);
@@ -65,13 +47,8 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
     std::fs::create_dir_all(&snap_dir)?;
     info!("Taking snapshot of cam disk in {}", snap_dir);
 
-    // `--reflink=auto` keeps non-XFS backing stores working at the cost of
-    // a full copy. The setup wizard's XFS check usually catches those first.
-    // Low I/O priority: the copy runs while the car may be writing dashcam
-    // footage to the same disk through the gadget; at default priority it
-    // can stall those writes past the car's SCSI timeout. Best-effort lowest
-    // (-c2 -n7) rather than idle (-c3) so the copy still makes progress under
-    // continuous sentry writes (needs the bfq scheduler to have effect).
+    // Keep snapshot I/O below car writes but above idle so it still progresses.
+    // reflink=auto retains a full-copy fallback outside the expected XFS setup.
     let cp_result = sentryusb_shell::run_with_timeout(
         Duration::from_secs(600),
         "ionice",
@@ -89,14 +66,12 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
         }
     }
 
-    // Symlinks resolve through /tmp/snapshots/..., the autofs mount root.
-    // autofs must be active first or `find` below sees an empty dir.
+    // Start autofs before traversing its snapshot roots.
     wait_for_autofs().await;
 
     info!("Took snapshot {}", snap_name);
 
-    // Touch the autofs path first so the image is mounted before `find`
-    // traverses it.
+    // Trigger the mount before traversal.
     let _ = sentryusb_shell::run("ls", &[&format!("{}/", snap_mnt)]).await;
 
     let toc_path = format!("{}.toc", snap_file);
@@ -120,13 +95,9 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
         return Ok(None);
     }
 
-    // The car firmware rolling-deletes footage on the live drive.
-    // Deletions are NEVER mirrored into the snapshot link trees.
-    // Preserving footage past the car's window is the whole product.
+    // Snapshot links intentionally outlive the car's rolling deletions.
 
-    // Pre-create <snapdir>/mnt. Per-clip symlinks target
-    // <snapdir>/mnt/<recording root>/..., and without it they resolve to
-    // nothing until autofs is poked.
+    // Create the stable link target before autofs is triggered.
     if !Path::new(&snap_mnt_link).exists() {
         #[cfg(unix)]
         let _ = std::os::unix::fs::symlink(&snap_mnt, &snap_mnt_link);
@@ -153,14 +124,7 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
     Ok(Some(snap_name))
 }
 
-/// Normalize a snapshot identifier to its bare `snap-NNNNNN` name.
-///
-/// Callers pass either a bare name (`snap-000001`, e.g. from autofs) or a
-/// full path under the snapshots dir (`/backingfiles/snapshots/snap-000001`,
-/// e.g. the WebUI delete handler and `make_snapshot.sh`'s discard path), so
-/// only the final path component is used. That also neutralizes `..`
-/// traversal: the last component is all that ever gets appended to
-/// `SNAPSHOTS_DIR`.
+/// Normalize a bare name or full path to a validated `snap-NNNNNN` basename.
 fn normalize_snap_name(input: &str) -> Option<String> {
     let name = Path::new(input).file_name()?.to_str()?;
     if name.starts_with("snap-") && !name.contains("..") {
@@ -196,11 +160,13 @@ pub(crate) async fn release_snapshot_unlocked(snap_name: &str) -> Result<()> {
         let _ = sentryusb_shell::run("umount", &[&mnt_dir]).await;
     }
 
+    // Refuse deletion while any nested or autofs mount may still have readers.
+    if snapshot_slot_has_mounts(&name) {
+        bail!("snapshot {} still has mounts under it; refusing to remove", name);
+    }
+
     std::fs::remove_dir_all(&snap_dir)?;
-    // Drop every /mutable/Recordings symlink that pointed into this
-    // snapshot, then prune the date folders left empty. Without this,
-    // released snapshots leave broken links that clutter the Viewer and
-    // Samba and slowly eat mutable's inodes.
+    // Remove dangling recording links and empty date directories.
     prune_links_into(&name);
     info!("Released snapshot: {}", name);
     Ok(())
@@ -234,61 +200,105 @@ fn prune_links_into(snap_name: &str) {
     walk(Path::new(RECORDINGS), &needle, 0);
 }
 
+/// Physical, numerically named snapshot directories in ascending slot order.
 pub fn list_snapshots() -> Vec<String> {
-    let mut snaps = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(SNAPSHOTS_DIR) {
+    list_snapshots_in(Path::new(SNAPSHOTS_DIR))
+}
+
+fn list_snapshots_in(base: &Path) -> Vec<String> {
+    let mut snaps: Vec<(u32, String)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(base) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("snap-") && entry.path().is_dir() {
-                snaps.push(name);
+            let Some(num) = name
+                .strip_prefix("snap-")
+                .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+                .and_then(|s| s.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            if entry.file_type().is_ok_and(|ft| ft.is_dir()) {
+                snaps.push((num, name));
             }
         }
     }
     snaps.sort();
-    snaps
+    snaps.into_iter().map(|(_, n)| n).collect()
 }
 
-/// Find the next free `snap-NNNNNN` slot. A previous snapshot with no
-/// `.toc` (or no snap.bin) was interrupted mid-run, so its number is
-/// wiped and reused.
-///
-/// Returns `(snap_num, Option<previous_toc_path>)`. The previous TOC
-/// is `None` on a brand-new install (no completed snapshots yet).
+/// Find the next slot, reusing an unmounted incomplete snapshot when possible.
+/// Check nested and autofs mounts for a snapshot using prefix matching.
+fn snapshot_slot_has_mounts(name: &str) -> bool {
+    let under = format!("{}/{}/", SNAPSHOTS_DIR, name);
+    let autofs = format!("/tmp/snapshots/{}", name);
+    let Ok(mounts) = std::fs::read_to_string("/proc/mounts") else {
+        // Fail closed when mount state is unknowable.
+        return true;
+    };
+    mounts.lines().any(|l| {
+        let Some(mp) = l.split_whitespace().nth(1) else {
+            return false;
+        };
+        mp.starts_with(&under) || mp == autofs || mp.starts_with(&format!("{}/", autofs))
+    })
+}
+
 fn pick_next_snapshot_slot() -> Result<(u32, Option<String>)> {
-    let mut max_num: u32 = 0;
+    // Option distinguishes an actual snap-000000 from no previous snapshot.
+    let mut max_num: Option<u32> = None;
     if let Ok(entries) = std::fs::read_dir(SNAPSHOTS_DIR) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if let Some(num_str) = name.strip_prefix("snap-") {
-                if let Ok(num) = num_str.parse::<u32>() {
-                    if num > max_num {
-                        max_num = num;
-                    }
-                }
+            let num = name
+                .strip_prefix("snap-")
+                .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+                .and_then(|s| s.parse::<u32>().ok());
+            // Ignore files and symlinks when selecting the next numeric slot.
+            if let Some(num) = num
+                && entry.file_type().is_ok_and(|ft| ft.is_dir())
+                && max_num.is_none_or(|m| num > m)
+            {
+                max_num = Some(num);
             }
         }
     }
 
-    if max_num == 0 {
+    let Some(max_num) = max_num else {
         return Ok((1, None));
-    }
+    };
 
-    let prev_dir = format!("{}/snap-{:06}", SNAPSHOTS_DIR, max_num);
+    let prev_name = format!("snap-{:06}", max_num);
+    let prev_dir = format!("{}/{}", SNAPSHOTS_DIR, prev_name);
     let prev_toc = format!("{}/snap.bin.toc", prev_dir);
     let prev_bin = format!("{}/snap.bin", prev_dir);
 
-    // Abandoned: no TOC was committed → reuse this slot.
-    if !Path::new(&prev_toc).exists() || !Path::new(&prev_bin).exists() {
-        let _ = std::fs::remove_dir_all(&prev_dir);
-        let next = max_num;
-        // Look one further back for a usable previous TOC.
-        let backstop = if next > 1 {
-            let p = format!("{}/snap-{:06}/snap.bin.toc", SNAPSHOTS_DIR, next - 1);
+    // Search one slot back for a usable TOC, including snap-000000.
+    let backstop_before = |n: u32| -> Option<String> {
+        if n > 0 {
+            let p = format!("{}/snap-{:06}/snap.bin.toc", SNAPSHOTS_DIR, n - 1);
             if Path::new(&p).exists() { Some(p) } else { None }
         } else {
             None
-        };
-        return Ok((next, backstop));
+        }
+    };
+
+    // Abandoned: no TOC was committed → reuse this slot.
+    if !Path::new(&prev_toc).exists() || !Path::new(&prev_bin).exists() {
+        // Append instead of reusing anything that may still be mounted.
+        if snapshot_slot_has_mounts(&prev_name) {
+            let next = max_num + 1;
+            warn!(
+                "slot pick: max_seen={} incomplete BUT MOUNTED — appending next={}",
+                max_num, next
+            );
+            return Ok((next, backstop_before(max_num)));
+        }
+        let _ = std::fs::remove_dir_all(&prev_dir);
+        info!(
+            "slot pick: max_seen={} action=reuse-incomplete next={}",
+            max_num, max_num
+        );
+        return Ok((max_num, backstop_before(max_num)));
     }
 
     Ok((max_num + 1, Some(prev_toc)))
@@ -385,11 +395,7 @@ fn parse_toc_sizes(toc_path: &str) -> std::collections::HashMap<String, u64> {
     map
 }
 
-/// Returns true if `new_toc` has any line that isn't in `old_toc`.
-/// Lines are `<size> <path>`, compared whole: a clip that merely grew
-/// (same name, new size, e.g. still being written during the
-/// previous snapshot) must count as new, otherwise the fuller copy gets
-/// discarded as a duplicate.
+/// Compare whole `<size> <path>` lines so a growing clip counts as new.
 fn toc_has_additions(old_toc: &str, new_toc: &str) -> Result<bool> {
     let old = std::fs::read_to_string(old_toc).unwrap_or_default();
     let new = std::fs::read_to_string(new_toc)?;
@@ -400,13 +406,7 @@ fn toc_has_additions(old_toc: &str, new_toc: &str) -> Result<bool> {
         .any(|line| !line.is_empty() && !old_set.contains(line)))
 }
 
-/// Build `/mutable/Recordings/Continuous/<YYYY-MM-DD>/` symlinks
-/// pointing into the snapshot mount, per the active vehicle profile.
-///
-/// `cur_mnt` is `/tmp/snapshots/snap-NNNNNN` (autofs path used during
-/// the scan). `final_mnt` is `<snapdir>/mnt`, the symlink to the autofs
-/// path. Per-clip symlinks are retargeted onto `final_mnt` so they keep
-/// working even if the autofs path is unmounted later.
+/// Build profile-driven dated links through the stable `<snapdir>/mnt` path.
 fn make_links_for_snapshot(
     cur_mnt: &str,
     final_mnt: &str,
@@ -418,15 +418,8 @@ fn make_links_for_snapshot(
 
 /// [`make_links_for_snapshot`] over an explicit recordings root (testable).
 ///
-/// Closed-segment guard, so a segment the car is still writing is never
-/// archived (a truncated offsite copy would poison the dedup ledger).
-/// Per camera, every clip EXCEPT the newest links immediately: a successor
-/// proves the predecessor closed, and that holds without reading the car's
-/// clock. The newest clip per camera links only once its size is unchanged
-/// versus the previous snapshot's TOC (snapshots are ≥ the segment length
-/// apart by default, so an equal size means closed). With no previous TOC
-/// the newest clip is held one cycle; the snapshot itself still preserves
-/// the bytes.
+/// Link all but each camera's newest clip immediately. Link the newest only
+/// when its size matches the previous TOC, preventing truncated offsite copies.
 fn make_links_in(
     recordings: &Path,
     profile: &sentryusb_vehicle_profile::Profile,
@@ -491,10 +484,7 @@ fn make_links_in(
     Ok(())
 }
 
-/// Collect every file under `dir` whose name matches the profile's clip
-/// pattern; linking decisions happen in [`make_links_in`]. The walk is
-/// depth-bounded: today's GM layout is flat, but a firmware that starts
-/// date-bucketing must not break capture.
+/// Collect matching clips with bounded depth for flat or date-bucketed layouts.
 fn collect_clips_under(
     dir: &Path,
     profile: &sentryusb_vehicle_profile::Profile,
@@ -635,6 +625,65 @@ fn walk_for_symlink_pointing_at(dir: &Path, needle: &str, depth: u8) -> bool {
 mod tests {
     use super::*;
 
+    /// `list_snapshots_in` feeds eviction, so anything it admits can be
+    /// deleted and anything it sorts last is treated as newest.
+    mod snapshot_scan {
+        use super::*;
+
+        fn snap_dir(base: &Path, name: &str) {
+            std::fs::create_dir_all(base.join(name)).unwrap();
+            std::fs::write(base.join(name).join("snap.bin"), b"x").unwrap();
+        }
+
+        #[test]
+        fn orders_numerically_not_lexically() {
+            let tmp = tempfile::tempdir().unwrap();
+            let base = tmp.path();
+            for n in ["snap-000002", "snap-000010", "snap-000001"] {
+                snap_dir(base, n);
+            }
+            assert_eq!(
+                list_snapshots_in(base),
+                vec!["snap-000001", "snap-000002", "snap-000010"],
+            );
+        }
+
+        #[test]
+        fn ignores_non_numeric_and_non_directories() {
+            let tmp = tempfile::tempdir().unwrap();
+            let base = tmp.path();
+            snap_dir(base, "snap-000001");
+            // A junk-named dir could otherwise sort last and be treated as
+            // the protected newest snapshot.
+            snap_dir(base, "snap-junk");
+            snap_dir(base, "snap-000002.bak");
+            std::fs::write(base.join("snap-000999"), b"stray file").unwrap();
+            std::fs::create_dir_all(base.join("not-a-snap")).unwrap();
+
+            assert_eq!(list_snapshots_in(base), vec!["snap-000001"]);
+        }
+
+        #[test]
+        #[cfg(unix)]
+        fn does_not_follow_directory_symlinks() {
+            let tmp = tempfile::tempdir().unwrap();
+            let base = tmp.path();
+            snap_dir(base, "snap-000001");
+            // A planted link resolving to a real dir must not become an
+            // eviction candidate: file_type() reads the dirent itself.
+            std::os::unix::fs::symlink(base.join("snap-000001"), base.join("snap-000500"))
+                .unwrap();
+
+            assert_eq!(list_snapshots_in(base), vec!["snap-000001"]);
+        }
+
+        #[test]
+        fn missing_directory_is_empty_not_a_panic() {
+            let tmp = tempfile::tempdir().unwrap();
+            assert!(list_snapshots_in(&tmp.path().join("nope")).is_empty());
+        }
+    }
+
     #[test]
     fn normalize_accepts_bare_name() {
         // autofs and a correct WebUI call pass the bare id.
@@ -643,8 +692,7 @@ mod tests {
 
     #[test]
     fn normalize_accepts_full_path() {
-        // The WebUI delete handler and make_snapshot.sh's discard path
-        // pass a full path; a `contains('/')` guard here broke deletes.
+        // UI and script callers pass full paths as well as bare IDs.
         assert_eq!(
             normalize_snap_name("/backingfiles/snapshots/snap-000001").as_deref(),
             Some("snap-000001"),

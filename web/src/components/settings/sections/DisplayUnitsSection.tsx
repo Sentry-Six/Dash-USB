@@ -4,8 +4,7 @@ import { useUnits } from "@/lib/units"
 import { cn } from "@/lib/utils"
 
 export function DisplayUnitsSection() {
-  // TEMPERATURE_UNIT alone governs every CPU-temperature readout: dashboard
-  // tile, alert notifications, health checks, and logs.
+  // One temperature preference drives every CPU-temperature readout.
   const { isMetric, setMetric } = useUnits()
 
   return (
@@ -14,8 +13,6 @@ export function DisplayUnitsSection() {
       halo="violet"
       title="Display & Units"
       badge={
-        // Connected pill. Selected state is
-        // border-blue-500/40 bg-blue-500/10 text-blue-400.
         <span
           role="tablist"
           aria-label="Units"

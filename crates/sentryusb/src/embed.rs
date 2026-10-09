@@ -8,14 +8,9 @@ use rust_embed::{Embed, EmbeddedFile};
 #[folder = "static/"]
 struct StaticFiles;
 
-/// Hand-rolled MIME table: the embedded SPA bundle and its pre-compressed
-/// siblings are a closed set of extensions, so `mime_guess`'s thousands-entry
-/// database is not worth its size. Falls back to `application/octet-stream`,
-/// the same default `mime_guess::first_or_octet_stream()` gives.
+/// MIME table for the SPA's closed set of embedded file types.
 fn mime_for(path: &str) -> &'static str {
-    // Advertise the MIME of the *original* resource for a pre-compressed
-    // sibling; Content-Encoding covers the wrapping. `foo.js.br` →
-    // `application/javascript`.
+    // Content-Encoding describes compression; preserve the original MIME.
     let stem = path
         .strip_suffix(".br")
         .or_else(|| path.strip_suffix(".gz"))
@@ -41,22 +36,9 @@ fn mime_for(path: &str) -> &'static str {
     }
 }
 
-/// SPA fallback: serve a static file, else index.html for client-side routing.
-///
-/// Caching keeps repeat page loads off the network for a car parked outside on
-/// flaky WiFi. `/assets/*` is content-hashed by Vite (`index-CThdLhPi.js`) and
-/// so immutable: cache forever. index.html and other entry files get
-/// `no-cache`, so a soft reload picks up a new bundle after an OTA update
-/// without a hard refresh.
-///
-/// When `build.sh` produced `.br` / `.gz` siblings, the pre-compressed bytes
-/// are served directly, avoiding per-request compression CPU on the Pi Zero
-/// 2W. Clients that do not advertise br/gzip get the raw bytes.
-///
-/// The ETag is the first 16 bytes (hex) of the sha256 hash rust-embed computes
-/// at compile time, suffixed with the encoding so a client downgrading from br
-/// to identity gets a fresh body instead of a stale 304. A matching
-/// `If-None-Match` returns 304 without re-sending the asset.
+/// Serve embedded files with pre-compression and SPA fallback. Vite's hashed
+/// assets are immutable; entry files revalidate. Encoding-specific ETags keep
+/// compressed and identity responses distinct.
 pub async fn spa_handler(uri: Uri, headers: HeaderMap) -> Response {
     let path = uri.path().trim_start_matches('/');
 
@@ -68,16 +50,15 @@ pub async fn spa_handler(uri: Uri, headers: HeaderMap) -> Response {
         return serve_embedded(path, file, None, &headers);
     }
 
-    // SPA fallback. index.html is short and changes per release; let
-    // tower-http's CompressionLayer handle its (small) gzip.
+    // Let the compression layer handle the short, release-specific entry file.
     match StaticFiles::get("index.html") {
         Some(file) => serve_embedded("index.html", file, None, &headers),
         None => (StatusCode::NOT_FOUND, "Not Found").into_response(),
     }
 }
 
-/// Returns (file, content-encoding) if the client accepts a pre-compressed
-/// sibling we have on disk. Brotli first (better ratio), then gzip.
+/// Returns (file, content-encoding) for an accepted pre-compressed sibling.
+/// Brotli takes precedence over gzip.
 fn pick_encoding(path: &str, req_headers: &HeaderMap) -> Option<(EmbeddedFile, Option<&'static str>)> {
     let accept = req_headers
         .get(header::ACCEPT_ENCODING)
@@ -125,9 +106,7 @@ fn serve_embedded(
         .header(header::CACHE_CONTROL, cache_control)
         .header(header::ETAG, &etag);
     if let Some(enc) = encoding {
-        // Tell intermediaries the encoded body varies by Accept-Encoding
-        // so a proxy doesn't hand the br bytes to a client that asked
-        // for identity.
+        // Prevent caches from serving encoded bytes to identity-only clients.
         resp = resp.header(header::CONTENT_ENCODING, enc);
         resp = resp.header(header::VARY, "Accept-Encoding");
     }

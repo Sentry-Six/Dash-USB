@@ -65,9 +65,3 @@ impl Hub {
         debug!("WebSocket client disconnected ({} total)", prev - 1);
     }
 }
-
-impl Default for Hub {
-    fn default() -> Self {
-        Self::new()
-    }
-}

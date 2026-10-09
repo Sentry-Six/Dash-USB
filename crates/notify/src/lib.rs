@@ -3,7 +3,6 @@
 //! out concurrently over one shared HTTP client.
 
 use anyhow::Result;
-use async_trait::async_trait;
 use tracing::{info, warn};
 
 pub mod discord;
@@ -19,13 +18,8 @@ pub mod sns;
 pub mod telegram;
 pub mod webhook;
 
-#[async_trait]
-pub trait NotificationProvider: Send + Sync {
-    async fn send(&self, title: &str, message: &str) -> Result<()>;
-    fn name(&self) -> &str;
-}
-
 /// Provider settings, loaded from dashusb.conf.
+#[derive(Default)]
 pub struct NotifyConfig {
     pub pushover_enabled: bool,
     pub pushover_app_key: String,
@@ -73,9 +67,7 @@ pub struct NotifyConfig {
     pub sns_enabled: bool,
     pub sns_topic_arn: String,
     pub sns_region: String,
-    // Passed to the SNS signer explicitly: systemd starts the server
-    // without sourcing dashusb.conf, so env-only AWS credential lookups
-    // never resolve on a normal install (see sns.rs).
+    // Pass config credentials explicitly because systemd does not source them.
     pub sns_access_key: String,
     pub sns_secret_key: String,
 
@@ -97,7 +89,9 @@ impl NotifyConfig {
             get(key).to_lowercase() == "true"
         };
 
-        let mobile_push_enabled = is_true("MOBILE_PUSH_ENABLED");
+        // Dash USB has no companion app. Ignore inherited app-push settings
+        // without deleting saved credentials or changing supported providers.
+        let mobile_push_enabled = false;
 
         // MOBILE_PUSH_DEVICE_ID and MOBILE_PUSH_SECRET are deliberately not
         // stored in dashusb.conf; they live in the server-managed
@@ -190,25 +184,19 @@ pub struct NotifyRequest<'a> {
     pub message: &'a str,
     /// `start` or `finish`. Drives the live_activity branch on mobile push.
     pub type_hint: Option<&'a str>,
-    /// Category (`archive_start`, `temperature`, `drives`). Echoed to the
-    /// push server and used for the gate check upstream.
+    /// Category forwarded to the push server and used for upstream gating.
     pub notification_type: Option<&'a str>,
     /// Total clip count for the pending archive run. Enables the
     /// live_activity payload on `archive_start`.
     pub archive_total_count: Option<u32>,
 }
 
-/// Shared outbound client, built once on first send and reused for the
-/// life of the process. Rebuilding it would stand up a fresh TLS pool,
-/// DNS cache and idle connection pool per sentry event.
+/// Process-wide outbound client with shared TLS and connection pools.
 static NOTIFY_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
 
 fn notify_client() -> &'static reqwest::Client {
     NOTIFY_CLIENT.get_or_init(|| {
-        // Panic rather than fall back to `Client::default()`: the default
-        // builder discards the timeouts below, so a TLS init failure would
-        // yield a no-timeout client that hangs a tokio worker indefinitely
-        // on a misconfigured push endpoint.
+        // Never fall back to a client without the bounded timeout.
         reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .connect_timeout(std::time::Duration::from_secs(10))
@@ -230,11 +218,13 @@ pub async fn send_to_all_with_context(
     let title = req.title;
     let message = req.message;
 
-    // Dispatch concurrently so total latency is the slowest channel, not
-    // the sum: each send is an independent HTTP call with its own 30s
-    // timeout, and a slow or unreachable Discord/Gotify endpoint must not
-    // delay a time-sensitive mobile push. Per-provider results and their
-    // ordering are unchanged for callers.
+    // Fan the providers out CONCURRENTLY. Each send is an independent
+    // HTTP call with its own 30s timeout; dispatching sequentially made
+    // total latency the SUM of every enabled channel — a time-sensitive
+    // Sentry alert's mobile push could sit behind a slow or unreachable
+    // Discord/Gotify endpoint for up to 30s per channel. Concurrent
+    // dispatch makes it the MAX instead, with per-provider results (and
+    // ordering) unchanged for callers.
     let mut sends: Vec<(&'static str, String, BoxFuture<'_, Result<()>>)> = Vec::new();
 
     if config.pushover_enabled {
@@ -325,7 +315,14 @@ pub async fn send_to_all_with_context(
 
     futures::future::join_all(sends.into_iter().map(
         |(display, key, fut)| async move {
-            let r = fut.await;
+            // Sanitize before either logging or returning errors to API/history.
+            let r = fut.await.map_err(|e| anyhow::anyhow!(safe_provider_error(&e, &[
+                &config.pushover_app_key, &config.pushover_user_key,
+                &config.telegram_bot_token, &config.gotify_app_token, &config.ntfy_token,
+                &config.ifttt_key, &config.matrix_password, &config.sns_access_key,
+                &config.sns_secret_key, &config.mobile_push_secret,
+                &config.discord_webhook_url, &config.slack_webhook_url, &config.webhook_url,
+            ])));
             log_result(display, &r);
             (key, r)
         },
@@ -337,5 +334,112 @@ fn log_result(provider: &str, result: &Result<()>) {
     match result {
         Ok(()) => info!("[notify] {} — sent successfully", provider),
         Err(e) => warn!("[notify] {} — failed: {}", provider, e),
+    }
+}
+
+/// Preserve diagnostic reasons without credentials or secret-bearing URLs.
+pub fn safe_provider_error(error: &anyhow::Error, secrets: &[&str]) -> String {
+    safe_error_text(&format!("{error:#}"), secrets)
+}
+
+/// Redact a credential assignment, not a diagnostic mentioning its field name.
+fn redact_credential_values(mut text: String) -> String {
+    for key in ["authorization", "x-device-secret", "device_secret", "access_token", "password", "api_key", "token", "secret"] {
+        let mut cursor = 0;
+        while let Some(found) = text[cursor..].to_ascii_lowercase().find(key) {
+            let start = cursor + found;
+            let end = start + key.len();
+            cursor = end;
+            if start > 0 && (text.as_bytes()[start - 1].is_ascii_alphanumeric() || text.as_bytes()[start - 1] == b'_') {
+                continue;
+            }
+            let bytes = text.as_bytes();
+            let mut at = end;
+            if at < bytes.len() && matches!(bytes[at], b'"' | b'\'') { at += 1; }
+            while at < bytes.len() && bytes[at].is_ascii_whitespace() { at += 1; }
+            if at >= bytes.len() || !matches!(bytes[at], b':' | b'=') { continue; }
+            at += 1;
+            while at < bytes.len() && bytes[at].is_ascii_whitespace() { at += 1; }
+            if at >= bytes.len() { continue; }
+            let from;
+            let mut to;
+            if matches!(bytes[at], b'"' | b'\'') {
+                let quote = bytes[at];
+                from = at + 1;
+                to = from;
+                while to < bytes.len() && bytes[to] != quote {
+                    if bytes[to] == b'\\' && to + 1 < bytes.len() { to += 1; }
+                    to += 1;
+                }
+            } else {
+                from = at;
+                to = at;
+                while to < bytes.len() && bytes[to] != b'\n' && bytes[to] != b'\r'
+                    && (key == "authorization" || !matches!(bytes[to], b' ' | b'\t' | b',' | b';' | b'}')) {
+                    to += 1;
+                }
+            }
+            text.replace_range(from..to, "[redacted]");
+            cursor = from + "[redacted]".len();
+        }
+    }
+    text
+}
+
+pub fn safe_error_text(message: &str, secrets: &[&str]) -> String {
+    let mut safe = message.to_string();
+    // Longest first prevents one credential exposing the suffix of another.
+    let mut secrets: Vec<&str> = secrets.iter().copied().filter(|s| !s.is_empty()).collect();
+    secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    for secret in secrets {
+        safe = safe.replace(secret, "[redacted]");
+        safe = safe.replace(urlencoding::encode(secret).as_ref(), "[redacted]");
+    }
+    let safe = safe.lines().map(|line| {
+        line.split_whitespace().map(|word| {
+            let lower = word.to_ascii_lowercase();
+            if lower.contains("https://") || lower.contains("http://") {
+                "[redacted URL]"
+            } else { word }
+        }).collect::<Vec<_>>().join(" ")
+    }).collect::<Vec<_>>().join("\n");
+    // Remove URLs first: a capability path ending in "token:" must not be
+    // mistaken for a credential assignment that consumes the following cause.
+    let safe = redact_credential_values(safe);
+    // A provider can return an HTML error page; keep history bounded.
+    if safe.chars().count() > 4096 {
+        format!("{}… [truncated]", safe.chars().take(4096).collect::<String>())
+    } else { safe }
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    #[test]
+    fn notification_redaction_preserves_missing_field_reason_status_and_cause_chain() {
+        assert_eq!(super::safe_error_text("no access_token in login response", &[]),
+            "no access_token in login response");
+        let safe = super::safe_error_text(
+            r#"HTTP 401 — {"error":"invalid device_secret","device_secret":"unknown-secret","access_token":"dynamic-token"}"#, &[]);
+        assert!(safe.contains("HTTP 401"));
+        assert!(safe.contains("invalid device_secret"));
+        assert!(!safe.contains("unknown-secret"));
+        assert!(!safe.contains("dynamic-token"));
+        let error = anyhow::anyhow!("connection refused").context("error sending request for url https://example/private-token");
+        let safe = super::safe_provider_error(&error, &[]);
+        assert!(safe.contains("connection refused"));
+        assert!(!safe.contains("private-token"));
+    }
+
+    #[test]
+    fn notification_errors_keep_reasons_without_credentials_or_urls() {
+        let error = "HTTP 400 chat not found at https://api.example/botSECRET/send?token=SECRET\nAuthorization: Bearer SECRET\nx-device-secret: SECRET\nrequest timed out";
+        let safe = super::safe_error_text(error, &["SECRET"]);
+        assert!(safe.contains("HTTP 400 chat not found"));
+        assert!(safe.contains("request timed out"));
+        assert!(!safe.contains("SECRET"));
+        assert!(!safe.contains("api.example"));
+        assert!(!safe.contains("Bearer"));
+        assert!(!super::safe_error_text("password=p%40ss", &["p@ss"]).contains("p%40ss"));
+        assert!(!super::safe_error_text("HTTP 400 HTTPS://example/private-capability", &[]).contains("private-capability"));
     }
 }

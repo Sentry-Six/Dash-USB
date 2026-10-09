@@ -5,31 +5,17 @@ After=bluetooth.target bluetooth.service dbus.service
 Requires=bluetooth.target dbus.service
 BindsTo=bluetooth.service
 ConditionPathExists=/usr/bin/python3
-# Defense in depth against the BLE adapter boot race: systemd defaults to
-# StartLimitBurst=5 within StartLimitIntervalSec=10s, which can be exhausted
-# if all 5 attempts hit the race within 30 seconds. Bumping to 20 attempts in
-# 120s gives systemd enough budget to recover before giving up. The Python
-# wait_for_adapter() handles 99% of cases on the first attempt; this is
-# insurance for unrelated future failure modes (BlueZ crash, OOM, etc.).
+# Leave enough restart budget for delayed adapter enumeration or BlueZ recovery.
 StartLimitBurst=20
 StartLimitIntervalSec=120
 
 [Service]
 Type=simple
 ExecStartPre=/usr/sbin/rfkill unblock bluetooth
-# Bring up all detected hci adapters (onboard + any USB dongles), not
-# just hci0 — when the user has configured BLE_ADAPTER=hci1 in
-# dashusb.conf the Python script will pick that one, but the
-# kernel needs the device powered on first regardless of which one
-# we end up using.
+# Power every adapter so BLE_ADAPTER may select an external dongle.
 ExecStartPre=-/bin/bash -c 'for hci in /sys/class/bluetooth/hci*; do [ -d "$hci" ] && /usr/bin/hciconfig $(basename "$hci") up; done'
-# The BlueZ-ready wait and `btmgmt advertising on` moved into the daemon
-# (wait_for_adapter + enable_controller_advertising). They ran ~6s
-# synchronously here, and since this unit is WantedBy=multi-user.target
-# that ~6s landed in the boot transaction (~5s of time-to-graphical.target
-# on RK3399). In the daemon the unit reaches active immediately; both
-# guards stay intact — it waits for org.bluez before touching btmgmt, and
-# re-enables controller advertising before registering the GATT app.
+# The daemon waits for BlueZ and sets controller flags without blocking the
+# systemd boot transaction.
 ExecStart=/usr/bin/python3 /root/bin/dashusb-ble.py
 Restart=always
 RestartSec=5

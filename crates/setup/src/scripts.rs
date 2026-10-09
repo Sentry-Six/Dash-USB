@@ -54,11 +54,6 @@ const MANAGE_FREE_SPACE: &str = r#"#!/bin/bash -eu
 dashusb space manage "$@"
 "#;
 
-const FORCE_SYNC: &str = r#"#!/bin/bash -eu
-# Force an immediate archive sync by sending SIGUSR1 to archiveloop.
-pkill -USR1 -f archiveloop || echo "archiveloop not running"
-"#;
-
 const ENABLE_GADGET: &str = r#"#!/bin/bash -eu
 dashusb gadget enable "$@"
 "#;
@@ -108,11 +103,8 @@ cat "$optfile"
 "#;
 
 
-// archiveloop and its supporting scripts, vendored from `run/` at compile
-// time. Setup MUST write these out: dashusb-archive.service execs
-// /root/bin/archiveloop and nothing else installs it on a clean Pi OS
-// (`curl | bash install-pi.sh` does not run pi-gen), so a missing file means
-// a crashlooping service and no archive runs.
+// Embed archive scripts because dashusb-archive.service executes the installed
+// `/root/bin/archiveloop` even on systems not built through pi-gen.
 
 const ARCHIVELOOP: &str = include_str!("../../../run/archiveloop");
 const SEND_LIVE_ACTIVITY: &str = include_str!("../../../run/send-live-activity");
@@ -126,28 +118,7 @@ const WAITFORIDLE: &str = include_str!("../../../run/waitforidle");
 pub async fn install_runtime_scripts(emitter: &crate::SetupEmitter) -> Result<bool> {
     let _ = std::fs::create_dir_all("/root/bin");
 
-    let scripts: &[(&str, &str)] = &[
-        ("remountfs_rw", REMOUNTFS_RW),
-        ("mountoptsforimage", MOUNTOPTSFORIMAGE),
-        ("mountimage", MOUNTIMAGE),
-        ("make_snapshot.sh", MAKE_SNAPSHOT),
-        ("release_snapshot.sh", RELEASE_SNAPSHOT),
-        ("manage_free_space.sh", MANAGE_FREE_SPACE),
-        ("force_sync.sh", FORCE_SYNC),
-        ("enable_gadget.sh", ENABLE_GADGET),
-        ("disable_gadget.sh", DISABLE_GADGET),
-        ("auto.dashusb", AUTO_SENTRYUSB),
-        // Archive-flow scripts common to every archive system. The
-        // per-system variants (archive-clips.sh, archive-is-reachable.sh,
-        // connect-archive.sh, disconnect-archive.sh) each ship their own
-        // copy and are installed by `archive::install_archive_scripts`
-        // according to ARCHIVE_SYSTEM.
-        ("archiveloop", ARCHIVELOOP),
-        ("send-live-activity", SEND_LIVE_ACTIVITY),
-        ("send-push-message", SEND_PUSH_MESSAGE),
-        ("temperature_monitor", TEMPERATURE_MONITOR),
-        ("waitforidle", WAITFORIDLE),
-    ];
+    let scripts = archive_runtime_scripts();
 
     let all_current = scripts.iter().all(|(name, content)| {
         let path = format!("/root/bin/{}", name);
@@ -175,4 +146,29 @@ pub async fn install_runtime_scripts(emitter: &crate::SetupEmitter) -> Result<bo
 
     emitter.progress("Runtime scripts installed.");
     Ok(true)
+}
+
+/// Bundled support files shared by setup and offline update refresh.
+pub fn archive_runtime_scripts() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("remountfs_rw", REMOUNTFS_RW),
+        ("mountoptsforimage", MOUNTOPTSFORIMAGE),
+        ("mountimage", MOUNTIMAGE),
+        ("make_snapshot.sh", MAKE_SNAPSHOT),
+        ("release_snapshot.sh", RELEASE_SNAPSHOT),
+        ("manage_free_space.sh", MANAGE_FREE_SPACE),
+        ("enable_gadget.sh", ENABLE_GADGET),
+        ("disable_gadget.sh", DISABLE_GADGET),
+        ("auto.dashusb", AUTO_SENTRYUSB),
+        // `archive::install_archive_scripts` installs backend-specific helpers.
+        ("archive-control.sh", include_str!("../../../run/archive-control.sh")),
+        ("mounted-archive-monitor.sh", include_str!("../../../run/mounted-archive-monitor.sh")),
+        ("cam-disk-supervisor.sh", include_str!("../../../run/cam-disk-supervisor.sh")),
+        ("wifi-watchdog.sh", include_str!("../../../run/wifi-watchdog.sh")),
+        ("archiveloop", ARCHIVELOOP),
+        ("send-live-activity", SEND_LIVE_ACTIVITY),
+        ("send-push-message", SEND_PUSH_MESSAGE),
+        ("temperature_monitor", TEMPERATURE_MONITOR),
+        ("waitforidle", WAITFORIDLE),
+    ]
 }

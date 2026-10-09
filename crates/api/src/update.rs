@@ -116,7 +116,7 @@ pub async fn run_update(
     tokio::spawn(async move {
         hub.broadcast("update_status", &serde_json::json!({"status": "running"}));
 
-        let result = self_update(target_version).await;
+        let result = self_update(&hub, target_version).await;
 
         UPDATE_RUNNING.store(false, Ordering::SeqCst);
 
@@ -148,50 +148,16 @@ pub async fn run_update(
     (StatusCode::OK, Json(serde_json::json!({"status": "started"})))
 }
 
-/// Default GitHub source for OTA updates when the config doesn't override it.
-const DEFAULT_UPDATE_OWNER: &str = "Sentry-Six";
-const DEFAULT_UPDATE_REPO_NAME: &str = "Dash-USB";
-
-/// Resolve the `owner/repo` slug for OTA updates. `REPO` in the active
-/// dashusb.conf overrides the owner, so a fork can point self-update at its own
-/// releases from the wizard's Advanced Update Source field. `REPO_NAME` stays
-/// hardcoded: a fork must keep the original repo name.
+/// Resolve the OTA repository; config can override the owner but not its name.
 fn update_repo() -> String {
-    let path = sentryusb_config::find_config_path();
-    let (active, _commented) = sentryusb_config::parse_file(path).unwrap_or_default();
-    let owner = active
-        .get("REPO")
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .unwrap_or(DEFAULT_UPDATE_OWNER);
-    format!("{}/{}", owner, DEFAULT_UPDATE_REPO_NAME)
+    sentryusb_config::github_source().repo_slug
 }
 
-/// Detect the release suffix matching the currently-running CPU variant.
-///
-/// Three-tier resolution:
-///   1. `/opt/dashusb/active-variant`, written by the boot picker
-///      (dashusb-pick-binary). Authoritative when present: it names the
-///      variant running right now, so re-downloading that suffix guarantees
-///      the picker picks the update again.
-///   2. Live CPU detection mirroring the picker's rules (HWCAP atomics gives
-///      a76, CPU part 0xD08 gives a72, else a53). Used before the picker has
-///      written active-variant, such as the first migration update off a
-///      single-binary install.
-///   3. Architecture-family fallback via dpkg/uname for armv7 and amd64, which
-///      have no per-CPU variants.
-///
-/// On Pi OS a 64-bit kernel can be paired with a 32-bit (armhf) userspace,
-/// where `uname -m` reports `aarch64` but the aarch64 binary cannot load: exec
-/// returns ENOENT because `/lib/ld-linux-aarch64.so.1` isn't installed. Trust
-/// dpkg first when determining the architecture family.
+/// Detect the running release suffix from the picker's active variant, live
+/// CPU features, then userspace architecture. Prefer dpkg because a 64-bit
+/// kernel may host an armhf userspace that cannot load aarch64 binaries.
 async fn detect_release_suffix() -> anyhow::Result<String> {
-    // Tier 1: ask the picker what it chose at boot, but only trust values that
-    // are real release suffixes. Old picker versions recorded whatever they
-    // ended up RUNNING (an on-disk fallback, sometimes "legacy"), and a
-    // download URL built from that either 404s or permanently installs the
-    // wrong CPU variant (issue #88's second act). Anything else falls through
-    // to live detection below.
+    // Trust only release suffixes; older pickers could record fallback names.
     const KNOWN_SUFFIXES: &[&str] = &[
         "linux-arm64-a53",
         "linux-arm64-a72",
@@ -213,10 +179,7 @@ async fn detect_release_suffix() -> anyhow::Result<String> {
         }
     }
 
-    // Tier 3 runs first as a cheap arch-family check, gating whether per-CPU
-    // detection is needed at all: armv7 and amd64 have one variant each. armv6
-    // (armel, Pi Zero W, Pi 1) is unsupported and errors out here, so the user
-    // gets a diagnosable failure instead of a 404 on the download.
+    // armv7/amd64 need no CPU split; reject unsupported armv6 before download.
     let family = if let Ok(out) = sentryusb_shell::run("dpkg", &["--print-architecture"]).await {
         match out.trim() {
             "arm64" => "aarch64",
@@ -242,15 +205,10 @@ async fn detect_release_suffix() -> anyhow::Result<String> {
         }
     };
 
-    // Tier 2: aarch64 per-CPU detection, mirroring dashusb-pick-binary's rules
-    // so detection on a pre-picker install lands on the same variant the picker
-    // would have chosen.
+    // Mirror dashusb-pick-binary for pre-picker aarch64 installs.
     debug_assert_eq!(family, "aarch64");
     if let Ok(cpuinfo) = std::fs::read_to_string("/proc/cpuinfo") {
-        // HWCAP_ATOMICS = LSE = ARMv8.1+ = Cortex-A76 and newer. The a76 build
-        // also keeps the ARMv8 crypto extension enabled (Pi 5 has it), so the
-        // `aes` hwcap is required too: a v8.1+ board without crypto MUST get
-        // the a72 build or it SIGILLs in SHA/AES.
+        // a76 also compiles AES/SHA, so require both LSE and AES hardware caps.
         let has_hwcap = |cap: &str| {
             cpuinfo.lines().any(|line| {
                 line.starts_with("Features")
@@ -275,7 +233,87 @@ async fn detect_release_suffix() -> anyhow::Result<String> {
     Ok("linux-arm64-a53".to_string())
 }
 
-async fn self_update(target_version: Option<String>) -> anyhow::Result<String> {
+/// Stream a release to staging and broadcast advisory download progress.
+async fn download_with_progress(
+    hub: &sentryusb_ws::Hub,
+    url: &str,
+    dest: &str,
+) -> anyhow::Result<()> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
+    let resp = crate::http_client()
+        .get(url)
+        .header("User-Agent", "dashusb-updater")
+        .send()
+        .await?
+        .error_for_status()?;
+    // CDN responses may omit Content-Length; the UI then uses indeterminate progress.
+    let total = resp.content_length().filter(|t| *t > 0);
+    let mut file = tokio::fs::File::create(dest).await?;
+    let mut stream = resp.bytes_stream();
+    let mut done: u64 = 0;
+    let mut last_percent: i64 = -1;
+    let mut last_emit = std::time::Instant::now();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        file.write_all(&chunk).await?;
+        done += chunk.len() as u64;
+        let percent = total.map(|t| ((done as f64 / t as f64) * 100.0) as i64);
+        let emit = match percent {
+            Some(p) => p != last_percent,
+            None => last_emit.elapsed() >= std::time::Duration::from_millis(500),
+        };
+        if emit {
+            if let Some(p) = percent {
+                last_percent = p;
+            }
+            last_emit = std::time::Instant::now();
+            hub.broadcast(
+                "update_status",
+                &serde_json::json!({
+                    "status": "downloading",
+                    "message": "Downloading update…",
+                    "percent": percent,
+                    "bytes_done": done,
+                    "bytes_total": total,
+                }),
+            );
+        }
+    }
+    file.flush().await?;
+    Ok(())
+}
+
+/// Stage and syntax-check a non-empty bash script without touching the live copy.
+async fn stage_patches_script(url: &str, dest: &str) -> bool {
+    if sentryusb_shell::run_with_timeout(
+        std::time::Duration::from_secs(20),
+        "curl",
+        &["-fsSL", "--max-time", "15", "-o", dest, url],
+    )
+    .await
+    .is_err()
+    {
+        let _ = std::fs::remove_file(dest);
+        return false;
+    }
+    let ok = std::fs::metadata(dest).map(|m| m.len() > 0).unwrap_or(false)
+        && sentryusb_shell::run("bash", &["-n", dest]).await.is_ok();
+    if !ok {
+        let _ = std::fs::remove_file(dest);
+    }
+    ok
+}
+
+async fn self_update(
+    hub: &sentryusb_ws::Hub,
+    target_version: Option<String>,
+) -> anyhow::Result<String> {
+    hub.broadcast(
+        "update_status",
+        &serde_json::json!({"status": "checking", "message": "Checking release…"}),
+    );
     let suffix = detect_release_suffix().await?;
     let repo = update_repo();
 
@@ -309,44 +347,29 @@ async fn self_update(target_version: Option<String>) -> anyhow::Result<String> {
         )
     })?;
 
-    // Remount root read-write. These images mount `/` read-only with the
-    // writable portion behind an overlay or a `remountfs_rw` helper, and the
-    // layout varies per install, so all three forms are attempted and any one
-    // succeeding is enough. If none does, every downstream `mv` into /root/bin
-    // fails silently and the UI reports a new version while the old binary is
-    // still on disk (the Rock Pi 4C+ "updated to v3.3.1 but still running
-    // v3.3.0" failure).
+    // Install layouts differ; try each supported root remount form.
+    hub.broadcast(
+        "update_status",
+        &serde_json::json!({"status": "remounting", "message": "Preparing filesystem…"}),
+    );
     let _ = sentryusb_shell::run("/root/bin/remountfs_rw", &[]).await;
     let _ = sentryusb_shell::run("mount", &["-o", "remount,rw", "/"]).await;
     let _ = sentryusb_shell::run("mount", &["/", "-o", "remount,rw"]).await;
 
-    // Stage the download on the SAME filesystem as the destination so the `mv`
-    // below is an atomic rename(2). Staging in /tmp (tmpfs) makes mv a
-    // cross-filesystem unlink-dest plus copy, and a power cut mid-copy, routine
-    // when the car cuts accessory power, leaves a partial or missing binary at
-    // /opt/dashusb and a service that can't start on the next boot. Staged
-    // here, a power cut only orphans the hidden .new file and the running
-    // binary is untouched until the rename. The ~15 MB binary also stays out of
-    // tmpfs RAM on a 1 GB device.
+    // Stage beside the destination for an atomic rename across power loss; /tmp
+    // is a different filesystem and limited RAM on small devices.
     sentryusb_shell::run("mkdir", &["-p", "/opt/dashusb"]).await?;
     let tmp = "/opt/dashusb/.dashusb-update.new";
-    sentryusb_shell::run_with_timeout(
-        std::time::Duration::from_secs(120),
-        "curl", &["-fsSL", &url, "-o", tmp],
-    ).await?;
+    download_with_progress(hub, &url, tmp).await?;
 
+    hub.broadcast(
+        "update_status",
+        &serde_json::json!({"status": "installing", "message": "Installing update…"}),
+    );
     sentryusb_shell::run("chmod", &["+x", tmp]).await?;
 
-    // Write to the per-variant path so the picker symlink keeps resolving to a
-    // valid binary. Layout:
-    //   /opt/dashusb/dashusb-{suffix}            <- written here
-    //   /opt/dashusb/dashusb-current -> above    <- picker symlink
-    //   /opt/dashusb/dashusb         -> -current <- back-compat symlink
-    //
-    // An existing /opt/dashusb/dashusb-current means the new layout, so use the
-    // variant path. Otherwise this is a pre-multi-binary install and the legacy
-    // /opt/dashusb/dashusb path is what the systemd unit looks for. The next
-    // install-pi.sh run migrates the layout.
+    // Update the selected variant when the picker layout exists; otherwise
+    // preserve the legacy path used by older systemd units.
     let dest = if std::path::Path::new("/opt/dashusb/dashusb-current").exists() {
         format!("/opt/dashusb/dashusb-{}", suffix)
     } else {
@@ -354,15 +377,15 @@ async fn self_update(target_version: Option<String>) -> anyhow::Result<String> {
     };
     sentryusb_shell::run("mv", &[tmp, &dest]).await?;
 
-    // Track install-step outcomes so the response says exactly what landed. A
-    // read-only /root/bin must never report success while the old binary is
-    // still on disk.
+    // Report any component that failed to land.
     let mut install_warnings: Vec<String> = Vec::new();
+    hub.broadcast(
+        "update_status",
+        &serde_json::json!({"status": "installing", "message": "Installing components…"}),
+    );
 
-    // Record the tag: the requested target if there was one, since it matches
-    // the binary just installed, else resolve /latest. Go through the shared
-    // HTTP client rather than a shell pipeline, because the repo name is
-    // config-controlled and must never be interpolated into a shell string.
+    // Use the requested tag or resolve latest through the HTTP client; the
+    // repository is configuration-controlled and must not enter shell input.
     let tag = match target_version {
         Some(v) => v,
         None => {
@@ -396,85 +419,110 @@ async fn self_update(target_version: Option<String>) -> anyhow::Result<String> {
         let _ = std::fs::write("/opt/dashusb/version", &tag);
     }
 
-    // Re-apply install-time patches that MUST survive an OTA binary swap. The
-    // standalone /usr/local/bin/dashusb-apply-runtime-patches script owns fixes
-    // the binary can't, such as the BCM4345C0 non-fatal-adv patch to
-    // /root/bin/dashusb-ble.py on Rock 4C+, without which the BLE daemon
-    // crash-loops after every update. The script is idempotent and
-    // detection-gated, so it no-ops on other boards and on already-patched
-    // files.
-    //
-    // ALWAYS refresh the script body from the repo before running it.
-    // Downloading only when absent leaves anyone with a stale on-disk copy
-    // running the old script forever, so new patches never reach them. A failed
-    // download falls back to whatever is on disk, warning only. The script
-    // lives at a stable URL (main branch, setup/pi/).
-    let patches_path = "/usr/local/bin/dashusb-apply-runtime-patches";
-    let patches_url = format!(
-        "https://raw.githubusercontent.com/{}/main/setup/pi/apply-runtime-patches.sh",
-        repo
+    // Refresh and run detection-gated hardware patches after each binary swap.
+    // Pin support files to the installed tag unless an explicit BRANCH override
+    // is configured, matching the post-reboot migration behavior.
+    let source = sentryusb_config::github_source();
+    hub.broadcast(
+        "update_status",
+        &serde_json::json!({"status": "updating_scripts", "message": "Updating scripts…"}),
     );
-    let patches_tmp = "/tmp/dashusb-apply-runtime-patches.new";
+    let patches_path = "/usr/local/bin/dashusb-apply-runtime-patches";
+    let patches_ref = if source.branch_explicit {
+        source.branch.clone()
+    } else if tag.trim().is_empty() {
+        // Never let the helper silently default an empty ref to main.
+        tracing::warn!(
+            "update.rs: empty release tag; using {} for support files",
+            source.branch
+        );
+        source.branch.clone()
+    } else {
+        tag.clone()
+    };
+    // Track the helper's actual source ref for its own payload downloads.
+    let mut effective_ref = patches_ref.clone();
+    let patches_url = format!(
+        "https://raw.githubusercontent.com/{}/{}/setup/pi/apply-runtime-patches.sh",
+        source.repo_slug, patches_ref
+    );
+    // Stage beside the destination to keep rename on one filesystem.
+    let patches_tmp = "/usr/local/bin/.dashusb-apply-runtime-patches.new";
     tracing::info!(
         "update.rs: refreshing runtime-patches script from {}",
         patches_url
     );
-    match sentryusb_shell::run_with_timeout(
-        std::time::Duration::from_secs(20),
-        "curl",
-        &[
-            "-fsSL",
-            "--max-time",
-            "15",
-            "-o",
-            patches_tmp,
-            &patches_url,
-        ],
-    )
-    .await
+    let mut staged_ok = stage_patches_script(&patches_url, patches_tmp).await;
+
+    // Bootstrap from the branch only when a tag fetch fails and no helper exists.
+    if !staged_ok
+        && patches_ref != source.branch
+        && !std::path::Path::new(patches_path).exists()
     {
-        Ok(_) => {
-            // Only swap the live script when the download produced a non-empty
-            // file, catching the rare GitHub "200 OK with empty body".
-            if std::fs::metadata(patches_tmp)
-                .map(|m| m.len() > 0)
-                .unwrap_or(false)
-            {
-                let _ = std::fs::rename(patches_tmp, patches_path);
-                let _ = sentryusb_shell::run("chmod", &["+x", patches_path]).await;
-                tracing::info!("update.rs: runtime-patches script refreshed");
-            } else {
-                let _ = std::fs::remove_file(patches_tmp);
-                if !std::path::Path::new(patches_path).exists() {
-                    install_warnings.push(
-                        "runtime-patches download empty AND no existing script: board-specific \
-                         fixes won't apply this update. Re-run install-pi.sh manually."
-                            .to_string(),
+        let fallback_url = format!(
+            "https://raw.githubusercontent.com/{}/{}/setup/pi/apply-runtime-patches.sh",
+            source.repo_slug, source.branch
+        );
+        tracing::warn!(
+            "update.rs: tag-pinned patches fetch failed and no helper on disk; bootstrapping from {}",
+            fallback_url
+        );
+        staged_ok = stage_patches_script(&fallback_url, patches_tmp).await;
+        if staged_ok {
+            // Branch helper payloads must use the same branch.
+            effective_ref = source.branch.clone();
+        }
+    }
+
+    if staged_ok {
+        // Set executable mode before replacing the working helper.
+        if sentryusb_shell::run("chmod", &["+x", patches_tmp]).await.is_err() {
+            let _ = std::fs::remove_file(patches_tmp);
+            install_warnings.push(
+                "runtime-patches helper could not be made executable; keeping the existing \
+                 script. Fixes added in this release may not apply."
+                    .to_string(),
+            );
+        } else {
+            match std::fs::rename(patches_tmp, patches_path) {
+                Ok(()) => tracing::info!("update.rs: runtime-patches script refreshed"),
+                Err(e) => {
+                    // A failed swap must remain visible to the user.
+                    let _ = std::fs::remove_file(patches_tmp);
+                    tracing::error!(
+                        "update.rs: runtime-patches swap FAILED ({e}); keeping existing script"
                     );
+                    install_warnings.push(format!(
+                        "runtime-patches script could not be replaced ({e}): this device will \
+                         re-run its EXISTING patch script, so fixes added in this release may \
+                         not apply. Re-run install-pi.sh manually."
+                    ));
                 }
             }
         }
-        Err(e) => {
-            let _ = std::fs::remove_file(patches_tmp);
-            if !std::path::Path::new(patches_path).exists() {
-                install_warnings.push(format!(
-                    "runtime-patches download FAILED ({e}) AND no existing script: board-specific \
-                     fixes (BCM4345C0 BLE on Rock 4C+, EATT disable, etc.) won't auto-reapply \
-                     after this update. Re-run install-pi.sh manually if BLE pairing breaks."
-                ));
-            } else {
-                tracing::warn!(
-                    "update.rs: runtime-patches refresh failed ({e}), falling back to existing on-disk script"
-                );
-            }
-        }
+    } else if !std::path::Path::new(patches_path).exists() {
+        install_warnings.push(
+            "runtime-patches download failed AND no existing script: board-specific fixes \
+             (BCM4345C0 BLE on Rock 4C+, EATT disable, etc.) won't auto-reapply after this \
+             update. Re-run install-pi.sh manually if BLE pairing breaks."
+                .to_string(),
+        );
+    } else {
+        tracing::warn!(
+            "update.rs: runtime-patches refresh failed, falling back to existing on-disk script"
+        );
     }
 
     if std::path::Path::new(patches_path).exists() {
         match sentryusb_shell::run_with_timeout(
             std::time::Duration::from_secs(30),
-            patches_path,
-            &[],
+            "env",
+            &[
+                &format!("DASHUSB_REPO_SLUG={}", source.repo_slug),
+                // Use the helper's actual source after any branch fallback.
+                &format!("DASHUSB_REF={}", effective_ref),
+                patches_path,
+            ],
         )
         .await
         {
@@ -487,15 +535,25 @@ async fn self_update(target_version: Option<String>) -> anyhow::Result<String> {
         }
     }
 
+    // Refresh from the newly installed binary after remote hardware patches,
+    // so its archive service and helpers always come from the same release.
+    // Older versions used for a downgrade may not provide this subcommand.
+    let supports_runtime_refresh = sentryusb_shell::run_with_timeout(
+        std::time::Duration::from_secs(10), &dest, &["--help"],
+    ).await.is_ok_and(|help| help.contains("refresh-archive-runtime"));
+    if supports_runtime_refresh {
+        sentryusb_shell::run_with_timeout(
+            std::time::Duration::from_secs(30), &dest, &["refresh-archive-runtime"],
+        ).await.map_err(|error| anyhow::anyhow!("Archive runtime refresh failed; update reboot stopped: {error}"))?;
+    }
+
     if install_warnings.is_empty() {
         Ok(format!(
             "Updated to {}.",
             if tag.is_empty() { "latest".to_string() } else { tag }
         ))
     } else {
-        // Full detail goes to the journal for ops; the UI gets a condensed
-        // version, capped at 4 kB so a flood of warnings can't blow up the
-        // WebSocket message.
+        // Keep full journal detail and cap the WebSocket summary at 4 KiB.
         for w in &install_warnings {
             tracing::warn!("update.rs: {}", w);
         }
@@ -517,6 +575,16 @@ async fn self_update(target_version: Option<String>) -> anyhow::Result<String> {
     }
 }
 
+/// Kernel boot identifier — changes on every boot. Read per request (cheap)
+/// so it can never go stale. None on non-Linux hosts; the UI treats a null
+/// boot_id as "reboot unverified", never as proof of one.
+fn read_boot_id() -> Option<String> {
+    std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 pub async fn get_version(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
     let version = env!("CARGO_PKG_VERSION");
     let sbc_model = get_sbc_model();
@@ -530,6 +598,10 @@ pub async fn get_version(State(_s): State<AppState>) -> (StatusCode, Json<serde_
         "version": installed.trim(),
         "binary_version": version,
         "sbc_model": sbc_model,
+        // The version tag alone can't prove a reboot: the old daemon
+        // rewrites /opt/dashusb/version BEFORE `reboot` fires and keeps
+        // serving it. The updater UI compares boot_id instead.
+        "boot_id": read_boot_id(),
     })))
 }
 
@@ -592,12 +664,9 @@ fn read_current_version() -> String {
 /// surface: a silent failure reports `available: false` and tells the user they
 /// are up to date when they are not.
 ///
-/// The response carries both the simple fields (`available`, `latest`,
-/// `current`) that older clients read AND the richer ones the current web UI
-/// reads (`update_available`, `latest_version`, `release_url`,
-/// `release_notes`). Settings.tsx only looks at `update_available` and
-/// `latest_version`; without them the UI defaults to "up to date" no matter
-/// what the backend found.
+/// The response retains the simple legacy fields and the richer fields used by
+/// `UpdateSection.tsx`. Omitting `update_available` or `latest_version` makes
+/// the current UI report "up to date" regardless of the backend result.
 pub async fn check_for_update(
     State(_s): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
@@ -788,21 +857,11 @@ fn find_latest_releases(releases: &[ReleaseInfo]) -> (Option<&ReleaseInfo>, Opti
     (stable, prerelease)
 }
 
-/// Once this exists the install beacon has fired and never fires again. It
-/// lives under `/mutable/` so it survives updates but resets on a full SD-card
-/// reflash, which is indistinguishable from a fresh install anyway.
+/// Persistent marker for the once-per-install beacon.
 const INSTALL_BEACON_MARKER: &str = "/mutable/.beaconed";
 
-/// POST update-check telemetry to the support server. The payload always
-/// carries `{current_version, update_available, new_version, arch, model}`.
-///
-/// A device fingerprint is included ONLY when the user has explicitly opted in
-/// via the `analytics_opt_in` preference, set by the setup wizard or Settings.
-/// That is the GDPR Art. 6(1)(a) consent gate: without an opt-in the backend
-/// treats the call as an opted-out heartbeat, with no DB row and IP rate
-/// limiting.
-///
-/// Best-effort: errors are logged, never surfaced to the caller.
+/// Send best-effort update-check telemetry. A device fingerprint is included
+/// only when `analytics_opt_in` is true; the default payload has no identifier.
 pub async fn send_telemetry(current: &str, update_available: bool, new_version: &str) {
     let opt_in = crate::preferences::load_prefs()
         .get("analytics_opt_in")
@@ -848,21 +907,13 @@ pub async fn send_telemetry(current: &str, update_available: bool, new_version: 
     }
 }
 
-/// Fire the anonymous install beacon exactly once per install. It POSTs an
-/// EMPTY body to `/dashusb/install-beacon`: no fingerprint, no identifier. The
-/// backend only increments a daily counter, which measures gross install volume
-/// independent of the opt-in cohort and carries no personal data.
-///
-/// `/mutable/.beaconed` guards it: once that file exists the beacon never fires
-/// again for this install, until /mutable is wiped by a full reflash.
+/// Send an empty, identifier-free install beacon once per persistent install.
 pub fn spawn_install_beacon() {
     tokio::spawn(async move {
         if std::path::Path::new(INSTALL_BEACON_MARKER).exists() {
             return;
         }
-        // Retry transient errors so a cold DNS cache at first boot doesn't
-        // drop the beacon. Three attempts, then give up and stay un-beaconed
-        // until the next boot tries again.
+        // Leave the marker absent after transient failures so the next boot retries.
         let url = "https://api.sentry-six.com/dashusb/install-beacon";
         let client = match reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))

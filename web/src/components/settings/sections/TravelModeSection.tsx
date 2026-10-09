@@ -3,15 +3,8 @@ import { Route } from "lucide-react"
 import { PrefCard } from "@/components/settings/PrefCard"
 import { Toggle } from "@/components/ui/Toggle"
 
-// Writes TRAVEL_MODE_ENABLED into dashusb.conf. archiveloop re-reads the key
-// on every cycle, so the change applies without a restart.
-//
-// Off: archive when the network appears, then wait for it to disappear. That
-// matches a Pi that only reaches its archive when parked at home.
-// On: archive on a timer instead, and never disconnect the drive from the car.
-// Required for an always-on link (vehicle hotspot, tethered phone, VPN), where
-// the network never disappears and the normal flow would stop snapshotting
-// after its first cycle.
+// archiveloop reads this every cycle. Travel Mode uses paced cycles for
+// always-on networks instead of waiting for connectivity to disappear.
 export function TravelModeSection() {
   const [enabled, setEnabled] = useState(false)
   const [loaded, setLoaded] = useState(false)
@@ -28,17 +21,13 @@ export function TravelModeSection() {
       .finally(() => setLoaded(true))
   }, [])
 
-  // Optimistic: flip immediately, revert if the save fails, so the switch
-  // never shows a value that didn't persist.
+  // Update optimistically and revert failed saves.
   async function save(next: boolean) {
     const prev = enabled
     setEnabled(next)
     try {
       const res = await fetch("/api/setup/config")
-      // MUST abort if the read fails. The PUT is a full-config replace and the
-      // writer comments out every active key missing from the payload, so
-      // sending a one-key map built from `{}` would disable archive
-      // credentials and everything else.
+      // Never replace the full config from an empty failed-read baseline.
       if (!res.ok) throw new Error("could not read current config")
       const cfg = await res.json()
       if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) {

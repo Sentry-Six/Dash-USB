@@ -14,6 +14,7 @@ pub struct AppState {
 
 pub fn build_router(state: AppState) -> Router {
     let api = Router::new()
+        .route("/api/health", get(crate::status::liveness))
         .route("/api/status", get(crate::status::get_status))
         .route("/api/profile", get(crate::profile::get_profile))
         .route("/api/status/storage", get(crate::status::get_storage_breakdown))
@@ -32,6 +33,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/snapshots/{id}", delete(crate::snapshots::delete_snapshot))
         .route("/api/backingfiles/free-space", get(crate::snapshots::get_free_space))
         .route("/api/archive/status", get(crate::archive_state::get_archive_status))
+        .route("/api/archive/cancel", post(crate::archive_state::cancel_archive))
+        .route("/api/system/wifi-firmware", get(crate::wifi_firmware::get_status))
+        .route("/api/system/wifi-firmware/install", post(crate::wifi_firmware::install))
+        .route("/api/system/wifi-firmware/rollback", post(crate::wifi_firmware::rollback))
         .route("/api/clips", get(crate::clips::get_clips))
         .route("/api/files/ls", get(crate::files::list_files))
         .route("/api/files/mkdir", post(crate::files::create_dir))
@@ -43,8 +48,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/files/download", get(crate::files::download_file))
         .route("/api/files/download-zip", get(crate::files::download_zip))
         .route("/api/files/download-zip-multi", post(crate::files::download_zip_multi))
+        .route("/api/logs/{name}/page", get(crate::logs::get_log_page))
+        .route("/api/logs/{name}/tail", get(crate::logs::get_log_delta))
         .route("/api/logs/{name}", get(crate::logs::get_log))
         .route("/api/diagnostics/refresh", post(crate::healthcheck::refresh_diagnostics))
+        .route("/api/diagnostics/download", post(crate::healthcheck::download_diagnostics))
         .route("/api/diagnostics", get(crate::healthcheck::get_diagnostics))
         .route("/api/system/health-check", get(crate::healthcheck::health_check))
         .route("/api/system/reboot", post(crate::system::reboot))
@@ -53,8 +61,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/system/gadget-enable", post(crate::system::gadget_enable))
         .route("/api/system/gadget-disable", post(crate::system::gadget_disable))
         .route("/api/system/trigger-sync", post(crate::system::trigger_sync))
-        // Phone-app (Dash Connect) GATT pairing reset, unrelated to any vehicle
-        // BLE. Clears app bonds and PIN, then restarts the peripheral.
+        // Reset only phone-app GATT pairing state.
         .route("/api/system/ble-reset-pair", post(crate::system::ble_reset_pair))
         .route("/api/system/speedtest", get(crate::system::speedtest))
         .route("/api/system/rtc-status", get(crate::system::get_rtc_status))
@@ -67,16 +74,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/system/check-update", post(crate::update::check_for_update))
         .route("/api/system/update-status", get(crate::update::get_update_status))
         .route("/api/system/block-devices", get(crate::devices::list_block_devices))
-        // Guided XFS backingfiles recovery (see storage_repair.rs)
+        // Guided XFS backingfiles recovery.
         .route("/api/storage/health", get(crate::storage_repair::storage_health))
         .route("/api/storage/repair", post(crate::storage_repair::storage_repair))
         .route("/api/config/preference", get(crate::preferences::get_preference).put(crate::preferences::set_preference))
-        .route("/api/notifications/generate-code", post(crate::notifications::generate_pairing_code))
-        .route("/api/notifications/paired-devices", get(crate::notifications::list_paired_devices))
-        .route("/api/notifications/paired-devices/{id}", delete(crate::notifications::remove_paired_device))
-        .route("/api/notifications/test", post(crate::notifications::send_test_notification))
         .route("/api/notifications/send", post(crate::notifications::send_notification))
         .route("/api/notifications/settings", get(crate::notification_center::get_settings).put(crate::notification_center::update_settings))
+        .route("/api/notifications/providers", get(crate::notification_providers::get_provider_config).put(crate::notification_providers::save_provider_config))
         .route("/api/notifications/history", get(crate::notification_center::get_history).post(crate::notification_center::append_history).delete(crate::notification_center::clear_history))
         .route("/api/notifications/history/{id}", delete(crate::notification_center::delete_history_item))
         .route("/api/notifications/settings/check", get(crate::notification_center::check_notification_type))
@@ -145,10 +149,7 @@ async fn handle_ws(socket: axum::extract::ws::WebSocket, hub: sentryusb_ws::Hub)
         }
     });
 
-    // Reader: any message (including pong) resets the 60s read deadline, so
-    // two missed pings tear the socket down. A browser-paused tab therefore
-    // stops holding a server-side task within a minute, rather than for however
-    // long the TCP send buffer takes to fill.
+    // Any message resets the deadline; two missed pings release abandoned tasks.
     let mut recv_task = tokio::spawn(async move {
         loop {
             match tokio::time::timeout(Duration::from_secs(60), receiver.next()).await {

@@ -1,6 +1,3 @@
-# Broadcom Pi-family chips: the UART BT controller attaches a few seconds into
-# boot, AFTER systemd checks bluetooth.service's ConditionPathIsDirectory, so
-# the BLE stack is skipped on a cold boot. Start it the moment hci0 appears
-# (condition now passes; the daemon's Wants= pulls bluetooth.service + the
-# advertising helper).
+# Start BLE when late-attaching Broadcom hci0 appears after systemd's initial
+# bluetooth.service condition check.
 ACTION=="add", SUBSYSTEM=="bluetooth", KERNEL=="hci0", TAG+="systemd", ENV{SYSTEMD_WANTS}+="dashusb-ble.service"

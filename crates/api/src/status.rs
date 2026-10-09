@@ -10,73 +10,129 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::router::AppState;
+mod supply_voltage;
 
-// Status cache
-//
-// The dashboard polls /api/status every 2 s per open tab. Uncached, each call
-// forks 5-6 subprocesses (iwgetid, iwconfig, ip×2, ethtool, stat) for the
-// WiFi/Ethernet/disk info: measurable CPU and fork+exec page faults on a Pi
-// Zero 2 W, for data that barely changes.
-//
-// Only the slow parts are cached, with TTLs matching how often each value
-// realistically changes:
-//   * Network info (SSID, IP, signal, ethtool):  10 s
-//   * Disk space (total/free via statvfs):        5 s
-//
-// CPU temp, fan speed, uptime and gadget state stay live; they are cheap /sys
-// reads.
+/// A cheap liveness check, independent of disk, network, and hardware sampling.
+pub async fn liveness() -> impl axum::response::IntoResponse {
+    ([(axum::http::header::CACHE_CONTROL, "no-store")],
+        Json(serde_json::json!({"ok": true})))
+}
+
+#[derive(Clone, Serialize)]
+pub struct ManagedStorageHealth {
+    pub state: &'static str,
+    pub message: String,
+    pub reserve_bytes: u64,
+    pub free_bytes: u64,
+    pub total_bytes: u64,
+    pub cleanup_state: String,
+    pub cleanup_sampled_at: Option<u64>,
+}
+
+impl ManagedStorageHealth {
+    fn unknown() -> Self {
+        Self { state: "unknown", message: "Storage status unavailable".into(), reserve_bytes: 0,
+            free_bytes: 0, total_bytes: 0, cleanup_state: "unknown".into(), cleanup_sampled_at: None }
+    }
+}
+
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
+}
+
+pub(crate) fn mount_writable(mounts: &str, path: &str) -> Option<bool> {
+    mounts.lines().find_map(|line| {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        (fields.get(1).copied() == Some(path)).then(|| fields.get(3)
+            .is_some_and(|opts| opts.split(',').any(|o| o == "rw")))
+    })
+}
+
+fn storage_verdict(mounted: Option<bool>, total: u64, free: u64, cleanup: &str, inode_stalled: bool) -> (&'static str, &'static str) {
+    if mounted.is_none() { return ("fail", "Recording storage is not mounted"); }
+    if mounted == Some(false) { return ("fail", "Recording storage is read-only"); }
+    if total == 0 { return ("unknown", "Storage capacity unavailable"); }
+    if free == 0 { return ("fail", "Recording storage is full"); }
+    if inode_stalled { return ("fail", "Clip index cleanup needs attention"); }
+    let reserve = (10 * 1024 * 1024 * 1024u64).saturating_add(total / 33);
+    if free < reserve {
+        return match cleanup {
+            "failed" => ("warn", "Automatic cleanup could not restore recording headroom"),
+            "unknown" => ("warn", "Recording headroom is low; cleanup status unavailable"),
+            _ => ("recovering", "Automatic cleanup is restoring recording headroom"),
+        };
+    }
+    ("healthy", "Storage managed automatically")
+}
+
+pub fn managed_storage_health() -> ManagedStorageHealth {
+    static CACHE: OnceLock<Mutex<Option<(ManagedStorageHealth, Instant)>>> = OnceLock::new();
+    let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
+    if let Some((health, at)) = &*cache {
+        if at.elapsed() < Duration::from_secs(5) { return health.clone(); }
+    }
+    let health = read_managed_storage_health();
+    *cache = Some((health.clone(), Instant::now()));
+    health
+}
+
+fn read_managed_storage_health() -> ManagedStorageHealth {
+    let mut health = ManagedStorageHealth::unknown();
+    let Ok(mounts) = std::fs::read_to_string("/proc/mounts") else { return health; };
+    let mounted = mount_writable(&mounts, "/backingfiles");
+    // Never mistake the root filesystem beneath a missing mount for recording storage.
+    let (total, free) = if mounted.is_some() { statvfs_backing_files().unwrap_or_default() } else { (0, 0) };
+    if let Some(value) = std::fs::read_to_string("/run/dashusb_storage_cleanup.json").ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok()) {
+        health.cleanup_sampled_at = value["sampled_at"].as_u64();
+        if health.cleanup_sampled_at.is_some_and(|at| unix_seconds().saturating_sub(at) < 120) {
+            health.cleanup_state = value["state"].as_str().unwrap_or("unknown").to_string();
+        }
+    }
+    let (state, message) = storage_verdict(mounted, total, free, &health.cleanup_state,
+        std::path::Path::new("/run/dashusb_inode_stall").exists());
+    health.state = state;
+    health.message = message.into();
+    health.total_bytes = total;
+    health.free_bytes = free;
+    health.reserve_bytes = (10 * 1024 * 1024 * 1024u64).saturating_add(total / 33);
+    health
+}
+
+
+
+// Cache shell-heavy network data for 10 s and disk data for 5 s; cheap sysfs
+// status remains live for the dashboard's 2 s polling interval.
 
 #[derive(Clone, Default)]
 struct CachedNetwork {
     wifi_ssid: String,
-    /// Channel frequency in Hz as a string ("5180000000" = 5.18 GHz), empty
-    /// when not connected or `iw` isn't installed. The iOS client formats it
-    /// via `formatFreqGHz`; the web UI ignores it. Cached with the rest of the
-    /// wifi info because it only changes on reconnect or roam.
+    /// Channel frequency in Hz, empty when unavailable.
     wifi_freq: String,
     wifi_ip: String,
     ether_ip: String,
     ether_speed: String,
-    /// Cached to avoid re-scanning /sys/class/net every poll. Signal strength
-    /// and throughput are deliberately NOT cached: `get_status` reads
-    /// `wifi_strength`/`wifi_signal_dbm` live from /proc/net/wireless (one
-    /// file read, no shell-out) and derives the bps values from the
-    /// net_sampler. Everything else here changes only on reconnect or cable
-    /// swap.
+    /// Interface metadata cached across polls; signal and throughput stay live.
     wifi_dev: String,
     eth_dev: String,
 }
 
-/// Live signal read from /proc/net/wireless, with no fork+exec.
-///
-/// Returns `(strength_as_X/70, signal_dbm)`. The `/70` denominator
-/// matches what mainline mac80211 drivers (Broadcom Cypress on Pi 4/5
-/// and Pi Zero 2 W, Realtek on most third-party chipsets) report as
-/// the max link quality; other drivers may scale slightly differently,
-/// in which case the WifiBars indicator is approximate but the dBm
-/// value the UI also shows is always exact.
-///
-/// /proc/net/wireless format:
-/// ```text
-/// Inter-| sta-|   Quality        |   Discarded packets               | Missed | WE
-///  face | tus | link level noise |  nwid  crypt   frag  retry   misc | beacon | 22
-///  wlan0: 0000   58.  -52.  -256        0      0      0      0    137        0
-/// ```
+/// Return live `(quality/70, dBm)` from /proc/net/wireless. Quality scaling is
+/// approximate across drivers; dBm is exact.
 fn read_wireless_quality(dev: &str) -> Option<(String, Option<i32>)> {
     let data = std::fs::read_to_string("/proc/net/wireless").ok()?;
     for line in data.lines().skip(2) {
         let line = line.trim_start();
-        // The kernel emits "wlan0:" with no space before the colon.
+        // Interface tokens end with a colon.
         let prefix = format!("{}:", dev);
         if !line.starts_with(&prefix) {
             continue;
         }
         let cols: Vec<&str> = line[prefix.len()..].split_whitespace().collect();
-        // [status, link, level, noise, ...]
         if cols.len() < 3 {
             return None;
         }
-        // Values end with a `.` (e.g. "58." for fixed-point); strip it.
+        // Kernel fixed-point values carry a trailing period.
         let link = cols[1].trim_end_matches('.').parse::<u32>().ok()?;
         let level = cols[2].trim_end_matches('.').parse::<i32>().ok();
         return Some((format!("{}/70", link), level));
@@ -112,8 +168,8 @@ const STORAGE_TTL: Duration = Duration::from_secs(5);
 /// to match the `stat --file-system` target it replaced.
 fn statvfs_backing_files() -> Option<(u64, u64)> {
     let path = std::ffi::CString::new("/backingfiles/.").ok()?;
-    // SAFETY: zero-init is the documented init pattern for libc structs;
-    // we check the return code before reading fields.
+    // SAFETY: zero-init is the documented pattern; fields are read only after
+    // checking the return code.
     let mut buf: libc::statvfs = unsafe { std::mem::zeroed() };
     let r = unsafe { libc::statvfs(path.as_ptr(), &mut buf) };
     if r != 0 {
@@ -175,10 +231,7 @@ struct PiStatus {
     /// -1 when unknown. Same signal the telemetry heartbeat uses.
     cam_last_write_secs: i64,
     wifi_ssid: String,
-    /// Frequency in Hz as a string (e.g. "5180000000" for 5.18 GHz).
-    /// Empty when not on WiFi or `iw` isn't installed. iOS renders this
-    /// as "5.2 GHz" in the dashboard Wi-Fi sub-line via `formatFreqGHz`;
-    /// the web UI doesn't currently use it.
+    /// Frequency in Hz, empty when unavailable.
     wifi_freq: String,
     wifi_strength: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -188,22 +241,67 @@ struct PiStatus {
     ether_speed: String,
     sbc_model: String,
     fan_speed: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    supply_voltage: Option<f64>,
+    storage_health: ManagedStorageHealth,
     wifi_rx_bps: u64,
     wifi_tx_bps: u64,
     ether_rx_bps: u64,
     ether_tx_bps: u64,
-    /// Stable per-device suffix derived from the system hostname (the
-    /// part after the final `-`, e.g. "dashusb-A3F1" → "A3F1"). iOS
-    /// uses this for the dashboard hero-bar identifier so devices paired
-    /// over WiFi (no BLE metadata path) still show "Dash USB-A3F1"
-    /// instead of bare "Dash USB". Empty if `/etc/hostname` is
-    /// unreadable or has no dash.
+    /// Hostname suffix used to identify WiFi-paired devices.
     device_suffix: String,
 }
 
 pub async fn get_status(
     State(state): State<AppState>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    // Snapshot metadata can block behind archive I/O; keep it off async workers.
+    let mut s = match tokio::task::spawn_blocking(status_fs_snapshot).await {
+        Ok(s) => s,
+        Err(e) => {
+            return crate::json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("status task: {}", e),
+            );
+        }
+    };
+
+    s.supply_voltage = supply_voltage::get();
+    s.storage_health = tokio::task::spawn_blocking(managed_storage_health).await.unwrap_or_else(|_| ManagedStorageHealth::unknown());
+    let storage = cached_storage().await;
+    if storage.total_space > 0 {
+        s.total_space = storage.total_space.to_string();
+        s.free_space = storage.free_space.to_string();
+    }
+
+    // Cache stable interface metadata but keep signal and throughput live.
+    let net = cached_network().await;
+    s.wifi_ssid = net.wifi_ssid;
+    s.wifi_freq = net.wifi_freq;
+    s.wifi_ip = net.wifi_ip;
+    s.ether_ip = net.ether_ip;
+    s.ether_speed = net.ether_speed;
+    if !net.wifi_dev.is_empty() {
+        if let Some((strength, dbm)) = read_wireless_quality(&net.wifi_dev) {
+            s.wifi_strength = strength;
+            s.wifi_signal_dbm = dbm;
+        }
+        let (rx, tx) = compute_throughput(&state.net_sampler, &net.wifi_dev);
+        s.wifi_rx_bps = rx;
+        s.wifi_tx_bps = tx;
+    }
+    if !net.eth_dev.is_empty() {
+        let (rx, tx) = compute_throughput(&state.net_sampler, &net.eth_dev);
+        s.ether_rx_bps = rx;
+        s.ether_tx_bps = tx;
+    }
+
+    (StatusCode::OK, Json(serde_json::to_value(s).unwrap_or_default()))
+}
+
+/// The synchronous, filesystem-touching half of [`get_status`]. Split out so
+/// it can run on the blocking pool.
+fn status_fs_snapshot() -> PiStatus {
     let mut s = PiStatus {
         cpu_temp: String::new(),
         num_snapshots: "0".into(),
@@ -224,6 +322,8 @@ pub async fn get_status(
         ether_speed: String::new(),
         sbc_model: String::new(),
         fan_speed: String::new(),
+        supply_voltage: None,
+        storage_health: ManagedStorageHealth::unknown(),
         wifi_rx_bps: 0,
         wifi_tx_bps: 0,
         ether_rx_bps: 0,
@@ -255,57 +355,16 @@ pub async fn get_status(
     s.udc_state = read_udc_state();
     s.cam_last_write_secs = cam_last_write_secs();
 
-    let snapshots = find_snapshots();
-    s.num_snapshots = snapshots.len().to_string();
-    if !snapshots.is_empty() {
-        if let Ok(meta) = std::fs::metadata(&snapshots[0]) {
-            if let Ok(t) = meta.modified() {
-                if let Ok(d) = t.duration_since(std::time::UNIX_EPOCH) {
-                    s.snapshot_oldest = d.as_secs().to_string();
-                }
-            }
-        }
-        if let Ok(meta) = std::fs::metadata(snapshots.last().unwrap()) {
-            if let Ok(t) = meta.modified() {
-                if let Ok(d) = t.duration_since(std::time::UNIX_EPOCH) {
-                    s.snapshot_newest = d.as_secs().to_string();
-                }
-            }
-        }
+    let snapshots = scan_snapshots();
+    s.num_snapshots = snapshots.count.to_string();
+    if let Some(oldest) = snapshots.oldest {
+        s.snapshot_oldest = oldest.to_string();
+    }
+    if let Some(newest) = snapshots.newest {
+        s.snapshot_newest = newest.to_string();
     }
 
-    let storage = cached_storage().await;
-    if storage.total_space > 0 {
-        s.total_space = storage.total_space.to_string();
-        s.free_space = storage.free_space.to_string();
-    }
-
-    // IPs, SSID and ether_speed come from the NETWORK_TTL cache. Signal
-    // strength, dBm (from /proc/net/wireless) and throughput (from the
-    // net_sampler loop) are read live every poll: a 10 s lag on a
-    // signal-strength indicator reads as broken.
-    let net = cached_network().await;
-    s.wifi_ssid = net.wifi_ssid;
-    s.wifi_freq = net.wifi_freq;
-    s.wifi_ip = net.wifi_ip;
-    s.ether_ip = net.ether_ip;
-    s.ether_speed = net.ether_speed;
-    if !net.wifi_dev.is_empty() {
-        if let Some((strength, dbm)) = read_wireless_quality(&net.wifi_dev) {
-            s.wifi_strength = strength;
-            s.wifi_signal_dbm = dbm;
-        }
-        let (rx, tx) = compute_throughput(&state.net_sampler, &net.wifi_dev);
-        s.wifi_rx_bps = rx;
-        s.wifi_tx_bps = tx;
-    }
-    if !net.eth_dev.is_empty() {
-        let (rx, tx) = compute_throughput(&state.net_sampler, &net.eth_dev);
-        s.ether_rx_bps = rx;
-        s.ether_tx_bps = tx;
-    }
-
-    (StatusCode::OK, Json(serde_json::to_value(s).unwrap_or_default()))
+    s
 }
 
 /// Refresh-on-stale wrapper around the heavy WiFi + Ethernet shell-outs,
@@ -330,10 +389,7 @@ async fn cached_network() -> CachedNetwork {
 async fn compute_network_info() -> CachedNetwork {
     let mut info = CachedNetwork::default();
 
-    // Skip the shell queries when the interface is down: they cost 5-10 s on
-    // ethernet-only systems where wlan0 exists but is unconfigured. Only the
-    // SSID, IP and frequency are needed here; signal strength and dBm are read
-    // live from /proc/net/wireless on every status poll.
+    // Avoid slow shell queries for present-but-down interfaces.
     let wifi_dev = find_net_device("wl*");
     if !wifi_dev.is_empty() && iface_is_up(&wifi_dev) {
         info.wifi_dev = wifi_dev.clone();
@@ -362,9 +418,7 @@ async fn compute_network_info() -> CachedNetwork {
         if let Ok(out) = iw_r {
             for line in out.lines() {
                 let trimmed = line.trim();
-                // Format: `freq: 5180` (MHz). Convert to Hz string so iOS
-                // `Formatters.formatFreqGHz` can divide by 1e9 and render
-                // "5.2 GHz" without further parsing.
+                // Convert `freq: 5180` MHz to the API's Hz string.
                 if let Some(rest) = trimmed.strip_prefix("freq:") {
                     if let Ok(mhz) = rest.trim().parse::<u64>() {
                         info.wifi_freq = (mhz * 1_000_000).to_string();
@@ -470,26 +524,28 @@ pub async fn get_wifi_config(
     let mut connected = false;
     let mut source = String::new();
 
-    // 1. Try nmcli
-    if let Ok(out) = sentryusb_shell::run("nmcli", &["-t", "-f", "active,ssid", "dev", "wifi"]).await {
-        for line in out.lines() {
-            if line.starts_with("yes:") {
-                ssid = line.strip_prefix("yes:").unwrap_or("").to_string();
-                connected = true;
-                source = "networkmanager".into();
-                break;
-            }
+    // Query the current association before falling back to an NM scan.
+    if let Ok(out) = sentryusb_shell::run("iwgetid", &["-r"]).await {
+        let s = out.trim();
+        if !s.is_empty() {
+            ssid = s.to_string();
+            connected = true;
+            source = "iwgetid".into();
         }
     }
 
-    // 2. Fallback: iwgetid
+    // 2. Fallback: nmcli (scanning)
     if ssid.is_empty() {
-        if let Ok(out) = sentryusb_shell::run("iwgetid", &["-r"]).await {
-            let s = out.trim();
-            if !s.is_empty() {
-                ssid = s.to_string();
-                connected = true;
-                source = "iwgetid".into();
+        if let Ok(out) =
+            sentryusb_shell::run("nmcli", &["-t", "-f", "active,ssid", "dev", "wifi"]).await
+        {
+            for line in out.lines() {
+                if line.starts_with("yes:") {
+                    ssid = line.strip_prefix("yes:").unwrap_or("").to_string();
+                    connected = true;
+                    source = "networkmanager".into();
+                    break;
+                }
             }
         }
     }
@@ -563,40 +619,43 @@ pub async fn get_wifi_config(
 
 /// List snapshot backing files at the top of `/backingfiles/snapshots/`.
 ///
-/// Scan exactly one directory level: no recursion, no symlink follow.
-/// Snapshots always keep `snap.bin` at the top level
-/// (`/backingfiles/snapshots/snap-NNNNNN/snap.bin`), and a recursive walk
-/// descends through every snapshot's `mnt -> /tmp/snapshots/snap-NNN` symlink,
-/// which is an autofs mount (timeout=300s) that re-mounts the per-snapshot
-/// vfat loop device on first access. Each /api/status call after the autofs
-/// timeout then triggered up to 130 vfat mounts *and* walked the entire dashcam
-/// tree inside each one: 15,000+ openat syscalls per request, 5-15s TTFB.
-fn find_snapshots() -> Vec<String> {
-    let mut snaps = Vec::new();
+/// How many snapshots exist, and the oldest/newest `snap.bin` mtime.
+struct SnapshotScan {
+    count: usize,
+    oldest: Option<u64>,
+    newest: Option<u64>,
+}
+
+/// Scan only top-level snap.bin files without following autofs symlinks. Fold
+/// mtime extremes because slot numbers are not time-monotonic after reflashes.
+fn scan_snapshots() -> SnapshotScan {
+    let mut scan = SnapshotScan { count: 0, oldest: None, newest: None };
     let base = std::path::Path::new("/backingfiles/snapshots/");
     let Ok(entries) = std::fs::read_dir(base) else {
-        return snaps;
+        return scan;
     };
     for entry in entries.flatten() {
-        // Only consider entries that are themselves directories on the
-        // host filesystem. `file_type()` uses the dirent's d_type and
-        // does NOT follow symlinks, so the `mnt` autofs symlink inside
-        // each snapshot is never resolved here.
+        // file_type avoids following any symlink into autofs.
         let Ok(ft) = entry.file_type() else { continue };
         if !ft.is_dir() {
             continue;
         }
         let snap_bin = entry.path().join("snap.bin");
-        // Use symlink_metadata to avoid traversing into anything weird;
-        // snap.bin is always a regular file on the parent XFS.
-        if std::fs::symlink_metadata(&snap_bin).is_ok() {
-            if let Some(s) = snap_bin.to_str() {
-                snaps.push(s.to_string());
-            }
-        }
+        // Read snap.bin metadata without following links.
+        let Ok(meta) = std::fs::symlink_metadata(&snap_bin) else {
+            continue;
+        };
+        scan.count += 1;
+        // Unreadable mtimes still contribute to the count.
+        let Ok(mtime) = meta.modified() else { continue };
+        let Ok(d) = mtime.duration_since(std::time::UNIX_EPOCH) else {
+            continue;
+        };
+        let secs = d.as_secs();
+        scan.oldest = Some(scan.oldest.map_or(secs, |o: u64| o.min(secs)));
+        scan.newest = Some(scan.newest.map_or(secs, |n: u64| n.max(secs)));
     }
-    snaps.sort();
-    snaps
+    scan
 }
 
 /// Raspberry Pi cooling-fan RPM from its hwmon device; empty when absent.
@@ -614,10 +673,7 @@ fn read_fan_speed() -> String {
     String::new()
 }
 
-/// Host-link state of the first UDC ("configured", "suspended",
-/// "not attached", ...). Empty when there is no UDC (non-gadget dev box).
-/// Shared with the health check so the pill and the health warning can
-/// never disagree about what the link state means.
+/// First UDC state, shared with health checks; empty when no UDC exists.
 pub(crate) fn read_udc_state() -> String {
     let Ok(entries) = std::fs::read_dir("/sys/class/udc") else {
         return String::new();
@@ -642,13 +698,8 @@ fn cam_last_write_secs() -> i64 {
         .unwrap_or(-1)
 }
 
-/// Last segment after the final `-` of the system hostname: "dashusb-A3F1" →
-/// "A3F1". iOS renders this as the device-specific dashboard identifier even
-/// when paired over WiFi; the BLE path has its own device-info channel, but
-/// WiFi-only pairing can only learn the suffix from /status. Empty when the
-/// hostname has no dash or `/etc/hostname` can't be read. The 8-char cap
-/// guards against hostnames whose post-dash segment is a fully-qualified
-/// domain piece rather than a stable identifier.
+/// Return the final hostname segment for WiFi-only device identification,
+/// capped at eight characters; empty when unavailable.
 fn read_device_suffix() -> String {
     let hostname = std::fs::read_to_string("/etc/hostname")
         .ok()
@@ -703,14 +754,7 @@ fn find_net_device(pattern: &str) -> String {
     String::new()
 }
 
-/// True when the kernel reports the interface in `operstate == "up"`.
-///
-/// Gates the shell queries above: `iwgetid`/`iwconfig`/`ip` can each block for
-/// several seconds on a present-but-DOWN interface (`wlan0` exists but no
-/// NetworkManager, or Skip-WiFi configured), adding up to 5-15s to
-/// `GET /api/status`. Companion apps probing this endpoint with a short HTTP
-/// timeout then fall back to BLE-only mode even though the Pi is reachable
-/// over ethernet.
+/// Gate slow network queries on kernel `operstate == "up"`.
 fn iface_is_up(dev: &str) -> bool {
     let path = format!("/sys/class/net/{}/operstate", dev);
     std::fs::read_to_string(&path)
@@ -719,9 +763,7 @@ fn iface_is_up(dev: &str) -> bool {
 }
 
 async fn disk_usage(path: &str) -> i64 {
-    // st_blocks * 512 is the true disk usage, correct for sparse files and
-    // reflink copies. Async so the tokio worker isn't blocked: the companion
-    // app polls this roughly every 15 s per device.
+    // st_blocks reflects sparse/reflink usage; run the filesystem call off-thread.
     if let Ok(out) = tokio::process::Command::new("stat")
         .args(["--format=%b", path])
         .output()
@@ -748,4 +790,49 @@ pub fn get_sbc_model() -> String {
         }
     }
     "unknown".to_string()
+}
+
+#[cfg(test)]
+mod storage_verdict_regressions {
+    use super::{mount_writable, storage_verdict};
+
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    #[test]
+    fn high_snapshot_usage_with_recording_reserve_is_healthy() {
+        // 95% used previously appeared red, although the managed reserve fits.
+        let (state, message) = storage_verdict(Some(true), 1000 * GIB, 50 * GIB, "healthy", false);
+        assert_eq!(state, "healthy");
+        assert_eq!(message, "Storage managed automatically");
+    }
+
+    #[test]
+    fn missing_readonly_full_and_stalled_storage_are_explicit_failures() {
+        for (mounted, free, stalled, expected_message) in [
+            (None, 50 * GIB, false, "Recording storage is not mounted"),
+            (Some(false), 50 * GIB, false, "Recording storage is read-only"),
+            (Some(true), 0, false, "Recording storage is full"),
+            (Some(true), 50 * GIB, true, "Clip index cleanup needs attention"),
+        ] {
+            assert_eq!(storage_verdict(mounted, 1000 * GIB, free, "healthy", stalled), ("fail", expected_message));
+        }
+        assert_eq!(storage_verdict(Some(true), 0, 0, "healthy", false), ("unknown", "Storage capacity unavailable"));
+    }
+
+    #[test]
+    fn low_reserve_distinguishes_cleanup_recovery_from_missing_or_failed_cleanup() {
+        let verdict = |cleanup| storage_verdict(Some(true), 1000 * GIB, 5 * GIB, cleanup, false);
+        assert_eq!(verdict("recovering"), ("recovering", "Automatic cleanup is restoring recording headroom"));
+        assert_eq!(verdict("healthy").0, "recovering");
+        assert_eq!(verdict("unknown"), ("warn", "Recording headroom is low; cleanup status unavailable"));
+        assert_eq!(verdict("failed"), ("warn", "Automatic cleanup could not restore recording headroom"));
+    }
+
+    #[test]
+    fn root_capacity_cannot_substitute_for_a_missing_backingfiles_mount() {
+        let mounts = "/dev/root / ext4 rw,relatime 0 0\n/dev/sda1 /backingfiles-old ext4 rw 0 0\n/dev/sda2 /mutable ext4 rw 0 0\n";
+        assert_eq!(mount_writable(mounts, "/backingfiles"), None);
+        assert_eq!(mount_writable("/dev/sda1 /backingfiles ext4 ro,relatime 0 0\n", "/backingfiles"), Some(false));
+        assert_eq!(mount_writable("/dev/sda1 /backingfiles ext4 rw,relatime 0 0\n", "/backingfiles"), Some(true));
+    }
 }

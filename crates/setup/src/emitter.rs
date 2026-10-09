@@ -1,15 +1,5 @@
-//! Setup event emitter. Two channels:
-//!
-//! * `progress(msg)`: free-form log lines, streamed to the log file and
-//!   broadcast as `setup_progress` WebSocket events.
-//! * `begin_phase(id, label)`: a user-visible phase started doing actual work.
-//!   Phases that no-op (e.g. an already-configured dwc2 overlay on re-run)
-//!   never announce themselves, so the UI only lists phases actually executed
-//!   this run.
-//!
-//! The phase callback also persists the phase to
-//! `/dashusb/setup-phases.jsonl` so the UI can reconstruct the list across a
-//! reboot-triggered WebSocket disconnect.
+//! Setup progress and phase events. Stable phase IDs persist across rebooted
+//! WebSocket sessions; no-op phases remain unannounced.
 
 use std::sync::Arc;
 
@@ -35,11 +25,7 @@ impl SetupEmitter {
         (self.progress)(msg);
     }
 
-    /// Announce the start of a user-visible phase.
-    ///
-    /// Call only when the phase will actually do work; this drives the
-    /// wizard's live phase list. `id` must be stable across reboots for the UI
-    /// to deduplicate. `label` is shown to the user.
+    /// Announce work with a reboot-stable ID and user-facing label.
     pub fn begin_phase(&self, id: &str, label: &str) {
         (self.phase)(id, label);
     }

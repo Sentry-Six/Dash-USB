@@ -1,12 +1,5 @@
-//! `apt-get install` with one-shot retry on failure.
-//!
-//! The mirrors behind `deb.debian.org` (Fastly CDN) regularly serve a
-//! `Packages` index and a pool that are at different sync states, and aged Pi
-//! OS images carry baked-in lists pointing at versions Debian has since
-//! pruned. Both surface as `404 Not Found` on a well-formed URL.
-//!
-//! Every `apt-get install` in this crate must go through [`apt_install`] so a
-//! single 404 doesn't abort the whole setup.
+//! `apt-get install` with one index refresh and retry for stale or
+//! temporarily inconsistent package mirrors.
 
 use std::time::Duration;
 

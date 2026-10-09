@@ -1,11 +1,4 @@
-//! Sentry Connect mobile app push notifications.
-//!
-//! Server URL: `SENTRY_NOTIFICATION_URL`, else
-//! `https://notifications.sentry-six.com`.
-//!
-//! archive_start sends carrying an `ARCHIVE_TOTAL_COUNT` add a
-//! `live_activity` block so the iOS app can start its Live Activity even
-//! after the system terminated it; a silent-push wake is less reliable.
+//! Sentry Connect push notifications, including archive Live Activity starts.
 
 use anyhow::{bail, Result};
 use reqwest::Client;
@@ -18,8 +11,7 @@ pub struct SendContext<'a> {
     /// `start` or `finish`. Only used with
     /// `notification_type = "archive_start"`, to enable live_activity.
     pub type_hint: Option<&'a str>,
-    /// Category (`archive_start`, `archive_complete`, `temperature`,
-    /// `drives`). Echoed in the payload so the app can sort the alert.
+    /// Category echoed in the payload so the app can sort the alert.
     pub notification_type: Option<&'a str>,
     /// Total clip count for the pending archive run. Required for the
     /// live_activity payload on `archive_start`.
@@ -29,18 +21,7 @@ pub struct SendContext<'a> {
     pub device_name: Option<&'a str>,
 }
 
-/// Notification relay base URL, resolved in order:
-///
-/// 1. `SENTRY_NOTIFICATION_URL` env var (dev overrides, systemd
-///    `EnvironmentFile=`).
-/// 2. `SENTRY_NOTIFICATION_URL` in `/root/dashusb.conf`. Required: systemd
-///    starts the binary without a shell wrapper to source the config, so
-///    the env var is unset on a default install. Without this fallback
-///    every push hits `notifications.sentry-six.com` whatever the conf
-///    says, silently breaking third-party relays such as the Android
-///    SentryConnect app's Firebase Cloud Functions.
-/// 3. `https://notifications.sentry-six.com`.
-///
+/// Resolve the relay from the environment, config, then production default.
 /// Keep in sync with `notification_base_url()` in `api/src/notifications.rs`.
 fn default_push_server() -> String {
     if let Ok(v) = std::env::var("SENTRY_NOTIFICATION_URL") {
@@ -148,8 +129,7 @@ mod tests {
 
     #[test]
     fn live_activity_only_for_archive_start() {
-        // Exercises the branch condition only; payload construction lives
-        // inside send_with_context.
+        // Exercise the predicate independently of payload construction.
         let ctx = SendContext {
             type_hint: Some("start"),
             notification_type: Some("archive_start"),
@@ -164,11 +144,7 @@ mod tests {
 
     #[test]
     fn push_server_default_is_production_url() {
-        // Do not mutate the env: that is unsafe on edition 2024 and goes
-        // flaky when other tests read it. Assert the fallback only when
-        // neither the env var nor the on-disk conf overrides it. A host
-        // with SENTRY_NOTIFICATION_URL in /root/dashusb.conf is a deployed
-        // Pi, not a build runner, so CI always takes this branch.
+        // Avoid process-global environment mutation; assert only with no override.
         let env_unset = std::env::var("SENTRY_NOTIFICATION_URL").is_err();
         let conf_unset = sentryusb_config::parse_file(sentryusb_config::find_config_path())
             .map(|(active, _)| !active.contains_key("SENTRY_NOTIFICATION_URL"))

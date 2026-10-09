@@ -6,9 +6,12 @@ pub mod files;
 pub mod terminal;
 pub mod notifications;
 pub mod notification_center;
+pub mod notification_providers;
 pub mod setup;
 pub mod archive_mount_lock;
 pub mod archive_state;
+pub mod archive_control;
+pub mod wifi_firmware;
 pub mod backup;
 pub mod update;
 pub mod support;
@@ -36,12 +39,8 @@ pub fn json_ok() -> (StatusCode, Json<serde_json::Value>) {
     (StatusCode::OK, Json(serde_json::json!({"success": true})))
 }
 
-/// Process-wide `reqwest` client for the outbound community and notification
-/// proxies, so the TLS stack and connection pool are reused across requests.
-///
-/// Each call site sets its own per-endpoint `.timeout(..)` on the request
-/// builder, which overrides the client default. The 120s builder timeout is
-/// only a backstop so a site that forgets one can't hang a connection forever.
+/// Shared outbound client. Endpoints set shorter request-specific timeouts;
+/// 120 seconds is the process-wide backstop.
 pub fn http_client() -> &'static reqwest::Client {
     use std::sync::OnceLock;
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();

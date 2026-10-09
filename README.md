@@ -11,6 +11,10 @@
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg"></a>
 </p>
 
+<p align="center">
+  <img src="docs/images/hero-dashboard.png" alt="Dash USB dashboard" width="900">
+</p>
+
 ---
 
 ## What it does
@@ -35,6 +39,30 @@ Dash USB is the GM sibling of [Sentry USB](https://github.com/Sentry-Six/Sentry-
 (for Tesla), from the [Sentry Six](https://sentry-six.com) project. It's built around a
 **vehicle profile** system — support for further brands that record to USB mass storage
 can be added as data, not code. Not affiliated with General Motors.
+
+---
+
+## Screenshots
+
+<p align="center">
+  <img src="docs/images/viewer.png" alt="Multi-camera viewer" width="900"><br>
+  <em>Synchronized four-camera playback of the footage your car recorded, kept as long as you want.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/files.png" alt="Files" width="900"><br>
+  <em>Every recording the car wrote, retained past the 2-hour limit and browsable in place.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/setup-wizard.png" alt="Setup Wizard" width="900"><br>
+  <em>The 9-step setup wizard. No SSH, no config files.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/settings.png" alt="Settings" width="900"><br>
+  <em>Everything reconfigurable from the browser, including Travel Mode for archiving over the vehicle hotspot.</em>
+</p>
 
 ---
 
@@ -82,7 +110,6 @@ By default, Dash USB sends **no device identifier** to our servers. Here's every
 |---|---|---|
 | Daily update check | Software version, CPU arch, board model | None by default |
 | Once per install | Empty ping (no body) | None — anonymous counter |
-| iOS push pairing (if enabled) | Random pairing ID | Not tied to hardware |
 
 The only way a device fingerprint is sent is if you explicitly opt in to
 **Settings → System → Analytics opt-in** (default: off).

@@ -1,20 +1,9 @@
 #!/bin/bash
-#
 # Make Avahi advertise <hostname>.local over IPv4 only. Device IPv6 is
 # untouched; this changes only what mDNS hands out.
-#
-# Windows and Chrome prefer the AAAA answer for .local. The board's global
-# SLAAC address rotates, so that answer goes stale and page loads stall until
-# IPv4 fallback. Chrome also treats a global IPv6 address as public address
-# space, so the plain-http Web UI reached through it hits Private Network
-# Access blocks reported as "blocked by CORS policy ... more-restricted
-# address space".
-#
-# Edits are section-aware (a use-ipv6 line under [publish] stops avahi from
-# starting), dedupe repeated assignments, and append a missing section. Prints
-# "changed" or "unchanged" so the caller knows whether to restart avahi; this
-# script never restarts it. Exits nonzero if the conf is missing or an edit
-# fails, which callers treat as a warning rather than fatal.
+# Rotating SLAAC AAAA records become stale, and Chrome treats global IPv6 as
+# public address space. Edits remain section-aware and atomic; output reports
+# whether the caller should restart Avahi.
 
 set -eu
 
@@ -28,9 +17,7 @@ fi
 
 CHANGED=0
 
-# set_key <section> <key> <value>: rewrites $CONF in place, atomically.
-# Sets CHANGED=1 when the file was modified. Returns nonzero only on a real
-# failure, never for "already correct".
+# Atomically set one INI key and update CHANGED.
 set_key() {
   local section="$1" key="$2" value="$3" tmp
   tmp=$(mktemp "$CONF.dashusb-tmp.XXXXXX") || return 1
@@ -76,7 +63,7 @@ set_key() {
     rm -f -- "$tmp"
     return 0
   fi
-  # Keep one pristine copy from before our first edit ever.
+  # Retain the pre-edit configuration once.
   [ -f "$CONF.dashusb-prev" ] || cp -p -- "$CONF" "$CONF.dashusb-prev" \
     || { rm -f -- "$tmp"; return 1; }
   # The rename is atomic: a crash mid-edit leaves the previous conf intact.

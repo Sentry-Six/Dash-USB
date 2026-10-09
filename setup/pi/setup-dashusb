@@ -1,10 +1,5 @@
 #!/bin/bash
-#
-# setup-dashusb: retired.
-#
-# The legacy bash setup orchestrator was removed in the Dash USB fork.
-# Setup runs exclusively through the dashusb daemon: open the web UI
-# (http://dashusb.local) and use the setup wizard. An interrupted run
-# auto-resumes on the next boot via the daemon.
+# Compatibility stub. Setup runs through the web wizard and auto-resumes after
+# interrupted boots.
 echo "setup-dashusb is retired: use the Dash USB web wizard at http://dashusb.local" >&2
 exit 1

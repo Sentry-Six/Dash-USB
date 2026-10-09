@@ -178,11 +178,18 @@ export function UpdateSection({ onInstallStart }: Props) {
     setUpdateStatus("checking_internet")
     setUpdateError(null)
     setUpdateMessage("Checking internet connection...")
-    // Track the target version locally: /api/system/version is answered by
-    // the OLD daemon until the reboot fires, so it can return a stale tag.
+    // The old daemon serves its version until reboot.
     const preUpdateVersion = version
+    // A changed boot ID proves the update reboot occurred.
+    let preUpdateBootId: string | null = null
+    // Without boot ID, version-only completion remains unverifiable.
+    let bootIdUnavailable = false
     let newVersion: string | null = targetVersion ?? null
     setInstalledVersion(newVersion)
+
+    // Tags are compared with an optional leading "v" stripped.
+    const normTag = (v: string | null | undefined) =>
+      (v ?? "").trim().replace(/^v/i, "")
 
     const unsubscribe = wsClient.subscribe("update_status", (data: unknown) => {
       const msg = data as { status?: string; message?: string; error?: string; output?: string }
@@ -227,6 +234,18 @@ export function UpdateSection({ onInstallStart }: Props) {
         return
       }
 
+      // Capture boot ID before update; failure leaves completion unverified.
+      try {
+        const vr = await fetch("/api/system/version", { cache: "no-store" })
+        if (vr.ok) {
+          const vd = await vr.json()
+          preUpdateBootId = typeof vd.boot_id === "string" && vd.boot_id ? vd.boot_id : null
+        }
+      } catch {
+        /* leave null — the poll reports "unverified" rather than guessing */
+      }
+      bootIdUnavailable = preUpdateBootId === null
+
       const res = await fetch("/api/system/update", {
         method: "POST",
         headers: targetVersion ? { "Content-Type": "application/json" } : {},
@@ -242,18 +261,25 @@ export function UpdateSection({ onInstallStart }: Props) {
 
         const pollInterval = setInterval(async () => {
           try {
-            const r = await fetch("/api/system/version")
+            const r = await fetch("/api/system/version", { cache: "no-store" })
             if (r.ok) {
               const data = await r.json()
-              // Reject stale responses: the old daemon stays responsive
-              // until `reboot` fires and may answer before
-              // /opt/dashusb/version is rewritten. Accept only the expected
-              // new version, or any version differing from the pre-update
-              // one.
+              // Reject responses from the still-running pre-update daemon.
               const polled = (data.version || "").trim()
-              const matchesNew = newVersion && polled === newVersion
-              const differsFromOld = preUpdateVersion && polled && polled !== preUpdateVersion
-              if (!matchesNew && !differsFromOld) return
+              const polledBootId =
+                typeof data.boot_id === "string" && data.boot_id ? data.boot_id : null
+              if (polledBootId === null) bootIdUnavailable = true
+
+              // Require both a new boot ID and target version: either signal
+              // alone can also result from an incomplete update.
+              const bootVerified =
+                preUpdateBootId !== null &&
+                polledBootId !== null &&
+                polledBootId !== preUpdateBootId
+              const versionVerified = newVersion
+                ? normTag(polled) === normTag(newVersion)
+                : Boolean(polled) && normTag(polled) !== normTag(preUpdateVersion)
+              if (!bootVerified || !versionVerified) return
               reconnected = true
               clearInterval(pollInterval)
               setStableUpdate(null)
@@ -265,8 +291,7 @@ export function UpdateSection({ onInstallStart }: Props) {
                 setUpdateStatus("idle")
                 setUpdateMessage(null)
                 setInstalledVersion(null)
-                // Hard reload: cached chunks and hooks (useVersion,
-                // feature-gated UI) otherwise keep the pre-update snapshot.
+                // Reload cached chunks and feature-gated state.
                 window.location.reload()
               }, 6000)
             }
@@ -280,7 +305,11 @@ export function UpdateSection({ onInstallStart }: Props) {
             setUpdateStatus("idle")
             setUpdateMessage(null)
             setInstalledVersion(null)
-            setUpdateError("Update may still be in progress. Refresh the page in a moment.")
+            setUpdateError(
+              bootIdUnavailable
+                ? "The update may have completed, but the reboot could not be verified. Refresh and check the running version."
+                : "Update may still be in progress. Refresh the page in a moment.",
+            )
           }
         }, 180000)
       }, 20000)
@@ -326,10 +355,7 @@ export function UpdateSection({ onInstallStart }: Props) {
         halo={headerHalo}
         title="Software Updates"
         badge={
-          // The badge shows the *installed* version, never the available
-          // one: the pending release reads as already installed there. The
-          // "Stable:"/"Pre-release:" cards below carry that version, and
-          // the accent colour is all the badge says about it.
+          // Badge text is the installed version; cards show available versions.
           <Pill kind={stableUpdate || prereleaseUpdate ? "accent" : "slate"}>
             {version ?? "…"}
           </Pill>

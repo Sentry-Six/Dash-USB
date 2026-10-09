@@ -1,15 +1,11 @@
 #!/bin/bash -e
 
-# Runs inside pi-gen's chroot during image build. Produces an image where
-# the user flashes, boots, and gets a web UI.
+# Runs in pi-gen's chroot to produce the flash-and-boot image.
 
 touch "${ROOTFS_DIR}/boot/ssh"
 
-# Remove firstrun.sh and the firstboot init hook. WiFi/hostname setup goes
-# through the DashUSB iOS app over BLE, so Raspberry Pi Imager customization
-# is unused. Stripping the firstboot init= parameter also stops the Bookworm
-# initramfs auto-expanding the root partition to fill the disk; setup needs
-# that free space for the backingfiles and mutable partitions.
+# BLE provisioning replaces Raspberry Pi first-boot customization. Removing its
+# init hook also preserves space for backingfiles and mutable partitions.
 rm -f "${ROOTFS_DIR}/boot/firmware/firstrun.sh"
 rm -f "${ROOTFS_DIR}/boot/firmware/userconf.txt"
 rm -f "${ROOTFS_DIR}/boot/firmware/custom.toml"
@@ -35,25 +31,18 @@ ln -sf /boot/firmware "${ROOTFS_DIR}/dashusb"
 # dwc2 overlay: required for USB gadget mode.
 echo "dtoverlay=dwc2" >> "${ROOTFS_DIR}/boot/firmware/config.txt"
 
-# Pre-install the DashUSB binary variants and the picker.
-# aarch64 images stage three per-CPU-tuned variants (a53/a72/a76); armv7
-# stages one. The picker installed below symlinks the right one to
-# dashusb-current at every service start and covers both cases.
-# No armv6/armel variant: the original Pi Zero W and Pi 1 lack the headroom
-# to run the daemon.
+# Stage all supported CPU variants; the service-start picker selects one.
+# Pi Zero W and Pi 1 are unsupported because no armv6/armel build is produced.
 REPO="Sentry-Six/Dash-USB"
 case "$(dpkg --print-architecture 2>/dev/null || echo arm64)" in
     arm64|aarch64) SUFFIXES="linux-arm64-a53 linux-arm64-a72 linux-arm64-a76" ;;
     armhf)         SUFFIXES="linux-armv7" ;;
-    *)             SUFFIXES="linux-arm64-a72" ;;  # safe default
+    *)             SUFFIXES="linux-arm64-a72" ;;  # legacy fallback
 esac
 
 for sfx in $SUFFIXES; do
     DEST="${ROOTFS_DIR}/opt/dashusb/dashusb-${sfx}"
-    # Preferred order: env override > injected file > release download.
-    # The env override only matters in CI, where the build script points at
-    # a freshly cross-compiled binary via DASHUSB_BINARY_LINUX_ARM64_A72
-    # (etc: the suffix uppercased, dashes to underscores).
+    # Prefer a CI override, then an injected file, then the latest release.
     env_var="DASHUSB_BINARY_$(echo "$sfx" | tr 'a-z-' 'A-Z_')"
     env_val="${!env_var:-}"
     if [ -n "${env_val}" ] && [ -f "${env_val}" ]; then
@@ -61,10 +50,7 @@ for sfx in $SUFFIXES; do
     elif [ -f "files/dashusb-${sfx}" ]; then
         cp "files/dashusb-${sfx}" "${DEST}"
     elif [ -f "files/dashusb-binary" ] && [ "${sfx}" = "$(echo $SUFFIXES | awk '{print $1}')" ]; then
-        # Back-compat: build-image.sh's pre-multi-binary path drops a single
-        # files/dashusb-binary. Use it for the first suffix and leave the
-        # other variants missing; the picker's fallback chain covers that,
-        # so the daemon still runs, just without the per-CPU tuning.
+        # A legacy single binary can populate the first requested variant.
         cp "files/dashusb-binary" "${DEST}"
     else
         URL="https://github.com/${REPO}/releases/latest/download/dashusb-${sfx}"
@@ -88,11 +74,11 @@ if [ -n "${RELEASE_TAG:-}" ]; then
     echo "Version: $RELEASE_TAG"
 fi
 
-# remountfs_rw: the BLE daemon needs it to save the PIN on a read-only rootfs.
+# The BLE daemon needs remountfs_rw to persist its PIN.
 if [ -f "../../run/remountfs_rw" ]; then
     install -m 755 "../../run/remountfs_rw" "${ROOTFS_DIR}/root/bin/remountfs_rw"
 else
-    # Inline fallback so the image always has this script
+    # Keep images usable when the shared script is unavailable.
     cat > "${ROOTFS_DIR}/root/bin/remountfs_rw" << 'RWEOF'
 #!/bin/bash
 mount / -o remount,rw
@@ -106,10 +92,7 @@ RWEOF
     chmod +x "${ROOTFS_DIR}/root/bin/remountfs_rw"
 fi
 
-# /root/.bashrc reminder pointing at bin/remountfs_rw. Baked into the image
-# so the tip prints on every `sudo -i` even before setup-dashusb has run.
-# setup-dashusb keeps an idempotent copy of this block so upgrades to
-# existing installs land it too.
+# Install the read-only-root reminder before setup has run.
 if ! grep -q DASHUSB_TIP1 "${ROOTFS_DIR}/root/.bashrc" 2>/dev/null; then
     cat >> "${ROOTFS_DIR}/root/.bashrc" <<- 'EOC'
 	if [ -n "$PS1" ]; then
@@ -132,9 +115,7 @@ else
         -o "${BLE_SERVICE}" 2>/dev/null || echo "WARNING: Could not fetch BLE service file"
 fi
 
-# The daemon the unit executes, plus its dbus policy. Without these the
-# enabled service crash-loops and phone provisioning is dead on a fresh
-# image (a Zero 2 W has no Ethernet fallback).
+# Install both BLE daemon and D-Bus policy before enabling its service.
 mkdir -p "${ROOTFS_DIR}/root/bin" "${ROOTFS_DIR}/etc/dbus-1/system.d"
 for src_dir in files ../../server/ble; do
     [ -f "${src_dir}/dashusb-ble.py" ] && install -m 755 "${src_dir}/dashusb-ble.py" "${ROOTFS_DIR}/root/bin/dashusb-ble.py" && break
@@ -143,9 +124,7 @@ for src_dir in files ../../server/ble; do
     [ -f "${src_dir}/com.dashusb.ble.conf" ] && install -m 644 "${src_dir}/com.dashusb.ble.conf" "${ROOTFS_DIR}/etc/dbus-1/system.d/com.dashusb.ble.conf" && break
 done
 
-# archiveloop sources /root/bin/envsetup.sh unconditionally. The Rust setup
-# installs it on wizard runs, but the image must carry it so the archive
-# service can start without a re-run.
+# archiveloop sources envsetup before the setup wizard can reinstall it.
 if [ -f "../../setup/pi/envsetup.sh" ]; then
     install -m 755 "../../setup/pi/envsetup.sh" "${ROOTFS_DIR}/root/bin/envsetup.sh"
 fi
@@ -165,16 +144,10 @@ ExecStartPre=/usr/local/bin/dashusb-pick-binary
 ExecStart=/opt/dashusb/dashusb-current --port 80
 Restart=always
 RestartSec=5
-# Per-crate log filter. Our crates emit at info; dependency chatter
-# (hyper, h2, tokio, axum, etc.) stays at warn so journald isn't
-# flooded with framework-level logs that nobody reads. Result: less
-# write IO to the SD card, smaller journal footprint, less per-log
-# CPU on Pi Zero 2 W.
+# Keep project crates at info and dependency logs at warn to reduce journal
+# writes and storage use.
 Environment=RUST_LOG=dashusb=info,sentryusb_api=info,sentryusb_setup=info,sentryusb_gadget=info,sentryusb_notify=info,sentryusb_ws=info,sentryusb_vehicle_profile=info,tower_http=warn,warn
-# Cap glibc malloc arenas to 2. Default on multicore ARM is 8× nproc
-# arenas, each holding a fragmented heap fork that the kernel never
-# reclaims. Steady-state RSS on Pi-class hardware drops ~40-50% with
-# this cap, with no measurable throughput impact for our workload.
+# Bound glibc arena growth on memory-constrained Pi hardware.
 Environment=MALLOC_ARENA_MAX=2
 StandardOutput=journal
 StandardError=journal

@@ -203,7 +203,6 @@ export default function TerminalPage() {
         connect()
     }
 
-    // Login / disconnected view
     if (state !== "connected") {
         return (
             <div className="flex h-[calc(100vh-120px)] flex-col items-center justify-center md:h-[calc(100vh-96px)]">
@@ -285,10 +284,8 @@ export default function TerminalPage() {
         )
     }
 
-    // Connected terminal view
     return (
         <div className="flex h-[calc(100vh-120px)] flex-col md:h-[calc(100vh-96px)]">
-            {/* Header */}
             <div className="mb-2 flex items-center justify-between">
                 <div className="flex items-center gap-2">
                     <div className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]" />
@@ -305,7 +302,6 @@ export default function TerminalPage() {
                 </button>
             </div>
 
-            {/* Terminal container */}
             <div
                 ref={termRef}
                 className="flex-1 overflow-hidden rounded-lg border border-white/5 bg-[#0b1120]"

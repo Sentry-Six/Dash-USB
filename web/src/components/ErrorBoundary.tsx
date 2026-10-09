@@ -12,11 +12,7 @@ interface State {
   error: Error | null
 }
 
-/**
- * A render error that reaches the top of the tree unmounts the whole root. On
- * the in-car browser that leaves a blank page with no way back short of a
- * manual reload, so boundaries contain it to a fallback.
- */
+/** Contain render failures so the root remains recoverable. */
 export class ErrorBoundary extends Component<Props, State> {
   state: State = { error: null }
 
@@ -34,12 +30,7 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 }
 
-/**
- * Card-shaped boundary for the settings grids: a crashing section degrades
- * to one broken card (with the message and a retry) while the rest of the
- * page keeps working. A section that renders several cards in a fragment
- * collapses to a single fallback card, which is fine for an error state.
- */
+/** Degrade a failed settings section to one retryable card. */
 export function SectionErrorBoundary({ children }: { children: ReactNode }) {
   return (
     <ErrorBoundary

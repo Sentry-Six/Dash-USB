@@ -1,12 +1,4 @@
-//! PTY over WebSocket for web terminal.
-//!
-//! Terminal API contract:
-//!  1. Client sends `{"type":"auth","username":"...","password":"..."}` as first message.
-//!  2. Server validates credentials against /etc/shadow via Perl `crypt(3)`.
-//!  3. On success, spawns `su -l <user>` with a PTY and bridges I/O over the WebSocket.
-//!  4. Client sends `{"type":"input","data":"..."}` for keystrokes.
-//!  5. Client sends `{"type":"resize","cols":N,"rows":N}` for window resize.
-//!  6. Failed auth attempts are rate-limited per remote IP (5 failures / 5 minutes).
+//! Authenticated PTY-over-WebSocket terminal with per-IP failure limits.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -210,7 +202,7 @@ async fn handle_terminal_ws(socket: WebSocket, addr: SocketAddr) {
     };
     let master = std::sync::Arc::new(std::sync::Mutex::new(pair.master));
 
-    // Channel: blocking PTY reader thread -> async WS sender
+    // Bridge the blocking PTY reader into the async WebSocket sender.
     let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(32);
 
     let read_handle = tokio::task::spawn_blocking(move || {
@@ -236,7 +228,7 @@ async fn handle_terminal_ws(socket: WebSocket, addr: SocketAddr) {
                 break;
             }
         }
-        // Best-effort close frame
+        // Best-effort close frame.
         let _ = sender
             .send(send_msg_text("exit", "Terminal session ended"))
             .await;
@@ -285,9 +277,7 @@ async fn handle_terminal_ws(socket: WebSocket, addr: SocketAddr) {
         }
     });
 
-    // Once either side finishes (client disconnect, PTY EOF), kill the child
-    // (SIGHUP via PTY teardown) and drop the master to wake the blocking
-    // reader.
+    // Closing either side tears down the PTY child and wakes its reader.
     tokio::select! {
         _ = send_task => {}
         _ = recv_task => {}
@@ -302,8 +292,7 @@ async fn handle_terminal_ws(socket: WebSocket, addr: SocketAddr) {
     info!("[terminal] session ended for {} from {}", username, ip);
 }
 
-// Perl script reads password from stdin, verifies against /etc/shadow via crypt(3).
-// Username passed as $ARGV[0].
+// Password arrives on stdin; username is $ARGV[0].
 const VERIFY_PASSWORD_SCRIPT: &str = r#"use strict;
 use warnings;
 my $username = $ARGV[0];
@@ -325,9 +314,7 @@ async fn validate_credentials(username: &str, password: &str) -> bool {
     use tokio::io::AsyncWriteExt;
     use tokio::process::Command;
 
-    // Reject whitespace and ':' (the /etc/shadow field separator) so a crafted
-    // username can't confuse the lookup. `su` would reject it too, but failing
-    // here is faster and keeps the logs clean.
+    // Reject characters that can alter /etc/shadow field lookup.
     if username.is_empty() || username.contains(|c: char| c.is_whitespace() || c == ':') {
         return false;
     }

@@ -36,7 +36,7 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format='[BLE] %(levelname)s %(message)s')
 log = logging.getLogger('dashusb-ble')
 
-# Fresh flag = a central connect is in flight; defer advertising while it is.
+# Defer advertising while this fresh flag indicates a central connection.
 CONNECTING_FLAG_PATH = '/tmp/ble_connecting'
 CONNECTING_FLAG_MAX_AGE_S = 15  # ignore a stale flag a crashed connect left behind
 
@@ -49,9 +49,7 @@ def connect_in_flight():
         return False
     return 0 <= age < CONNECTING_FLAG_MAX_AGE_S
 
-# ============================================================
 # D-Bus policy self-healing
-# ============================================================
 
 _DBUS_POLICY_PATH = '/etc/dbus-1/system.d/com.dashusb.ble.conf'
 _DBUS_POLICY_XML = """\
@@ -111,7 +109,6 @@ LE_ADVERTISEMENT_IFACE = 'org.bluez.LEAdvertisement1'
 GATT_MANAGER_IFACE = 'org.bluez.GattManager1'
 GATT_SERVICE_IFACE = 'org.bluez.GattService1'
 GATT_CHRC_IFACE = 'org.bluez.GattCharacteristic1'
-GATT_DESC_IFACE = 'org.bluez.GattDescriptor1'
 DBUS_OM_IFACE = 'org.freedesktop.DBus.ObjectManager'
 DBUS_PROP_IFACE = 'org.freedesktop.DBus.Properties'
 
@@ -128,33 +125,23 @@ API_SERVICE_UUID         = '6e400010-b5a3-f393-e0a9-e50e24dcca9e'
 API_REQUEST_UUID         = '6e400011-b5a3-f393-e0a9-e50e24dcca9e'
 API_RESPONSE_UUID        = '6e400012-b5a3-f393-e0a9-e50e24dcca9e'
 
-# Auto-detected at startup — production uses port 80, dev uses 8788
+# Detected at startup: production uses port 80, development uses 8788.
 API_BASE = None
 
 PIN_FILE = '/root/.dashusb/ble-pin'
 BOOT_PIN_FILE = '/boot/firmware/BLE_PIN'
 
-# Track authenticated BLE peers (by D-Bus device path). Cleared per peer
-# on disconnect (see setup_connection_logging) so a session always
-# re-authenticates and the set can't grow unbounded.
+# Authentication is scoped to each D-Bus peer and cleared on disconnect.
 authenticated_peers = set()
 
-# Per-peer failed-PIN throttle. The passcode is only 4-6 digits
-# (<=1,000,000 combinations, 10,000 for the 4-digit default), so without
-# a lockout a BLE-range attacker could brute-force it. Policy mirrors the
-# web login / terminal: AUTH_MAX_FAILS failures within AUTH_FAIL_WINDOW
-# locks that peer out until the window drains. Keyed by D-Bus device path.
+# Per-peer lockout prevents brute-forcing the 4-6-character passcode.
 auth_failures = {}
 AUTH_MAX_FAILS = 5
 AUTH_FAIL_WINDOW = 300  # seconds
 
 mainloop = None
 
-# Cap on a characteristic's reassembly buffer. Writes accumulate until they
-# parse as JSON; a peer that streams bytes which never complete a JSON object
-# would otherwise grow the buffer without bound. 64 KB is far above any real
-# WiFi-config / auth / API-proxy request; past it we drop the buffer and start
-# over rather than let a misbehaving (or hostile) peer exhaust memory.
+# Bound incomplete JSON reassembly so a peer cannot exhaust daemon memory.
 MAX_WRITE_BUFFER = 64 * 1024
 
 
@@ -171,7 +158,7 @@ def detect_api_base():
             return base
         except Exception:
             continue
-    # Default to port 80 (production) even if not yet reachable
+    # Startup may precede the production server becoming reachable.
     log.warning('API server not yet reachable on port 80 or 8788, defaulting to port 80')
     return 'http://127.0.0.1:80/api'
 
@@ -187,12 +174,12 @@ def load_pin():
 
 def save_pin(pin):
     """Save a new BLE passcode."""
-    # Root filesystem is read-only at runtime — remount rw before writing.
+    # The runtime root filesystem is read-only.
     subprocess.run(['/root/bin/remountfs_rw'], capture_output=True, timeout=5)
     os.makedirs(os.path.dirname(PIN_FILE), exist_ok=True)
     with open(PIN_FILE, 'w') as f:
         f.write(pin)
-    # Also write to boot partition for easy reset
+    # Mirror the PIN to the boot partition for recovery.
     try:
         with open(BOOT_PIN_FILE, 'w') as f:
             f.write(pin)
@@ -267,7 +254,7 @@ def is_authenticated(options):
     """Check if the connected peer is authenticated."""
     device = options.get('device', '')
     if not device:
-        # If we can't determine the device, check if unclaimed (allow all)
+        # Unclaimed devices allow setup before a peer path is available.
         return not is_claimed()
     return str(device) in authenticated_peers
 
@@ -280,9 +267,7 @@ def mark_authenticated(options):
         log.info(f'Peer authenticated: {device}')
 
 
-# ============================================================
-# Helper: get hostname, version, and unique device suffix
-# ============================================================
+# Device identity helpers
 
 def get_hostname():
     try:
@@ -296,10 +281,10 @@ def get_device_suffix():
     try:
         with open('/etc/machine-id', 'r') as f:
             machine_id = f.read().strip()
-        # Use last 4 hex chars — unique enough for a handful of Pis
+        # Four hex characters keep nearby device names distinguishable.
         return machine_id[-4:].upper()
     except Exception:
-        # Fallback: derive from Bluetooth adapter MAC
+        # Fall back to the Bluetooth adapter address.
         try:
             mac = subprocess.check_output(
                 ['hciconfig', 'hci0'], text=True)
@@ -349,7 +334,7 @@ def update_avahi_service_name(name):
 </service-group>
 '''
     try:
-        # Only rewrite if the suffix record is missing or different
+        # Avoid restarting Avahi when the suffix is already current.
         if os.path.exists(AVAHI_SERVICE_PATH):
             with open(AVAHI_SERVICE_PATH, 'r') as f:
                 current = f.read()
@@ -358,7 +343,6 @@ def update_avahi_service_name(name):
                 return
         with open(AVAHI_SERVICE_PATH, 'w') as f:
             f.write(service_xml)
-        # Restart avahi to pick up the change
         subprocess.run(['systemctl', 'restart', 'avahi-daemon'],
                        capture_output=True, timeout=10)
         log.info(f'Avahi mDNS service updated with suffix={suffix}')
@@ -366,22 +350,16 @@ def update_avahi_service_name(name):
         log.warning(f'Failed to update Avahi service: {e}')
 
 
-# ============================================================
 # WiFi scanning and configuration
-# ============================================================
 
 def scan_wifi_networks():
     """Scan for visible WiFi networks using nmcli."""
     try:
-        # Ensure WiFi radio is unblocked
         subprocess.run(['rfkill', 'unblock', 'wifi'],
                        capture_output=True, timeout=3)
-        # Trigger a fresh scan
         subprocess.run(['nmcli', 'device', 'wifi', 'rescan'],
                        capture_output=True, timeout=10)
-        # Wait for the scan to complete before listing results —
-        # nmcli rescan returns immediately but the actual scan takes a few seconds.
-        # Without this delay, wifi list returns stale/empty cached results.
+        # `nmcli rescan` returns before its results are ready.
         import time
         time.sleep(3)
         output = subprocess.check_output(
@@ -404,7 +382,7 @@ def scan_wifi_networks():
                 signal = 0
             security = parts[2].strip() if len(parts) > 2 else ''
             encrypted = security != '' and security != '--'
-            # Keep strongest signal per SSID
+            # Collapse duplicate SSIDs to their strongest access point.
             if ssid not in seen or signal > seen[ssid].get('signal', 0):
                 seen[ssid] = {'ssid': ssid, 'signal': signal, 'encrypted': encrypted}
         return list(seen.values())
@@ -416,18 +394,14 @@ def configure_wifi(ssid, password, hostname=None):
     """Configure WiFi via NetworkManager and optionally set hostname."""
     result = {'connected': False, 'ip': '', 'error': ''}
     try:
-        # Set hostname if provided (needs rw filesystem)
         if hostname:
             subprocess.run(['/root/bin/remountfs_rw'], capture_output=True, timeout=5)
             subprocess.run(['hostnamectl', 'set-hostname', hostname], capture_output=True, timeout=5)
 
-        # Delete any stale connection profile for this SSID — avoids
-        # "802-11-wireless-security.key-mgmt: property is missing" errors
-        # when a previous connection attempt left a broken profile.
+        # A partial prior profile can omit the required key-mgmt property.
         subprocess.run(['nmcli', 'connection', 'delete', ssid],
                        capture_output=True, timeout=5)
 
-        # Connect via NetworkManager
         cmd = ['nmcli', 'device', 'wifi', 'connect', ssid]
         if password:
             cmd += ['password', password]
@@ -440,7 +414,6 @@ def configure_wifi(ssid, password, hostname=None):
             log.error(f'WiFi connect failed: {err_msg}')
             return result
 
-        # Wait for IP address (up to 15 seconds)
         import time
         for _ in range(15):
             time.sleep(1)
@@ -465,9 +438,7 @@ def configure_wifi(ssid, password, hostname=None):
     return result
 
 
-# ============================================================
-# API proxy: forward requests to the local Go server
-# ============================================================
+# Local API proxy
 
 def proxy_api_request(method, path, body=None, retries=2, retry_delay=1.5):
     """Forward an API request to the local Go server.
@@ -506,19 +477,10 @@ def proxy_api_request(method, path, body=None, retries=2, retry_delay=1.5):
     return {'status': 503, 'body': {'error': f'Local server unavailable: {last_error}'}}
 
 
-# ============================================================
 # D-Bus / BlueZ GATT Application
-# ============================================================
 
 class InvalidArgsException(dbus.exceptions.DBusException):
     _dbus_error_name = 'org.freedesktop.DBus.Error.InvalidArgs'
-
-class NotSupportedException(dbus.exceptions.DBusException):
-    _dbus_error_name = 'org.bluez.Error.NotSupported'
-
-class NotPermittedException(dbus.exceptions.DBusException):
-    _dbus_error_name = 'org.bluez.Error.NotPermitted'
-
 
 class Application(dbus.service.Object):
     """BlueZ GATT Application."""
@@ -544,9 +506,6 @@ class Application(dbus.service.Object):
             chrcs = service.get_characteristics()
             for chrc in chrcs:
                 response[chrc.get_path()] = chrc.get_properties()
-                descs = chrc.get_descriptors()
-                for desc in descs:
-                    response[desc.get_path()] = desc.get_properties()
         log.info(f'GetManagedObjects called — returning {len(response)} objects: {list(response.keys())}')
         return response
 
@@ -556,7 +515,6 @@ class Service(dbus.service.Object):
 
     def __init__(self, bus, index, uuid, primary):
         self.path = self.PATH_BASE + str(index)
-        self.bus = bus
         self.uuid = uuid
         self.primary = primary
         self.characteristics = []
@@ -595,7 +553,6 @@ class Characteristic(dbus.service.Object):
 
     def __init__(self, bus, index, uuid, flags, service):
         self.path = service.path + '/char' + str(index)
-        self.bus = bus
         self.uuid = uuid
         self.service = service
         self.flags = flags
@@ -618,14 +575,8 @@ class Characteristic(dbus.service.Object):
     def get_path(self):
         return dbus.ObjectPath(self.path)
 
-    def add_descriptor(self, descriptor):
-        self.descriptors.append(descriptor)
-
     def get_descriptor_paths(self):
         return [desc.get_path() for desc in self.descriptors]
-
-    def get_descriptors(self):
-        return self.descriptors
 
     @dbus.service.method(DBUS_PROP_IFACE, in_signature='s', out_signature='a{sv}')
     def GetAll(self, interface):
@@ -661,9 +612,7 @@ class Characteristic(dbus.service.Object):
             GATT_CHRC_IFACE, {'Value': value}, [])
 
 
-# ============================================================
 # WiFi Setup Service
-# ============================================================
 
 class WifiSetupService(Service):
     def __init__(self, bus, index):
@@ -700,34 +649,28 @@ class WifiScanCharacteristic(Characteristic):
     def ReadValue(self, options):
         offset = int(options.get('offset', 0))
 
-        # Auth gate BEFORE the Read Blob continuation: the continuation
-        # used to be served unauthenticated, so any BLE peer could read
-        # the tail of a cached scan another (authenticated) client had
-        # triggered. Low-sensitivity data (nearby SSIDs), but there's no
-        # reason to leak it — the legitimate continuation reader is the
-        # same authenticated device that did the offset=0 read.
+        # Authenticate every Read Blob continuation to protect cached scan data.
         if not is_authenticated(options):
             data = json.dumps({'error': 'not_authenticated'}).encode()
             return dbus.Array([dbus.Byte(b) for b in data], signature='y')
 
-        # Read Blob continuation — return remaining bytes from previous read
+        # BlueZ supplies offsets for long-value Read Blob continuations.
         if offset > 0 and self._read_blob_data is not None:
             log.debug(f'WiFi scan Read Blob offset={offset}/{len(self._read_blob_data)}')
             return dbus.Array(
                 [dbus.Byte(b) for b in self._read_blob_data[offset:]],
                 signature='y')
 
-        # If cached results exist from a completed scan, return them
         if self._cached_networks is not None:
             networks = self._cached_networks
             self._cached_networks = None
             data = json.dumps(networks).encode()
-            # Keep serialized bytes for Read Blob continuation
+            # Retain the exact bytes for offset-based continuation reads.
             self._read_blob_data = data
             log.info(f'WiFi scan: returning {len(networks)} cached networks ({len(data)} bytes)')
             return dbus.Array([dbus.Byte(b) for b in data], signature='y')
 
-        # No cached results — trigger async scan (if not already running)
+        # Start a scan only when no completed result is cached.
         if not self._scanning:
             self._scanning = True
             log.info('WiFi scan requested — scanning async, will notify when ready')
@@ -756,12 +699,11 @@ class WifiScanCharacteristic(Characteristic):
         total_bytes = len(data_str.encode())
         log.info(f'WiFi scan complete: {len(networks)} networks ({total_bytes} bytes)')
 
-        # --- Path 1: Cache for Read Blob ---
+        # Path 1: serve the cached result through Read Blob.
         self._cached_networks = networks
         self._read_blob_data = None  # will be set on next ReadValue
 
-        # Send "ready" notification with total byte count so client can
-        # detect truncation if Read Blob fails.
+        # Include byte count so clients can detect a truncated Read Blob.
         ready_msg = json.dumps({
             'wifi_results': True,
             'count': len(networks),
@@ -773,10 +715,7 @@ class WifiScanCharacteristic(Characteristic):
             return False
         GLib.idle_add(send_ready)
 
-        # --- Path 2: Chunked notifications as fallback ---
-        # Use a conservative chunk size that fits in any MTU (min BLE MTU is 23,
-        # but iOS typically negotiates >= 185).  We use 180 bytes of data per
-        # chunk — after JSON wrapping this stays well under 250 bytes.
+        # Path 2: fall back to conservatively sized chunk notifications.
         CHUNK_DATA_SIZE = 180
         chunks = []
         remaining = data_str
@@ -797,7 +736,7 @@ class WifiScanCharacteristic(Characteristic):
                 self.send_notification(
                     dbus.Array([dbus.Byte(b) for b in msg], signature='y'))
                 return False
-            # Start after 1s delay (give Read Blob time), 200ms stagger between chunks
+            # Let Read Blob finish first, then stagger chunks to avoid drops.
             GLib.timeout_add(1000 + 200 * idx, send_chunk)
 
         return False  # Don't repeat the timeout
@@ -813,7 +752,7 @@ class WifiConfigCharacteristic(Characteristic):
 
     def WriteValue(self, value, options):
         self.write_buffer.extend(bytes(value))
-        # Try to parse as JSON — if incomplete, wait for more chunks
+        # Incomplete JSON remains buffered for the next BLE write.
         try:
             config = json.loads(self.write_buffer.decode())
             self.write_buffer = bytearray()
@@ -837,20 +776,18 @@ class WifiConfigCharacteristic(Characteristic):
 
         log.info(f'Configuring WiFi: ssid={ssid}, hostname={hostname}')
 
-        # Find the WifiStatusCharacteristic to send notifications
         status_chrc = None
         for chrc in self.service.get_characteristics():
             if chrc.uuid == WIFI_STATUS_UUID:
                 status_chrc = chrc
                 break
 
-        # Send "connecting" status
         if status_chrc:
             status_data = json.dumps({'connected': False, 'ip': '', 'error': ''}).encode()
             status_chrc.send_notification(
                 dbus.Array([dbus.Byte(b) for b in status_data], signature='y'))
 
-        # Configure WiFi in background
+        # Keep NetworkManager work off the GLib event loop.
         def do_configure():
             result = configure_wifi(ssid, password, hostname)
             if status_chrc:
@@ -972,9 +909,7 @@ class AuthCharacteristic(Characteristic):
             dbus.Array([dbus.Byte(b) for b in data], signature='y'))
 
 
-# ============================================================
 # API Proxy Service
-# ============================================================
 
 class APIProxyService(Service):
     def __init__(self, bus, index):
@@ -996,7 +931,7 @@ class APIRequestCharacteristic(Characteristic):
         self._client_mtu = 185  # conservative default; updated from WriteValue options
 
     def WriteValue(self, value, options):
-        # Capture negotiated MTU from BlueZ for response chunking
+        # Bound response chunks to the negotiated client MTU.
         if 'mtu' in options:
             self._client_mtu = int(options['mtu'])
         self.write_buffer.extend(bytes(value))
@@ -1032,8 +967,7 @@ class APIRequestCharacteristic(Characteristic):
             }
             response_json = json.dumps(response).encode()
 
-            # Send response, chunking if it exceeds the negotiated BLE MTU.
-            # ATT notification overhead is 3 bytes.
+            # Reserve space for ATT and envelope overhead.
             max_msg = self._client_mtu - 8
             if len(response_json) <= max_msg:
                 def send_single():
@@ -1042,8 +976,7 @@ class APIRequestCharacteristic(Characteristic):
                     return False
                 GLib.idle_add(send_single)
             else:
-                # Binary-search split: find largest data slices whose
-                # JSON-wrapped chunk messages fit within max_msg.
+                # Fit the largest JSON-wrapped slice within each notification.
                 remaining = response_json.decode('utf-8', errors='replace')
                 chunks = []
                 while remaining:
@@ -1073,11 +1006,10 @@ class APIRequestCharacteristic(Characteristic):
                         self.response_chrc.send_notification(
                             dbus.Array([dbus.Byte(b) for b in msg], signature='y'))
                         return False
-                    # Stagger chunk notifications by 50ms to prevent BlueZ drops
+                    # Stagger notifications to prevent BlueZ queue drops.
                     GLib.timeout_add(200 * idx, send_chunk)
 
-        # Run the blocking HTTP proxy call in a background thread
-        # so the GLib main loop stays responsive for BLE operations
+        # Keep blocking HTTP work off the GLib event loop.
         threading.Thread(target=do_request, daemon=True).start()
 
 
@@ -1089,9 +1021,7 @@ class APIResponseCharacteristic(Characteristic):
                                 ['notify'], service)
 
 
-# ============================================================
 # BLE Advertisement
-# ============================================================
 
 class Advertisement(dbus.service.Object):
     PATH_BASE = '/org/bluez/dashusb/advertisement'
@@ -1099,18 +1029,13 @@ class Advertisement(dbus.service.Object):
     def __init__(self, bus, index, advertising_type, ad_manager,
                  service_manager=None, app=None, local_name=None):
         self.path = self.PATH_BASE + str(index)
-        self.bus = bus
         self.ad_type = advertising_type
         self.ad_manager = ad_manager
         self.service_manager = service_manager
         self.app = app
         self.local_name = local_name
-        # Only advertise primary service UUID.
-        # A 31-byte LE advertisement payload cannot fit two 128-bit UUIDs
-        # (2+16+16=34 bytes) plus a local name and flags — doing so causes
-        # BlueZ / the HCI controller to return "Invalid Parameters (0x0d)".
-        # The iOS app scans by WIFI_SERVICE_UUID only, so one UUID is enough.
-        # The LocalName is placed in the scan response by BlueZ automatically.
+        # The 31-byte payload fits one 128-bit UUID; BlueZ puts LocalName in the
+        # scan response, and clients discover API characteristics through GATT.
         self.service_uuids = [WIFI_SERVICE_UUID]
         dbus.service.Object.__init__(self, bus, self.path)
 
@@ -1138,13 +1063,12 @@ class Advertisement(dbus.service.Object):
     @dbus.service.method(LE_ADVERTISEMENT_IFACE, in_signature='', out_signature='')
     def Release(self):
         log.info(f'Advertisement released: {self.path}')
-        # BlueZ released the advertisement (happens after a connection or internal
-        # timeout).  Schedule a re-registration so the Pi stays discoverable.
+        # Re-register after BlueZ releases the advertisement.
         GLib.timeout_add(2000, self._reregister)
 
     def _reregister(self, retry_count=0):
         max_retries = 5
-        # Defer while a central connect is in flight (no retry consumed).
+        # A deferred connection does not consume a retry.
         if connect_in_flight():
             log.info('Re-registration deferred: central connect in flight')
             GLib.timeout_add(1000, self._reregister, retry_count)
@@ -1155,16 +1079,8 @@ class Advertisement(dbus.service.Object):
             log.info('Advertisement registered')
             if not (self.service_manager and self.app):
                 return
-            # Always attempt GATT re-registration after advertisement Release.
-            # The adapter internally resets on every iOS connect/disconnect
-            # (visible as "Destroy Adv Monitor Manager" in bluetoothd logs),
-            # silently dropping all GATT applications with no signal to the
-            # daemon.  The reset can be fast enough (~1s) that the first
-            # advertisement re-registration attempt succeeds without errors,
-            # so we cannot rely on error detection to know GATT was dropped.
-            # Re-registering unconditionally is safe: BlueZ returns AlreadyExists
-            # if GATT is still registered (no disruption), and re-registers
-            # cleanly if it was dropped.
+            # Adapter resets can silently drop GATT while advertisement recovery
+            # succeeds. Always re-register; BlueZ safely returns AlreadyExists.
             def on_gatt_ok():
                 log.info('GATT application re-registered')
             def on_gatt_err(error):
@@ -1192,9 +1108,7 @@ class Advertisement(dbus.service.Object):
         return False  # don't repeat
 
 
-# ============================================================
 # Main
-# ============================================================
 
 def read_ble_adapter_from_config():
     """Read BLE_ADAPTER from /root/dashusb.conf.
@@ -1309,12 +1223,8 @@ def enable_controller_advertising(adapter_path):
 
     def current_flags(timeout=3):
         try:
-            # stdin=PIPE (closed immediately) is REQUIRED: under systemd the
-            # service stdin is /dev/null, and btmgmt blocks forever reading it
-            # even for a one-shot 'info' (busy-loops on /dev/null instead of
-            # seeing EOF). A closed pipe gives an immediate EOF and btmgmt
-            # returns in ~10ms. This was the real AIC8800 cold-start bug —
-            # every btmgmt call timed out, so flags never got set.
+            # A closed pipe gives btmgmt EOF; systemd's /dev/null stdin makes
+            # some controllers busy-loop even for one-shot `info` calls.
             r = subprocess.run(base_cmd + ['info'], timeout=timeout,
                                capture_output=True, check=False, text=True,
                                stdin=subprocess.PIPE)
@@ -1325,19 +1235,13 @@ def enable_controller_advertising(adapter_path):
             pass
         return set()
 
-    # PROBE: wait for the kernel mgmt socket to become responsive before
-    # issuing any set commands. On AIC8800 (Radxa/OrangePi Zero 3W) the socket
-    # can still be settling for a few tens of seconds after the chip firmware
-    # finishes its post-boot handshake. On Broadcom this loop exits on the
-    # first iteration. Cap at 90s; past that something is more seriously wrong
-    # and we proceed without flags rather than block the daemon forever.
+    # AIC8800 management sockets can remain unavailable after firmware startup;
+    # probe before setting flags and cap the wait so the daemon still starts.
     PROBE_CAP_S = 90
     probe_start = time.time()
     next_heartbeat = 30
     while time.time() - probe_start < PROBE_CAP_S:
-        # 'powered' present means btmgmt actually reached the controller.
-        # While the socket is settling current_flags() returns empty, so this
-        # stays false.
+        # `powered` confirms btmgmt reached the controller.
         flags = current_flags(timeout=4)
         if 'powered' in flags:
             waited = time.time() - probe_start
@@ -1353,9 +1257,7 @@ def enable_controller_advertising(adapter_path):
     else:
         log.warning(f'btmgmt mgmt socket still unresponsive after {PROBE_CAP_S}s — flag set may fail')
 
-    # Mgmt socket is responsive — set each flag with up to 3 quick retries.
-    # 'advertising' is deferred while a connect is in flight; the adv helper
-    # re-asserts it after. connectable/bondable are always safe to set.
+    # Defer only advertising during connection; the helper reasserts it later.
     deferred_adv = False
     for flag in required:
         if flag == 'advertising' and connect_in_flight():
@@ -1391,10 +1293,8 @@ def register_ad_cb():
     log.info('Advertisement registered')
 
 def register_ad_error_cb(error):
-    # BCM4345C0 (Rock 4C+): BlueZ uses EXTENDED advertising which this chip
-    # rejects ('Invalid Parameters 0x0d'). Do NOT exit (that tears down GATT
-    # and loops forever); keep GATT up. Legacy btmgmt advertising is enabled
-    # out-of-band by dashusb-ble-adv.service.
+    # BCM4345C0 rejects BlueZ extended advertising. Keep GATT active while the
+    # companion service enables legacy advertising through btmgmt.
     log.warning(f'BlueZ advertisement registration failed ({error}); '
                 'using legacy btmgmt advertising instead; GATT stays up.')
 
@@ -1452,10 +1352,7 @@ def setup_connection_monitoring(bus, adapter_path):
             log.info(f'BLE central connected: {path}')
         else:
             log.info(f'BLE central disconnected: {path}')
-            # Drop this peer's auth + failed-attempt state so the next
-            # session must re-enter the PIN (a reconnecting/spoofed
-            # address can't inherit a prior session's authentication) and
-            # the tracking sets don't grow unbounded.
+            # A new session must authenticate independently.
             clear_peer_auth(str(path))
 
     bus.add_signal_receiver(
@@ -1488,8 +1385,7 @@ def setup_bluez_restart_detection(bus):
             mainloop.quit()
             sys.exit(1)
         if not old_owner and new_owner:
-            # BlueZ came back after being absent; our GATT registration is still
-            # gone so exit to let systemd restart us cleanly against the new instance.
+            # Let systemd register GATT against the new BlueZ instance.
             log.info('BlueZ (org.bluez) reappeared — exiting for clean GATT re-registration')
             mainloop.quit()
             sys.exit(1)
@@ -1501,14 +1397,8 @@ def setup_bluez_restart_detection(bus):
         bus_name='org.freedesktop.DBus')
 
 
-# ============================================================
 # Android BLE pairing agent
-# ============================================================
-# Android's BLE stack triggers a BlueZ pairing request on first connect.
-# Without a registered agent, BlueZ rejects it and the connection times out.
-# iOS uses CoreBluetooth internally and is unaffected.
-# Registering a NoInputNoOutput agent makes BlueZ auto-accept just-works
-# pairing, so Android clients pair silently on first connection.
+# Android requires a BlueZ agent for first-connect just-works pairing.
 
 AGENT_PATH = "/com/dashusb/PairingAgent"
 
@@ -1556,9 +1446,7 @@ def main():
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     bus = dbus.SystemBus()
 
-    # Claim a well-known bus name so the D-Bus policy file takes effect.
-    # This allows BlueZ to call GetManagedObjects and GATT methods on us
-    # even on systems with strict D-Bus policies (e.g. Pi 5 / Bookworm).
+    # The policy grants BlueZ access through this well-known bus name.
     try:
         bus_name = dbus.service.BusName('com.dashusb.ble', bus,
                                         do_not_queue=True)
@@ -1568,17 +1456,9 @@ def main():
     except Exception as e:
         log.warning(f'Could not claim D-Bus bus name: {e} — using unique name')
 
-    # Detect which port the Go API server is on (80 production, 8788 dev)
     API_BASE = detect_api_base()
 
-    # Wait up to 15s for BlueZ to expose the LE adapter — see wait_for_adapter()
-    # docstring for race-condition rationale. Single-shot find_adapter() loses
-    # the race on slow boots, busy SD cards, or service restarts after archiveloop.
-    #
-    # `BLE_ADAPTER` in /root/dashusb.conf selects a preferred adapter
-    # (e.g. `hci1` when the user has plugged in an external USB BLE
-    # dongle). Same key the Rust telemetry sampler reads. If unset
-    # or unavailable, we use the first LE-capable adapter (hci0 onboard).
+    # Prefer BLE_ADAPTER, but fall back to the first LE-capable adapter.
     preferred = read_ble_adapter_from_config()
     if preferred:
         log.info(f'Config requests BLE adapter: {preferred}')
@@ -1589,28 +1469,18 @@ def main():
 
     log.info(f'Using adapter: {adapter_path}')
 
-    # Re-enable controller-level advertising now that BlueZ is provably up
-    # (was a unit ExecStartPre; moved here so the unit reaches active fast).
+    # Set controller flags only after BlueZ exposes the adapter.
     enable_controller_advertising(adapter_path)
 
-    # Subscribe to BlueZ D-Bus signals so connection events are logged.
-    # This makes it possible to see whether iOS actually connects to the Pi
-    # versus failing at the BLE advertisement/discovery stage.
     setup_connection_monitoring(bus, adapter_path)
 
-    # Exit (triggering systemd restart) if bluetoothd restarts, which drops
-    # our GATT registration and causes iOS to see stale/wrong services.
+    # Bluetoothd restarts drop GATT registration.
     setup_bluez_restart_detection(bus)
 
-    # Register a NoInputNoOutput pairing agent so Android devices can pair
-    # silently without a PIN prompt.  iOS uses CoreBluetooth internals and
-    # doesn't need this, but Android's BLE stack requests a pairing confirmation
-    # that BlueZ will reject (timing out the connection) unless an agent is
-    # registered.  NoInputNoOutput tells BlueZ the Pi has no keyboard/display,
-    # causing it to auto-accept the just-works pairing automatically.
+    # Accept Android's just-works pairing request without a hardware prompt.
     _pairing_agent = register_android_pairing_agent(bus)
 
-    # Power on adapter and set unique BLE name
+    # Expose a stable suffix so nearby devices can be distinguished.
     adapter_props = dbus.Interface(
         bus.get_object(BLUEZ_SERVICE, adapter_path), DBUS_PROP_IFACE)
     adapter_props.Set('org.bluez.Adapter1', 'Powered', dbus.Boolean(True))
@@ -1625,10 +1495,8 @@ def main():
     except Exception as e:
         log.warning(f'could not set Pairable=False: {e}')
 
-    # Update Avahi mDNS service name to match the unique BLE name
     update_avahi_service_name(ble_name)
 
-    # Register GATT application
     service_manager = dbus.Interface(
         bus.get_object(BLUEZ_SERVICE, adapter_path), GATT_MANAGER_IFACE)
 
@@ -1638,7 +1506,6 @@ def main():
         reply_handler=register_app_cb,
         error_handler=register_app_error_cb)
 
-    # Register advertisement
     ad_manager = dbus.Interface(
         bus.get_object(BLUEZ_SERVICE, adapter_path), LE_ADVERTISING_MANAGER_IFACE)
 
@@ -1646,7 +1513,7 @@ def main():
                         service_manager=service_manager, app=app,
                         local_name=ble_name)
 
-    # Defer initial advertisement registration while a connect is in flight.
+    # Avoid changing advertising state during a central connection.
     def register_initial_adv():
         if connect_in_flight():
             log.info('Initial advertisement deferred: central connect in flight')
@@ -1663,7 +1530,7 @@ def main():
     log.info(f'WiFi Setup Service: {WIFI_SERVICE_UUID}')
     log.info(f'API Proxy Service:  {API_SERVICE_UUID}')
 
-    # Run self-test after 3s to verify GATT objects are properly registered
+    # Verify the asynchronous registration after BlueZ has processed it.
     GLib.timeout_add(3000, verify_gatt_objects, app)
 
     mainloop = GLib.MainLoop()

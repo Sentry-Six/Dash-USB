@@ -58,7 +58,6 @@ export function NetworkStep({ data, onChange }: StepProps) {
 
   return (
     <div className="space-y-6">
-      {/* WiFi info banner */}
       <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-4">
         <div className="flex items-start gap-3">
           <Info className="mt-0.5 h-5 w-5 shrink-0 text-blue-400" />
@@ -79,7 +78,6 @@ export function NetworkStep({ data, onChange }: StepProps) {
         </div>
       </div>
 
-      {/* Hostname */}
       <div>
         <div className="mb-3 flex items-center gap-2">
           <Wifi className="h-4 w-4 text-blue-400" />

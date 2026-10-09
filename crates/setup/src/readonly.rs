@@ -1,10 +1,5 @@
-//! Read-only root filesystem.
-//!
-//! Makes the SD root filesystem read-only and sets up the tmpfs, bind-mount,
-//! and dispatcher scaffolding the rest of the system needs to keep working
-//! when it cannot write to /. Getting this wrong bricks networking, DNS,
-//! Bluetooth bonds, and fsck on every subsequent boot, so nearly every step
-//! here is deliberately best-effort and must not abort the phase.
+//! Read-only root setup with writable runtime and persistent-state mounts.
+//! Most steps are best-effort to keep networking and boot recovery available.
 
 use std::path::Path;
 use std::time::Duration;
@@ -40,12 +35,7 @@ pub async fn make_readonly(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
     for svc in &["apt-daily.timer", "apt-daily-upgrade.timer"] {
         let _ = sentryusb_shell::run("systemctl", &["disable", svc]).await;
     }
-    // Debian housekeeping timers, pointless on a read-only dashcam appliance:
-    // man-db rebuilds a manpage cache nobody reads, dpkg-db-backup snapshots a
-    // package DB that never changes post-setup, e2scrub does online ext4
-    // scrubbing the boot-time fsck already covers. They burn boot and runtime
-    // CPU and I/O competing with the services the car needs. Disabling the
-    // timer stops both the periodic runs and the boot-time run.
+    // Disable cache/backup/scrub timers that cannot update a read-only system.
     for svc in &["man-db.timer", "dpkg-db-backup.timer", "e2scrub_all.timer"] {
         let _ = sentryusb_shell::run("systemctl", &["disable", svc]).await;
     }
@@ -54,10 +44,7 @@ pub async fn make_readonly(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
         let _ = sentryusb_shell::run("systemctl", &["disable", svc]).await;
     }
 
-    // Protect essential packages from autoremove. Non-Raspbian distros (e.g.
-    // DietPi) install these as auto-dependencies that `apt-get autoremove
-    // --purge` below would sweep away, killing WiFi on the very reboot this
-    // phase is preparing for.
+    // Minimal distributions may mark network dependencies as auto-removable.
     for pkg in &[
         "network-manager", "wpasupplicant", "wpa-supplicant", "ifupdown",
         "dhcpcd", "dhcpcd5", "isc-dhcp-client", "firmware-brcm80211",
@@ -92,9 +79,7 @@ pub async fn make_readonly(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
 
     emitter.progress("Configuring system...");
 
-    // `fastboot` disables fsck on boot. With a read-only root, the boot-time
-    // fsck is the ONLY chance to catch corruption before / goes read-only, so
-    // fastboot MUST be removed and fsck.mode=auto forced.
+    // Boot-time fsck is the only repair window before root becomes read-only.
     if let Some(cmdline_path) = &env.cmdline_path {
         remove_cmdline_param(cmdline_path, "fastboot")?;
         append_cmdline_param(cmdline_path, "fsck.mode=auto")?;
@@ -117,9 +102,7 @@ pub async fn make_readonly(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
     // Swap is off (noswap above); reclaim the swap file's space.
     let _ = std::fs::remove_file("/var/swap");
 
-    // fake-hwclock must stay functional during setup (system::configure_rtc
-    // may run later and replace it with real hwclock). Without this migration
-    // a reboot mid-setup has no time source at all.
+    // Keep fake-hwclock state writable until a real RTC may replace it.
     ensure_mutable_mounted(emitter).await;
     let _ = std::fs::create_dir_all("/mutable/etc");
 
@@ -145,10 +128,7 @@ pub async fn make_readonly(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
         )?;
     }
 
-    // /var/lib/NetworkManager must end up a tmpfs, not a symlink to /mutable:
-    // NM's built-in dnsmasq writes lease files here, and if the path is not
-    // writable the AP connection enters an enable/disable loop that thrashes
-    // the radio and kills all WiFi.
+    // NetworkManager needs a real writable directory for dnsmasq leases.
     if Path::new("/var/lib/NetworkManager").is_dir()
         && !Path::new("/var/lib/NetworkManager").is_symlink()
     {
@@ -165,9 +145,7 @@ pub async fn make_readonly(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
         let _ = std::fs::create_dir_all("/var/lib/NetworkManager");
     }
 
-    // Connection profiles stay on the root FS so they are available at boot
-    // even when /mutable (on USB) has not mounted yet. A copy goes to /mutable
-    // for reference and restore.
+    // Keep profiles on root for boots where an external /mutable is late.
     if Path::new("/etc/NetworkManager/system-connections").is_dir()
         && !Path::new("/etc/NetworkManager/system-connections").is_symlink()
     {
@@ -191,10 +169,7 @@ pub async fn make_readonly(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
         }
     }
 
-    // BlueZ persists pairing keys to /var/lib/bluetooth. On a read-only root
-    // that write fails and bluetooth.service can crash during pairing, so the
-    // directory is bind-mounted from `.bluetooth` (dot-prefixed to hide the
-    // folder from Finder/Explorer when the drive is plugged into a computer).
+    // Persist BlueZ bonds under a hidden writable /mutable directory.
     if !Path::new("/mutable/.bluetooth").is_dir() {
         emitter.progress("Creating /mutable/.bluetooth for BlueZ bond persistence");
         let _ = std::fs::create_dir_all("/mutable/.bluetooth");
@@ -210,13 +185,8 @@ pub async fn make_readonly(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
         let _ = sentryusb_shell::run("chmod", &["700", "/mutable/.bluetooth"]).await;
     }
 
-    // The cloud uploader and notification setup write credential JSON to
-    // /root/.dashusb at RUNTIME: cloud pairing and notification config are
-    // post-setup user actions, so there is no read-write window during setup.
-    // On a read-only root that write fails ("set credentials") and cloud
-    // pairing hangs forever on "waiting for browser to finish". Bind-mounting
-    // from .dashusb (dot-prefixed to hide the folder from Finder/Explorer)
-    // keeps the credentials on the writable /mutable partition.
+    // Cloud and notification credentials are written after setup; persist
+    // /root/.dashusb through a hidden writable /mutable directory.
     if !Path::new("/mutable/.dashusb").is_dir() {
         emitter.progress("Creating /mutable/.dashusb for cloud/notification credential persistence");
         let _ = std::fs::create_dir_all("/mutable/.dashusb");
@@ -265,9 +235,7 @@ pub async fn make_readonly(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
         }
     }
 
-    // The tmpfs /var/spool takes its permissions from
-    // /usr/lib/tmpfiles.d/var.conf; bump 0755 to 1777 so non-root processes
-    // (cron, at) can write.
+    // Allow non-root cron/at writers on tmpfs /var/spool.
     if Path::new("/usr/lib/tmpfiles.d/var.conf").exists() {
         sed_in_place("/usr/lib/tmpfiles.d/var.conf", |line| {
             if let Some(idx) = line.find("spool") {
@@ -281,11 +249,7 @@ pub async fn make_readonly(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
         })?;
     }
 
-    // /etc/resolv.conf points at /tmp, a tmpfs that is always writable at
-    // boot; a /mutable symlink breaks when the USB drive is slow. This also
-    // redirects away from systemd-resolved's stub path, which would conflict:
-    // NM is set to dns=none below and a dispatcher populates resolv.conf
-    // directly.
+    // Keep resolv.conf on boot-ready tmpfs; the NM dispatcher populates it.
     let resolv_target = std::fs::read_link("/etc/resolv.conf")
         .ok()
         .map(|p| p.to_string_lossy().into_owned())
@@ -301,8 +265,7 @@ pub async fn make_readonly(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
         let _ = std::os::unix::fs::symlink("/tmp/resolv.conf", "/etc/resolv.conf");
     }
 
-    // tmpfiles.d rule to seed /tmp/resolv.conf on every boot so the symlink
-    // doesn't dangle while DHCP/NM come up.
+    // Seed the target before DHCP/NetworkManager starts.
     emitter.progress("Installing tmpfiles.d rule for resolv.conf");
     let _ = std::fs::create_dir_all("/etc/tmpfiles.d");
     std::fs::write(
@@ -327,9 +290,7 @@ pub async fn make_readonly(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
     // Unblock now, for the remainder of setup.
     let _ = sentryusb_shell::run("rfkill", &["unblock", "bluetooth"]).await;
 
-    // A oneshot service unblocks BT on every boot. The BT radio starts
-    // soft-blocked by default on RPi, and on a read-only root the block never
-    // clears, so the BLE peripheral daemon never comes up.
+    // RPi Bluetooth can remain soft-blocked when rfkill state is read-only.
     emitter.progress("Installing Bluetooth rfkill-unblock boot service");
     std::fs::write(
         "/etc/systemd/system/rfkill-unblock-bluetooth.service",
@@ -339,9 +300,7 @@ pub async fn make_readonly(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
         "systemctl", &["enable", "rfkill-unblock-bluetooth.service"],
     ).await;
 
-    // Reload the NM config (dns=none plus dispatcher) rather than restarting:
-    // a full restart would drop WiFi and kill SSH sessions mid-setup. The
-    // reboot that follows applies the new config fully.
+    // Reload without dropping the active WiFi/SSH session.
     if sentryusb_shell::run("systemctl", &["is-active", "--quiet", "NetworkManager"])
         .await
         .is_ok()
@@ -357,8 +316,7 @@ pub async fn make_readonly(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
     // /run/systemd/systemd-units-load.
     let _ = sentryusb_shell::run("touch", &["-t", "197001010000", FSTAB_PATH]).await;
 
-    // autofs depends on network services by default (for NFS mounting). NFS is
-    // unused here, and dropping the deps speeds up boot.
+    // Snapshot autofs is local and does not need network dependencies.
     if !Path::new("/etc/systemd/system/autofs.service").exists()
         && Path::new("/lib/systemd/system/autofs.service").exists()
     {
@@ -397,9 +355,7 @@ fn already_readonly(env: &SetupEnv) -> bool {
 }
 
 pub async fn ensure_boot_rw() {
-    // Order matters: /dashusb is the preferred symlink, /teslausb the legacy
-    // name some upgraded installs still have, /boot/firmware the bookworm
-    // path. The first mount point that exists wins.
+    // Prefer /dashusb, then legacy /teslausb, then Bookworm's boot path.
     for mp in &["/dashusb", "/teslausb", "/boot/firmware", "/boot"] {
         if is_mount_point(mp).await {
             let _ = sentryusb_shell::run("mount", &[mp, "-o", "remount,rw"]).await;
@@ -625,18 +581,14 @@ fn update_fstab() -> Result<()> {
         ("/tmp", "tmpfs /tmp    tmpfs nodev,nosuid 0 0"),
         ("/var/spool", "tmpfs /var/spool tmpfs nodev,nosuid 0 0"),
         ("/var/lib/ntp", "tmpfs /var/lib/ntp tmpfs nodev,nosuid 0 0"),
-        // NetworkManager needs mode=0700 so dnsmasq lease files have the
-        // right permissions for NM's internal access checks.
+        // NetworkManager requires 0700 for its dnsmasq lease directory.
         (
             "/var/lib/NetworkManager",
             "tmpfs /var/lib/NetworkManager tmpfs nodev,nosuid,mode=0700 0 0",
         ),
         ("/var/lib/dhcp", "tmpfs /var/lib/dhcp tmpfs nodev,nosuid 0 0"),
         ("/var/lib/dhcpcd", "tmpfs /var/lib/dhcpcd tmpfs nodev,nosuid 0 0"),
-        // rfkill state on tmpfs so systemd-rfkill cannot restore the stale
-        // soft-block frozen in at the moment root went read-only. Otherwise
-        // Bluetooth stays blocked on every boot and the BLE daemon never
-        // comes up.
+        // Do not restore a stale Bluetooth soft-block from read-only state.
         (
             "/var/lib/systemd/rfkill",
             "tmpfs /var/lib/systemd/rfkill tmpfs nodev,nosuid 0 0",
@@ -647,11 +599,7 @@ fn update_fstab() -> Result<()> {
         if fstab_has_mountpoint(&fstab, mp) {
             continue;
         }
-        // The mount point directory must exist; tmpfs mounts over it.
-        // /var/lib/ntp is wiped and recreated to guarantee a clean directory
-        // at the mount target. `symlink_metadata` does not follow symlinks, so
-        // the reset also fires when the path is a symlink to a real directory:
-        // mounting a tmpfs over a symlink does not do the right thing.
+        // Replace symlinks too; tmpfs requires a real mount-point directory.
         if *mp == "/var/lib/ntp" {
             let needs_reset = match std::fs::symlink_metadata(mp) {
                 Err(_) => false, // Missing, so create_dir_all below covers it.
@@ -668,16 +616,8 @@ fn update_fstab() -> Result<()> {
         fstab.push('\n');
     }
 
-    // Bind-mount /mutable/.bluetooth over /var/lib/bluetooth so BlueZ can
-    // persist bond keys on the read-only root FS.
-    // x-systemd.requires-mounts-for guarantees /mutable mounts first;
-    // x-systemd.before puts the bind in place before bluetoothd starts.
-    //
-    // Both bind mount points MUST exist before root goes read-only: systemd
-    // cannot create a missing mount point on a ro root, and without `nofail`
-    // the failed bind takes down local-fs.target and drops the Pi into
-    // Emergency Mode on the first boot after setup (#158). mkdir hard-fails
-    // here so a boot-breaking fstab entry is never written.
+    // Mount /mutable first and bind bonds before bluetoothd. Both directories
+    // must exist before root becomes read-only; nofail prevents Emergency Mode.
     std::fs::create_dir_all("/var/lib/bluetooth")?;
     if !fstab_has_mountpoint(&fstab, "/var/lib/bluetooth") {
         fstab.push_str(
@@ -686,11 +626,7 @@ fn update_fstab() -> Result<()> {
         );
     }
 
-    // Bind-mount /mutable/.dashusb over /root/.dashusb so the cloud uploader
-    // and notification setup can persist credential JSON written at runtime on
-    // the read-only root FS. Without it, cloud pairing fails at "set
-    // credentials" and hangs. x-systemd.before puts the bind in place before
-    // the daemon reads or writes credentials at startup.
+    // Bind writable credentials before the daemon starts.
     std::fs::create_dir_all("/root/.dashusb")?;
     std::fs::set_permissions(
         "/root/.dashusb",
@@ -703,9 +639,7 @@ fn update_fstab() -> Result<()> {
         );
     }
 
-    // Repair bind entries written by v3.13.0 through v3.14.3, which lack
-    // `nofail` (a setup re-run after a #158 recovery, or a pre-fix line
-    // already present).
+    // Add nofail to older bind entries that could block local-fs.target.
     for mp in ["/var/lib/bluetooth", "/root/.dashusb"] {
         add_nofail_to_bind(&mut fstab, mp);
     }

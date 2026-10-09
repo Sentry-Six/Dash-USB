@@ -1,8 +1,4 @@
-//! Archive system configuration.
-//!
-//! Sets up the archive backend (cifs, nfs, rsync, rclone, or none) by
-//! verifying credentials, installing dependencies, and writing the archive
-//! loop service.
+//! Archive backend validation, dependencies, helpers, and service setup.
 
 use std::time::Duration;
 
@@ -34,8 +30,7 @@ impl ArchiveSystem {
     }
 }
 
-/// Missing keys are ConfigError, not transient: they fail identically on
-/// retry, so the boot-loop auto-resume must halt rather than spin.
+/// Classify missing keys as configuration errors so auto-resume stops.
 fn validate_archive_config(env: &SetupEnv, system: ArchiveSystem) -> Result<()> {
     let require = |key: &str| -> Result<()> {
         if env.config.get(key).map_or(true, |v| v.is_empty()) {
@@ -58,6 +53,9 @@ fn validate_archive_config(env: &SetupEnv, system: ArchiveSystem) -> Result<()> 
         }
         ArchiveSystem::Cifs => {
             require("SHARE_NAME")?;
+            if normalize_cifs_share(env.config.get("SHARE_NAME").map_or("", String::as_str)).is_empty() {
+                return Err(ConfigError("SHARE_NAME must name a CIFS share, not only slashes".into()).into());
+            }
             require("SHARE_USER")?;
             require("SHARE_PASSWORD")?;
             require("ARCHIVE_SERVER")?;
@@ -72,13 +70,7 @@ fn validate_archive_config(env: &SetupEnv, system: ArchiveSystem) -> Result<()> 
     Ok(())
 }
 
-/// Pre-populate root's known_hosts with the rsync server's SSH host key so the
-/// non-interactive archiveloop SSH-via-rsync calls succeed. Without it the
-/// first sync fails with "Host key verification failed": OpenSSH refuses to
-/// add unknown hosts in batch mode, and the call runs as root inside a systemd
-/// service where the user cannot accept the key interactively. Idempotent:
-/// scanned lines are deduplicated against the existing known_hosts before
-/// appending.
+/// Add deduplicated rsync host keys for non-interactive systemd connections.
 async fn trust_rsync_host_key(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> {
     let server = match env.config.get("RSYNC_SERVER") {
         Some(s) if !s.trim().is_empty() => s.trim().to_string(),
@@ -96,9 +88,7 @@ async fn trust_rsync_host_key(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
     ).await {
         Ok(s) => s,
         Err(e) => {
-            // An unreachable server must not fail the whole setup: the
-            // archive cycle reports a clearer error later, and the user can
-            // re-run setup once the server is online.
+            // Defer unreachable-server errors to the archive cycle.
             emitter.progress(&format!(
                 "ssh-keyscan {} failed: {}. Archiving may need a manual ssh-keyscan later.",
                 server, e
@@ -175,18 +165,13 @@ pub async fn configure_archive(env: &SetupEnv, emitter: &SetupEmitter) -> Result
     emitter.progress(&format!("Configuring archive system: {:?}", archive_system));
 
     ensure_tool("rsync", "rsync", emitter).await?;
-    // rclone talks to the remote itself, so the binary must exist before
-    // archiveloop needs it.
+    // rclone needs its own client rather than a mount helper.
     if archive_system == ArchiveSystem::Rclone {
         ensure_tool("rclone", "rclone", emitter).await?;
     }
 
-    // Mount-based backends MUST get an `/etc/fstab` entry: `connect-archive.sh`
-    // runs `mount /mnt/archive` from fstab, and without the entry it fails all
-    // 10 retries every archive cycle and clips never leave the Pi. `noauto`
-    // keeps the mount on-demand so boot doesn't hang waiting for a NAS that is
-    // usually offline except when parked at home. rsync and rclone talk to the
-    // remote directly and need no entry.
+    // Mount backends require fstab because connect-archive mounts by path.
+    // `noauto` prevents an unavailable NAS from delaying boot.
     match archive_system {
         ArchiveSystem::Nfs => configure_nfs_mount(env, emitter).await?,
         ArchiveSystem::Cifs => configure_cifs_mount(env, emitter).await?,
@@ -194,11 +179,7 @@ pub async fn configure_archive(env: &SetupEnv, emitter: &SetupEmitter) -> Result
         _ => {}
     }
 
-    // Setup MUST drop the per-archive-system bash helpers into /root/bin/:
-    // archiveloop calls them by fixed name whatever the active system, and
-    // nothing else installs them (`curl | bash install-pi.sh` does not run
-    // pi-gen). Without them archiveloop hits "command not found" every cycle
-    // and clips never leave the Pi.
+    // archiveloop calls backend-specific helpers through fixed filenames.
     install_archive_scripts(archive_system, emitter)?;
 
     crate::system::install_archive_service()?;
@@ -209,12 +190,8 @@ pub async fn configure_archive(env: &SetupEnv, emitter: &SetupEmitter) -> Result
     Ok(true)
 }
 
-// Each archive backend keeps its own copies of these helpers under
-// `run/<system>_archive/`. The filenames are shared because archiveloop calls
-// them by fixed name (e.g. `/root/bin/archive-is-reachable.sh`), so setup
-// drops the variant matching ARCHIVE_SYSTEM into `/root/bin/`. Writing the
-// full set every time is what lets a later run with a different system swap
-// the files cleanly.
+// Install one backend's complete fixed-name helper set so changing backends
+// cannot retain a helper from the previous selection.
 
 const CIFS_ARCHIVE_CLIPS: &str = include_str!("../../../run/cifs_archive/archive-clips.sh");
 const CIFS_ARCHIVE_IS_REACHABLE: &str = include_str!("../../../run/cifs_archive/archive-is-reachable.sh");
@@ -241,44 +218,11 @@ const NONE_ARCHIVE_IS_REACHABLE: &str = include_str!("../../../run/none_archive/
 const NONE_CONNECT_ARCHIVE: &str = include_str!("../../../run/none_archive/connect-archive.sh");
 const NONE_DISCONNECT_ARCHIVE: &str = include_str!("../../../run/none_archive/disconnect-archive.sh");
 
-/// Drop the per-archive-system bash helpers into /root/bin/ with mode 0755.
-/// Idempotent: overwriting is fine, and a stale file from a prior run with a
-/// different ARCHIVE_SYSTEM is cleanly replaced.
+/// Install the selected backend's helpers in `/root/bin` with mode 0755.
 fn install_archive_scripts(system: ArchiveSystem, emitter: &SetupEmitter) -> Result<()> {
     let _ = std::fs::create_dir_all("/root/bin");
 
-    let scripts: &[(&str, &str)] = match system {
-        ArchiveSystem::Cifs => &[
-            ("archive-clips.sh", CIFS_ARCHIVE_CLIPS),
-            ("archive-is-reachable.sh", CIFS_ARCHIVE_IS_REACHABLE),
-            ("connect-archive.sh", CIFS_CONNECT_ARCHIVE),
-            ("disconnect-archive.sh", CIFS_DISCONNECT_ARCHIVE),
-        ],
-        ArchiveSystem::Nfs => &[
-            ("archive-clips.sh", NFS_ARCHIVE_CLIPS),
-            ("archive-is-reachable.sh", NFS_ARCHIVE_IS_REACHABLE),
-            ("connect-archive.sh", NFS_CONNECT_ARCHIVE),
-            ("disconnect-archive.sh", NFS_DISCONNECT_ARCHIVE),
-        ],
-        ArchiveSystem::Rsync => &[
-            ("archive-clips.sh", RSYNC_ARCHIVE_CLIPS),
-            ("archive-is-reachable.sh", RSYNC_ARCHIVE_IS_REACHABLE),
-            ("connect-archive.sh", RSYNC_CONNECT_ARCHIVE),
-            ("disconnect-archive.sh", RSYNC_DISCONNECT_ARCHIVE),
-        ],
-        ArchiveSystem::Rclone => &[
-            ("archive-clips.sh", RCLONE_ARCHIVE_CLIPS),
-            ("archive-is-reachable.sh", RCLONE_ARCHIVE_IS_REACHABLE),
-            ("connect-archive.sh", RCLONE_CONNECT_ARCHIVE),
-            ("disconnect-archive.sh", RCLONE_DISCONNECT_ARCHIVE),
-        ],
-        ArchiveSystem::None => &[
-            ("archive-clips.sh", NONE_ARCHIVE_CLIPS),
-            ("archive-is-reachable.sh", NONE_ARCHIVE_IS_REACHABLE),
-            ("connect-archive.sh", NONE_CONNECT_ARCHIVE),
-            ("disconnect-archive.sh", NONE_DISCONNECT_ARCHIVE),
-        ],
-    };
+    let scripts = archive_scripts(system);
 
     for (name, content) in scripts {
         let path = format!("/root/bin/{}", name);
@@ -315,12 +259,9 @@ async fn ensure_pkg(pkg: &str, emitter: &SetupEmitter) -> Result<()> {
     Ok(())
 }
 
-/// Strip any prior entry for `mount_point` with filesystem type `fstype`
-/// from `/etc/fstab` and append `new_line`. Keeps the file's other
-/// entries (root, /boot, /mutable, cam_disk, tmpfs, etc.) intact.
+/// Replace the exact mount-point/filesystem entry while preserving other fstab entries.
 fn replace_fstab_entry(fstype: &str, mount_point: &str, new_line: &str) -> Result<()> {
-    // The setup runner already remounted root read-write; repeat it here so
-    // invoking the archive phase standalone cannot hit EROFS.
+    // Standalone archive setup may not have remounted root read-write.
     let _ = std::process::Command::new("mount")
         .args(["/", "-o", "remount,rw"])
         .output();
@@ -329,9 +270,7 @@ fn replace_fstab_entry(fstype: &str, mount_point: &str, new_line: &str) -> Resul
     let mut lines: Vec<String> = existing
         .lines()
         .filter(|l| {
-            // Match the fstype as a whole field plus the exact mount point,
-            // so an unrelated entry merely mentioning the same substring is
-            // not clobbered.
+            // Match complete fields to avoid removing substring lookalikes.
             let fields: Vec<&str> = l.split_whitespace().collect();
             !(fields.len() >= 3 && fields[1] == mount_point && fields[2] == fstype)
         })
@@ -369,6 +308,14 @@ async fn configure_nfs_mount(env: &SetupEnv, emitter: &SetupEmitter) -> Result<(
     Ok(())
 }
 
+/// SMB wants a share name (optionally a subfolder), not an absolute NAS path.
+/// Strip accidental leading slashes only for CIFS; NFS exports stay absolute.
+pub fn normalize_cifs_share(share: &str) -> &str { share.trim_start_matches('/') }
+
+pub fn cifs_share_looks_like_path(share: &str) -> bool {
+    share.starts_with('/') && normalize_cifs_share(share).contains('/')
+}
+
 async fn configure_cifs_mount(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> {
     let server = env.get("ARCHIVE_SERVER", "");
     let share = env.get("SHARE_NAME", "");
@@ -382,24 +329,21 @@ async fn configure_cifs_mount(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
 
     ensure_pkg("cifs-utils", emitter).await?;
 
-    // Credentials live in a 0600 file referenced by fstab so the password does
-    // not leak into the world-readable fstab itself.
+    // Keep credentials out of world-readable fstab.
     let creds_path = "/root/.dashusbArchiveCredentials";
     let mut creds = format!("username={}\npassword={}\n", user, pass);
     if !domain.is_empty() {
         creds.push_str(&format!("domain={}\n", domain));
     }
     std::fs::write(creds_path, creds).context("write credentials file")?;
-    // `chmod 600` via shell rather than std::os::unix::fs::PermissionsExt,
-    // which is unavailable on the Windows dev host used for cargo check. The
-    // setup phase only ever executes on Linux, so this is the real code path.
+    // Use chmod so this crate still checks on non-Unix development hosts.
     let _ = sentryusb_shell::run("chmod", &["600", creds_path]).await;
 
     std::fs::create_dir_all("/mnt/archive").context("mkdir /mnt/archive")?;
 
     // fstab encodes spaces in paths as \040, which preserves share names like
     // "Dash Cam" without breaking the field split.
-    let share_escaped = share.replace(' ', "\\040");
+    let share_escaped = normalize_cifs_share(&share).replace(' ', "\\040");
     let line = format!(
         "//{}/{} /mnt/archive cifs rw,noauto,credentials={},iocharset=utf8,file_mode=0777,dir_mode=0777,vers={} 0 0",
         server, share_escaped, creds_path, vers
@@ -410,3 +354,50 @@ async fn configure_cifs_mount(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
     Ok(())
 }
 
+pub(crate) fn archive_scripts(system: ArchiveSystem) -> &'static [(&'static str, &'static str)] {
+    match system {
+        ArchiveSystem::Cifs => &[
+            ("archive-clips.sh", CIFS_ARCHIVE_CLIPS),
+            ("archive-is-reachable.sh", CIFS_ARCHIVE_IS_REACHABLE),
+            ("connect-archive.sh", CIFS_CONNECT_ARCHIVE),
+            ("disconnect-archive.sh", CIFS_DISCONNECT_ARCHIVE),
+        ],
+        ArchiveSystem::Nfs => &[
+            ("archive-clips.sh", NFS_ARCHIVE_CLIPS),
+            ("archive-is-reachable.sh", NFS_ARCHIVE_IS_REACHABLE),
+            ("connect-archive.sh", NFS_CONNECT_ARCHIVE),
+            ("disconnect-archive.sh", NFS_DISCONNECT_ARCHIVE),
+        ],
+        ArchiveSystem::Rsync => &[
+            ("archive-clips.sh", RSYNC_ARCHIVE_CLIPS),
+            ("archive-is-reachable.sh", RSYNC_ARCHIVE_IS_REACHABLE),
+            ("connect-archive.sh", RSYNC_CONNECT_ARCHIVE),
+            ("disconnect-archive.sh", RSYNC_DISCONNECT_ARCHIVE),
+        ],
+        ArchiveSystem::Rclone => &[
+            ("archive-clips.sh", RCLONE_ARCHIVE_CLIPS),
+            ("archive-is-reachable.sh", RCLONE_ARCHIVE_IS_REACHABLE),
+            ("connect-archive.sh", RCLONE_CONNECT_ARCHIVE),
+            ("disconnect-archive.sh", RCLONE_DISCONNECT_ARCHIVE),
+        ],
+        ArchiveSystem::None => &[
+            ("archive-clips.sh", NONE_ARCHIVE_CLIPS),
+            ("archive-is-reachable.sh", NONE_ARCHIVE_IS_REACHABLE),
+            ("connect-archive.sh", NONE_CONNECT_ARCHIVE),
+            ("disconnect-archive.sh", NONE_DISCONNECT_ARCHIVE),
+        ],
+    }
+}
+
+#[cfg(test)]
+mod share_tests {
+    use super::*;
+    #[test]
+    fn cifs_share_normalization_keeps_subfolders_and_rejects_empty_share() {
+        assert_eq!(normalize_cifs_share("/Recordings"), "Recordings");
+        assert_eq!(normalize_cifs_share("///Recordings/clips/"), "Recordings/clips/");
+        assert_eq!(normalize_cifs_share("///"), "");
+        assert!(!cifs_share_looks_like_path("Recordings/clips"));
+        assert!(cifs_share_looks_like_path("/mnt/user/Recordings"));
+    }
+}

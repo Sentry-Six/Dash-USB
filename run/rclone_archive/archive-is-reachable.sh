@@ -1,18 +1,14 @@
 #!/bin/bash -eu
 
-# S3 endpoints behind a proxy serve HTTPS but drop ICMP, so ping alone reports
-# a working bucket dead. archive-clips.sh also runs this mid-transfer and
-# SIGTERMs rclone after five failures, so the total budget MUST stay under its
-# 6s wrapper: a filtered port burns its whole timeout.
+# Proxy-backed endpoints may drop ICMP. Keep probes below the transfer
+# monitor's six-second wrapper budget.
 #
 # Never interpolate the target into shell code. It is user config, and this
 # runs as root.
 
 TARGET="$1"
 
-# Prefer the remote's own endpoint: it is what rclone connects to, port
-# included, so it cannot disagree with ARCHIVE_SERVER. Remotes without one
-# (Drive, Dropbox, AWS S3) fall back to the passed-in target.
+# Prefer the configured remote endpoint and port; otherwise use the passed host.
 RCLONE_CONF="${RCLONE_CONFIG:-/root/.config/rclone/rclone.conf}"
 if [ -n "${RCLONE_DRIVE:-}" ] && [ -r "$RCLONE_CONF" ]; then
     endpoint=$(awk -v d="$RCLONE_DRIVE" '
@@ -64,8 +60,7 @@ if ping -q -w "$PING_TIMEOUT" -c 1 -- "$HOST" > /dev/null 2>&1; then
     exit 0
 fi
 
-# Setup installs netcat-openbsd, so nc is the normal path. /dev/tcp runs only
-# when nc is absent, and only for a strict charset: it interpolates.
+# Restrict interpolated /dev/tcp fallback targets when nc is unavailable.
 tcp_probe () {
     local host="$1" port="$2"
     if command -v nc > /dev/null 2>&1; then

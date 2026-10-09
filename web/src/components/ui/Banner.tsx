@@ -1,19 +1,15 @@
 import type { ReactNode } from "react"
 import { cn } from "@/lib/utils"
 
-type BannerKind = "error" | "warn" | "info" | "update"
+type BannerKind = "warn" | "update"
 
 const HALO_BY_KIND: Record<BannerKind, string> = {
-  error: "halo-red",
   warn: "halo-amber",
-  info: "halo-blue",
   update: "halo-accent",
 }
 
 const TITLE_COLOR_BY_KIND: Record<BannerKind, string> = {
-  error: "#fca5a5",
   warn: "#fcd34d",
-  info: "#bfdbfe",
   update: "oklch(0.86 0.16 150)",
 }
 

@@ -14,9 +14,7 @@ pub async fn run(name: &str, args: &[&str]) -> Result<String> {
 pub async fn run_with_timeout(timeout: Duration, name: &str, args: &[&str]) -> Result<String> {
     debug!(cmd = name, ?args, "executing command");
 
-    // kill_on_drop: the timeout drops this future, and without the flag the
-    // child keeps running detached (a hung `cp --reflink` or fsck could hold
-    // its loop device forever).
+    // Ensure a timed-out child cannot remain detached and retain resources.
     let result = tokio::time::timeout(timeout, async {
         Command::new(name)
             .args(args)

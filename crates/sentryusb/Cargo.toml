@@ -1,8 +1,8 @@
 [package]
-# Package/crate name stays `sentryusb` for upstream merge-friendliness;
-# the shipped binary is renamed below.
+# Keep the crate name `sentryusb`; the shipped binary is renamed below.
 name = "sentryusb"
-version = "1.0.0"
+# Keep this aligned with the release tag; the API reports it as `binary_version`.
+version = "1.0.6"
 edition = "2024"
 
 [dependencies]
@@ -13,11 +13,8 @@ tracing-subscriber = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.7", features = ["compression-full", "fs"] }
-# Files stored uncompressed so file.data is a Cow::Borrowed slice into
-# .rodata — zero allocation, zero CPU per request. The bulk of bytes
-# (JS/CSS/HTML) ship as pre-compressed .br/.gz siblings produced by
-# build.sh / the GitHub Actions workflow; only the few uncompressible
-# files (woff2, favicon, tiny entries) live raw.
+# Uncompressed embedding permits borrowed `.rodata`; build.sh supplies
+# pre-compressed siblings for compressible assets.
 rust-embed = { version = "8" }
 
 sentryusb-shell = { path = "../shell", package = "sentryusb-shell" }

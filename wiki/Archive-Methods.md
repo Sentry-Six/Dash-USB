@@ -1,6 +1,7 @@
 # Archive Methods
 
-Pick whichever fits how you already store stuff. Dash USB archives every recording the car writes to one of four backends — and because GM's firmware deletes everything older than about 2 hours from the drive, the archive is the only durable copy of your footage.
+Dash USB supports four archive backends. Because the vehicle removes recordings
+after about two hours, the archive is the durable copy.
 
 ## CIFS / SMB
 
@@ -19,11 +20,11 @@ For Windows file sharing, macOS file sharing, and most consumer NAS devices (Syn
 | Domain | leave blank unless your server needs it |
 | CIFS Version | leave blank unless you know you need 2.0 / 1.0 |
 
-If the connection fails, the most common cause is an older NAS that needs the CIFS Version set to `2.0` explicitly.
+Older NAS devices may require CIFS Version `2.0` explicitly.
 
 ## rsync
 
-For Linux/Unix servers. Faster and more reliable than CIFS over the open internet, and authenticated with an SSH key instead of a password.
+For Linux/Unix servers, authenticated with an SSH key.
 
 **On your server:** create a user, create a destination folder.
 
@@ -43,13 +44,15 @@ echo "<paste-key-here>" >> ~/.ssh/authorized_keys
 chmod 600 ~/.ssh/authorized_keys
 ```
 
-Then use the wizard's connection test to confirm it works. You only have to do this once.
+Use the wizard's connection test to confirm the configuration.
 
-> The connection test is permissive about host keys, but the real archive job uses strict host-key checking. If archiving later fails with *"Host key verification failed"*, SSH into the Pi and run `ssh-keyscan -H your-server >> /root/.ssh/known_hosts`.
+> The connection test is permissive about host keys, but scheduled archiving is
+> strict. If it reports *"Host key verification failed"*, verify the server's
+> fingerprint out of band before adding its key to `/root/.ssh/known_hosts`.
 
 ## rclone
 
-For cloud storage — Google Drive, OneDrive, Dropbox, S3, Backblaze B2, and ~60 other providers. Best for offsite backups.
+For cloud storage such as Google Drive, OneDrive, Dropbox, S3, and Backblaze B2.
 
 **Set up the remote first** by SSH'ing into the Pi and running:
 
@@ -65,11 +68,11 @@ Follow the prompts — it'll ask which cloud service, walk you through OAuth, an
 |-------|---------|
 | Remote Name | `gdrive` (matches the name you set in `rclone config`) |
 | Remote Path | `Dashcam` or `Backups/DashUSB` |
-| Archive Server | `8.8.8.8` (a host to ping for the connectivity check — use your server's IP if the remote is on your LAN) |
+| Archive Server | `8.8.8.8` (fallback connectivity host; use the remote host for LAN storage) |
 
 ## NFS
 
-For Linux NAS devices that prefer NFS over CIFS (some Synology and TrueNAS setups). **Typically faster than CIFS / SMB** on the same hardware — worth using if you have a lot of footage to back up and your NAS supports it.
+For Linux and NAS devices that expose NFS shares.
 
 **On your server:** export a directory in `/etc/exports` (or your NAS's GUI), allow the Pi's IP.
 
@@ -80,7 +83,8 @@ For Linux NAS devices that prefer NFS over CIFS (some Synology and TrueNAS setup
 | NFS Server | `192.168.1.100` |
 | Export Path | `/volume1/DashUSB` (the exact path from your `exports` file) |
 
-NFS is unauthenticated — anyone on your LAN with the path can read/write. Use CIFS or rsync if that's a concern.
+NFS relies on export and network controls rather than a username/password.
+Restrict the export to trusted clients, or use CIFS or rsync.
 
 ## Switching methods later
 

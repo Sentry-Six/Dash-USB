@@ -14,14 +14,8 @@ export interface ActionChipProps {
   /** Renders to the right of the label (e.g. status pill). Hidden during feedback states. */
   trailing?: ReactNode
   disabled?: boolean
-  /**
-   * Click handler. Return:
-   *   - `void` → show default success feedback after the promise resolves
-   *   - a `string` → show that string as the feedback message
-   *   - the literal `"confirm"` → suppress success feedback (used for two-step
-   *     "arm then confirm" patterns where the parent owns the label transition)
-   *   - throw → show error feedback (using the error message, or `errorMessage`)
-   */
+  /** Return custom success text, `confirm` for parent-owned confirmation, or
+   * void for default success; throw to show an error. */
   onClick: () => void | string | Promise<void | string>
   /** Message shown on success when handler doesn't return its own string. Default: "Done". */
   successMessage?: string
@@ -43,7 +37,6 @@ function ActionChip({
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Cancel a pending revert on unmount to avoid setState after teardown.
   useEffect(
     () => () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current)
@@ -67,7 +60,7 @@ function ActionChip({
     try {
       const result = await onClick()
       if (result === "confirm") {
-        // Two-step pattern: the caller owns the label change, so stay quiet.
+        // Parent-owned confirmation changes its own label.
         setState("idle")
         return
       }
@@ -97,8 +90,7 @@ function ActionChip({
       onClick={handleClick}
       className={cn(
         "action-chip",
-        // State colours win over variant during feedback so "Restart Pi" doesn't
-        // stay red while showing a success/loading state.
+        // Feedback state colors override the base variant.
         state === "idle" && variant === "danger" && "action-chip--danger",
         state === "idle" && variant === "accent" && "action-chip--accent",
         state === "loading" && "text-blue-400",
@@ -114,9 +106,8 @@ function ActionChip({
 }
 
 interface ActionsRailProps {
-  /** Non-destructive actions, left-aligned. */
   actions: ActionChipProps[]
-  /** Destructive actions, right-aligned via flex spacer. */
+  /** Right-aligned destructive actions. */
   danger?: ActionChipProps[]
 }
 

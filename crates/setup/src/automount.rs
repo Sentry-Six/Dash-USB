@@ -1,9 +1,4 @@
-//! Snapshot automount.
-//!
-//! Installs autofs, wires `/tmp/snapshots` to the `auto.dashusb` map script,
-//! and converts existing per-snapshot `mnt` directories into symlinks pointing
-//! at the autofs path, so snapshots mount on demand when something `cd`s into
-//! them rather than all at boot.
+//! On-demand snapshot mounts through autofs and per-snapshot symlinks.
 
 use std::path::Path;
 use std::time::Duration;
@@ -33,8 +28,7 @@ pub async fn configure_automount(emitter: &SetupEmitter) -> Result<bool> {
     // The Raspbian Stretch autofs package didn't ship /etc/auto.master.d.
     let _ = std::fs::create_dir_all("/etc/auto.master.d");
 
-    // The runtime-scripts phase MUST run before this one: it is what writes
-    // `auto.dashusb` into /root/bin. Writing it here too would risk drift.
+    // The runtime-scripts phase owns this map and must run first.
     let map_script = "/root/bin/auto.dashusb";
     if !Path::new(map_script).exists() {
         anyhow::bail!(
@@ -58,9 +52,7 @@ pub async fn configure_automount(emitter: &SetupEmitter) -> Result<bool> {
     Ok(true)
 }
 
-/// For each existing `snap-*` dir under `/backingfiles/snapshots/`, replace
-/// the real `mnt` subdirectory with a symlink into `/tmp/snapshots/snap-*`.
-/// Existing bind-mounts are unmounted first so the rmdir succeeds.
+/// Convert existing snapshot mount directories to autofs symlinks.
 async fn convert_snapshot_dirs_to_links(emitter: &SetupEmitter) {
     let snapshots_dir = "/backingfiles/snapshots";
     let entries = match std::fs::read_dir(snapshots_dir) {
@@ -80,8 +72,7 @@ async fn convert_snapshot_dirs_to_links(emitter: &SetupEmitter) {
             continue;
         }
 
-        // Unmount first so the rmdir succeeds; a failure here just means it
-        // was not mounted.
+        // An unmounted directory makes this best-effort unmount fail harmlessly.
         let _ = sentryusb_shell::run("umount", &[&mnt.to_string_lossy()]).await;
         if std::fs::remove_dir(&mnt).is_err() {
             emitter.progress(&format!(

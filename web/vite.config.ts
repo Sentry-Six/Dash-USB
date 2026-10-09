@@ -13,12 +13,8 @@ export default defineConfig({
   build: {
     rollupOptions: {
       output: {
-        // Named vendor chunks so an OTA update that only changes app
-        // code doesn't bust the cache for libraries that haven't moved.
-        // Each library lives in its own content-hashed file. Standard
-        // Rollup `manualChunks` function form. The prior `codeSplitting`
-        // key is a rolldown-vite-only API, but this build runs plain
-        // vite@8, so it failed to build. Same vendor groups, working syntax.
+        // Separate content-hashed vendor chunks preserve unchanged libraries
+        // across app-only OTA updates. Vite uses Rollup's manualChunks API.
         manualChunks(id: string) {
           if (/[\\/]node_modules[\\/](react|react-dom|react-router|react-router-dom)[\\/]/.test(id)) return 'vendor-react'
           if (/[\\/]node_modules[\\/]@xterm[\\/]/.test(id)) return 'vendor-term'
@@ -26,11 +22,7 @@ export default defineConfig({
         },
       },
     },
-    // Vite's default modulepreload walks every transitively-reachable
-    // async chunk and emits a <link rel="modulepreload"> for each, so
-    // xterm would preload on every page just because the Terminal
-    // route eventually pulls it in. Excluding it costs one extra RTT
-    // when that route is actually visited.
+    // Keep xterm out of default modulepreloads until the Terminal route loads.
     modulePreload: {
       resolveDependencies: (_filename, deps) =>
         deps.filter((d) => !d.includes('vendor-term')),

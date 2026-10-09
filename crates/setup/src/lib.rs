@@ -1,7 +1,4 @@
-//! DashUSB setup orchestrator.
-//!
-//! Each module is one logical setup phase and reports progress through a
-//! callback so the web UI can stream live updates over WebSocket.
+//! Setup phases report progress for WebSocket delivery to the web UI.
 
 pub mod apt;
 pub mod emitter;
@@ -11,6 +8,7 @@ pub mod partition;
 pub mod disk_images;
 pub mod system;
 pub mod archive;
+pub mod archive_runtime;
 pub mod network;
 pub mod readonly;
 pub mod scripts;
