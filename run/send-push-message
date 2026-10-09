@@ -3,7 +3,7 @@
 # command hooks here because hooks inherit the caller's environment.
 #
 # Usage:
-#   send-push-message <title> <message> [type] [notification_type]
+#   send-push-message <title> <message> [type] [notification_type] [summary]
 #
 # Environment:
 #   DASHUSB_PORT: API port (default 80)
@@ -14,6 +14,7 @@ title="$1"
 message="$2"
 type="${3:-}"
 notification_type="${4:-}"
+summary="${5:-}"
 
 LOG_FILE="${LOG_FILE:-/mutable/archiveloop.log}"
 log() {
@@ -28,7 +29,7 @@ if [ -n "$notification_type" ]; then
   gate_response=$(curl -sf --connect-timeout 2 --max-time 5 \
     "${API_BASE}/api/notifications/settings/check?type=${notification_type}" 2>/dev/null) || true
   if [ -n "$gate_response" ]; then
-    gate_enabled=$(echo "$gate_response" | sed -n 's/.*"enabled" *: *\(true\|false\).*/\1/p')
+    gate_enabled=$(echo "$gate_response" | sed -nE 's/.*"enabled" *: *(true|false).*/\1/p')
     if [ "$gate_enabled" = "false" ]; then
       log "Notification type '$notification_type' is disabled by user settings. Skipping."
       exit 0
@@ -49,6 +50,7 @@ fi
 # Use JSON serialization so message punctuation and newlines remain valid.
 payload=$(ARG_TITLE="$title" \
   ARG_MESSAGE="$message" \
+  ARG_SUMMARY="$summary" \
   ARG_TYPE="$type" \
   ARG_NOTIFICATION_TYPE="$notification_type" \
   ARG_ARCHIVE_TOTAL_COUNT="${ARCHIVE_TOTAL_COUNT:-}" \
@@ -58,6 +60,9 @@ body = {
     "title":   os.environ.get("ARG_TITLE", ""),
     "message": os.environ.get("ARG_MESSAGE", ""),
 }
+summary = os.environ.get("ARG_SUMMARY", "")
+if summary.strip():
+    body["summary"] = summary
 t = os.environ.get("ARG_TYPE", "")
 if t:
     body["type"] = t

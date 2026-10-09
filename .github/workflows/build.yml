@@ -85,15 +85,15 @@ jobs:
               # Remove stale runner sources before defining each architecture.
               sudo rm -f /etc/apt/sources.list.d/ubuntu.sources
               sudo tee /etc/apt/sources.list >/dev/null <<EOF
-          deb [arch=amd64,i386] http://archive.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME} main restricted universe multiverse
-          deb [arch=amd64,i386] http://archive.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME}-updates main restricted universe multiverse
-          deb [arch=amd64,i386] http://archive.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME}-backports main restricted universe multiverse
-          deb [arch=amd64,i386] http://security.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME}-security main restricted universe multiverse
+          deb [arch=amd64,i386] https://archive.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME} main restricted universe multiverse
+          deb [arch=amd64,i386] https://archive.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME}-updates main restricted universe multiverse
+          deb [arch=amd64,i386] https://archive.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME}-backports main restricted universe multiverse
+          deb [arch=amd64,i386] https://security.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME}-security main restricted universe multiverse
           EOF
               sudo tee /etc/apt/sources.list.d/ports.list >/dev/null <<EOF
-          deb [arch=arm64,armhf] http://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_CODENAME} main restricted universe multiverse
-          deb [arch=arm64,armhf] http://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_CODENAME}-updates main restricted universe multiverse
-          deb [arch=arm64,armhf] http://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_CODENAME}-security main restricted universe multiverse
+          deb [arch=arm64,armhf] https://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_CODENAME} main restricted universe multiverse
+          deb [arch=arm64,armhf] https://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_CODENAME}-updates main restricted universe multiverse
+          deb [arch=arm64,armhf] https://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_CODENAME}-security main restricted universe multiverse
           EOF
               sudo dpkg --add-architecture armhf
               sudo apt-get update -qq
@@ -199,7 +199,12 @@ jobs:
 
       # Exercise archiveloop code that Cargo cannot see.
       - name: Run shell tests
-        run: bash test/archiveloop-gadget-cycle.test.sh run/archiveloop
+        run: |
+          bash test/archiveloop-gadget-cycle.test.sh run/archiveloop
+          for script in test/*.test.sh; do
+            [ "$script" = "test/archiveloop-gadget-cycle.test.sh" ] && continue
+            bash "$script"
+          done
 
   lint-web:
     name: Lint web
@@ -217,6 +222,9 @@ jobs:
           cd web
           npm ci
           npx eslint . --max-warnings 30
+          npm test
+          node --test ../dev/*.test.mjs
+          npm run build
 
   release:
     name: Create Release

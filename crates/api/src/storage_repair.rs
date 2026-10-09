@@ -235,7 +235,7 @@ fn notification_title() -> String {
 /// notification history). Best-effort; failures only log.
 async fn notify_storage_repair(message: &str) {
     let title = notification_title();
-    if crate::notifications::dispatch_and_record(&title, message, Some("storage_repair"), None, None)
+    if crate::notifications::dispatch_and_record(&title, message, Some("storage_repair"), None, None, None)
         .await
         .is_none()
     {

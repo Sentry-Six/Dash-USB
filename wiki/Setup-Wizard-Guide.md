@@ -56,9 +56,9 @@ For rsync, the wizard generates an SSH key for the Pi and shows you the public k
 
 Pick one or more push notification providers. Dash USB will notify you when archiving starts, finishes, or fails, and when temperature thresholds trip.
 
-Credential-based providers are enabled by filling their fields; Mobile App has
-an explicit checkbox. The wizard rejects incomplete credentials. See
-[Notifications](Notifications) for provider setup.
+Providers are enabled by filling their fields. The wizard rejects incomplete
+credentials. You can also edit providers later under **Notifications → Delivery**.
+See [Notifications](Notifications) for provider setup.
 
 ## 7. Security
 

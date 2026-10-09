@@ -243,6 +243,7 @@ pub async fn auth_middleware(
 
     // Initial routing and login endpoints must work before a session exists.
     const EXEMPT_ALWAYS: &[&str] = &[
+        "/api/health",
         "/api/status",
         "/api/setup/status",
         "/api/auth/login",

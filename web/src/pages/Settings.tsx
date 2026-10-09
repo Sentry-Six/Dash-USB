@@ -1,5 +1,5 @@
 import { useEffect, useState, lazy, Suspense } from "react"
-import { useSearchParams } from "react-router-dom"
+import { Navigate, useSearchParams } from "react-router-dom"
 import {
   RefreshCw,
   Stethoscope,
@@ -18,7 +18,6 @@ import type { PiStatus } from "@/lib/api"
 
 const DeviceTab = lazy(() => import("@/pages/settings/DeviceTab").then(m => ({ default: m.DeviceTab })))
 const NetworkTab = lazy(() => import("@/pages/settings/NetworkTab").then(m => ({ default: m.NetworkTab })))
-const NotificationsTab = lazy(() => import("@/pages/settings/NotificationsTab").then(m => ({ default: m.NotificationsTab })))
 const SystemTab = lazy(() => import("@/pages/settings/SystemTab").then(m => ({ default: m.SystemTab })))
 
 const SetupWizard = lazy(() => import("@/components/setup/SetupWizard").then(m => ({ default: m.SetupWizard })))
@@ -29,7 +28,6 @@ const SpeedTestModal = lazy(() => import("@/components/settings/sections/SpeedTe
 const TABS = [
   "Device",
   "Car & Network",
-  "Notifications",
   "System",
 ] as const
 type TabName = (typeof TABS)[number]
@@ -224,6 +222,10 @@ export default function Settings() {
     return () => window.removeEventListener("resize", onResize)
   }, [])
 
+  if (params.get("tab") === "Notifications") {
+    return <Navigate to="/notifications?tab=delivery" replace />
+  }
+
   return (
     <div className="space-y-3">
       <HeaderStrip
@@ -241,7 +243,6 @@ export default function Settings() {
         {activeTab === "Car & Network" && (
           <NetworkTab status={status} />
         )}
-        {activeTab === "Notifications" && <NotificationsTab />}
         {activeTab === "System" && (
           <SystemTab
             onOpenRawConfig={handleOpenRawConfig}

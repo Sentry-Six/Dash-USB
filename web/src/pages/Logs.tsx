@@ -1,5 +1,13 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react"
-import { ScrollText, Download, RefreshCw, ArrowDown, Loader2 } from "lucide-react"
+import { useSearchParams } from "react-router-dom"
+import {
+  ArrowDown,
+  RefreshCw,
+  Download,
+  Loader2,
+  ScrollText,
+} from "lucide-react"
+import { boundLogWindow, type LogWindow } from "@/components/logs/logBuffer"
 import { cn } from "@/lib/utils"
 
 const logTabs = [
@@ -10,7 +18,16 @@ const logTabs = [
 
 const SCROLL_THRESHOLD = 60
 
-// Parse `Day DD Mon HH:MM:SS TZ YYYY: [optional-tag] message`.
+// ---------------------------------------------------------------------------
+// Log line parser
+//
+// Shell logs:  "Fri 20 Mar 21:27:22 PDT 2026: some message"
+// Go logs:     "Mon 21 Mar 14:30:45 UTC 2026: [drive-map] message"
+// Format:       Day DD Mon HH:MM:SS TZ YYYY:
+//
+// We extract the time portion (HH:MM:SS), an optional [tag], and the message,
+// then classify the level by keywords so we can color-code it.
+// ---------------------------------------------------------------------------
 
 type LogLevel = "error" | "warning" | "success" | "info" | "debug" | "default"
 
@@ -21,10 +38,11 @@ interface ParsedLine {
   message: string
   level: LogLevel
   raw: string
-  fullTs: number // parsed timestamp in ms, 0 when the line has none
+  fullTs: number // full timestamp in ms, used to detect clock jumps
 }
 
-// Captures day, month, time, and year.
+// Matches: "Day DD Mon HH:MM:SS TZ YYYY:" at the start of a line
+// Captures: (DD) (Mon) (HH:MM:SS) (YYYY)
 const TIMESTAMP_RE =
   /^[A-Z][a-z]{2}\s+(\d{1,2})\s+([A-Z][a-z]{2})\s+(\d{2}:\d{2}:\d{2})\s+\w+\s+(\d{4}):\s*/
 
@@ -33,12 +51,13 @@ const MONTH_INDEX: Record<string, number> = {
   Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
 }
 
+// Matches a [tag] prefix after the timestamp
 const TAG_RE = /^\[([^\]]+)\]\s*/
 
 function classifyLevel(message: string, tag: string): LogLevel {
   const lower = message.toLowerCase()
 
-  // Errors first, so "failed" wins over the softer matches below.
+  // Errors — check first so "failed" always wins over softer matches
   if (
     lower.includes("error") ||
     lower.includes("failed") ||
@@ -50,6 +69,7 @@ function classifyLevel(message: string, tag: string): LogLevel {
   )
     return "error"
 
+  // Warnings
   if (
     lower.includes("warning") ||
     lower.includes("warn") ||
@@ -73,6 +93,7 @@ function classifyLevel(message: string, tag: string): LogLevel {
   )
     return "warning"
 
+  // Success
   if (
     lower.includes("nudge ok") ||
     lower.includes("success") ||
@@ -101,7 +122,7 @@ function classifyLevel(message: string, tag: string): LogLevel {
   )
     return "success"
 
-  // Tagged and recognized operational lines are informational.
+  // Info (tagged lines or informational keywords)
   if (
     tag ||
     lower.includes("starting") ||
@@ -140,6 +161,7 @@ function parseLine(raw: string): ParsedLine {
   let tag = ""
   let fullTs = 0
 
+  // Extract timestamp — captures (DD) (Mon) (HH:MM:SS) (YYYY)
   const tsMatch = rest.match(TIMESTAMP_RE)
   if (tsMatch) {
     const day = parseInt(tsMatch[1], 10)
@@ -152,6 +174,7 @@ function parseLine(raw: string): ParsedLine {
     rest = rest.slice(tsMatch[0].length)
   }
 
+  // Extract [tag]
   const tagMatch = rest.match(TAG_RE)
   if (tagMatch) {
     tag = tagMatch[1]
@@ -164,6 +187,7 @@ function parseLine(raw: string): ParsedLine {
   return { date, time, tag, message, level, raw, fullTs }
 }
 
+// Colors for each level
 const levelColors: Record<LogLevel, { text: string; tag: string }> = {
   error:   { text: "text-red-400",    tag: "text-red-500"    },
   warning: { text: "text-amber-400",  tag: "text-amber-500"  },
@@ -198,9 +222,12 @@ function FormattedLog({ content }: { content: string }) {
     return content.split("\n").map((line) => parseLine(line))
   }, [content])
 
+  // Track the last displayed date string so we only show a date header
+  // when the date actually changes (or at the start of a boot cycle).
+  // Plain loop (not a .map closure) so the accumulators stay render-local.
   const rows: ReactNode[] = []
   let prevDate = ""
-  let inBootCycle = false // true after the first timestamped entry
+  let inBootCycle = false // becomes true after we see the first entry
 
   for (let i = 0; i < lines.length; i++) {
     const parsed = lines[i]
@@ -209,8 +236,9 @@ function FormattedLog({ content }: { content: string }) {
       continue
     }
 
+    // Boot cycle separator (====== lines from archiveloop)
     if (parsed.raw.trim().startsWith("=====")) {
-      prevDate = ""
+      prevDate = "" // reset — new boot cycle
       inBootCycle = false
       rows.push(
         <span key={i} className="block border-b border-slate-700/40 my-3" />
@@ -218,8 +246,9 @@ function FormattedLog({ content }: { content: string }) {
       continue
     }
 
-    // Date header on the first timestamped entry of a boot cycle, and whenever
-    // the date changes (new day or clock correction).
+    // Show a date header when:
+    // 1. First timestamped entry in a boot cycle
+    // 2. The date string actually changes (new day or clock correction)
     let dateSeparator = null
     if (parsed.date) {
       if (!inBootCycle || parsed.date !== prevDate) {
@@ -245,19 +274,62 @@ function FormattedLog({ content }: { content: string }) {
 }
 
 export default function Logs() {
-  const [activeTab, setActiveTab] = useState("archiveloop")
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedTab = searchParams.get("tab")
+  const initialTab = logTabs.some((tab) => tab.id === requestedTab) ? requestedTab as string : "archiveloop"
+  const [activeTab, setActiveTabState] = useState(initialTab)
   const [content, setContent] = useState<string>("Loading...")
   const [loading, setLoading] = useState(false)
+  const [capturingDiagnostics, setCapturingDiagnostics] = useState(false)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
+  const [live, setLive] = useState(true)
+  const [search, setSearch] = useState("")
+  const [level, setLevel] = useState("all")
+  const [error, setError] = useState<string | null>(null)
+  const [before, setBefore] = useState<number | null>(null)
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  const cursorRef = useRef<string | null>(null)
+  const generation = useRef(0)
+  const legacy = useRef(false)
+  const buffer = useRef<LogWindow>({ content: "", start: 0 })
+  const loaded = useRef(false)
+  const pollRequest = useRef<AbortController | null>(null)
+  const olderRequest = useRef<AbortController | null>(null)
+  const applyWindow = useCallback((value: string, start: number, keep: "newest" | "oldest" = "newest", pageable = true) => {
+    const next = boundLogWindow(value, start, keep)
+    buffer.current = next
+    setContent(next.content)
+    setBefore(pageable && next.start > 0 ? next.start : null)
+  }, [])
   const preRef = useRef<HTMLPreElement>(null)
   const followRef = useRef(true)
 
   const activeLog = logTabs.find((t) => t.id === activeTab)!
 
-  // Diagnostics is structured system information and stays raw.
+  function setActiveTab(tab: string) {
+    if (tab === activeTab) return
+    generation.current++
+    pollRequest.current?.abort()
+    olderRequest.current?.abort()
+    loaded.current = false
+    buffer.current = { content: "", start: 0 }
+    cursorRef.current = null
+    legacy.current = false
+    setBefore(null); setContent(""); setError(null)
+    followRef.current = true
+    setShowScrollBtn(false)
+    setActiveTabState(tab)
+    const next = new URLSearchParams(searchParams)
+    next.set("tab", tab)
+    setSearchParams(next, { replace: true })
+  }
+
+  // Format archiveloop and setup logs (same timestamp format).
+  // Diagnostics is a structured system-info dump — keep it raw.
   const shouldFormat = activeTab === "archiveloop" || activeTab === "setup"
 
-  // With column-reverse, scrollTop is zero at the bottom and negative above it.
+  // With flex-direction: column-reverse, scrollTop is 0 at the bottom
+  // and becomes negative as you scroll up.
   const handleScroll = useCallback(() => {
     const el = preRef.current
     if (!el) return
@@ -274,74 +346,161 @@ export default function Logs() {
     }
   }
 
-  useEffect(() => {
-    followRef.current = true
-    setShowScrollBtn(false)
-  }, [activeTab])
 
   useEffect(() => {
-    let mounted = true
+    if (!live && loaded.current) return
+    const id = ++generation.current
+    const abort = new AbortController()
+    pollRequest.current = abort
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let inFlight = false
     setLoading(true)
-    setContent("")
-
     async function fetchLog() {
+      if (inFlight || abort.signal.aborted) return
+      if (document.hidden) { timer = setTimeout(fetchLog, 2000); return }
+      inFlight = true
+      let more = false
       try {
-        const url =
-          activeTab === "diagnostics"
-            ? "/api/diagnostics?" + Math.random()
-            : activeLog.url + "?" + Math.random()
-        const res = await fetch(url)
-        const text = await res.text()
-        if (mounted) {
-          if (!res.ok && activeTab !== "diagnostics") {
-            setContent("Log file not available. It may not exist yet.")
-          } else {
-            setContent(text || "(empty)")
+        const regularFile = activeTab !== "diagnostics"
+        if (regularFile && !legacy.current) {
+          const params = new URLSearchParams()
+          if (cursorRef.current) params.set("cursor", cursorRef.current)
+          const response = await fetch(`${activeLog.url}/tail?${params}`, { signal: abort.signal, cache: "no-store" })
+          const htmlFallback = response.ok && response.headers.get("content-type")?.toLowerCase().includes("text/html")
+          if (response.status === 404 || htmlFallback) legacy.current = true
+          else {
+            if (!response.ok) throw new Error("Could not read log")
+            const data = await response.json().catch(() => { throw new Error("Could not read the log response. Please retry.") })
+            if (typeof data?.content !== "string" || typeof data?.cursor !== "string" ||
+                typeof data?.before !== "number" || typeof data?.reset !== "boolean") {
+              throw new Error("Could not read the log response. Please retry.")
+            }
+            if (id !== generation.current) return
+            cursorRef.current = data.cursor || null
+            if (data.reset) applyWindow(data.content, data.before)
+            else if (data.content) applyWindow(buffer.current.content + data.content, buffer.current.start)
+            more = data.has_more === true
           }
-          setLoading(false)
         }
-      } catch {
-        if (mounted) {
-          setContent("Unable to connect to Dash USB. Is the device online?")
+        if (!regularFile || legacy.current) {
+          const response = await fetch(activeTab === "diagnostics" ? "/api/diagnostics" : activeLog.url, { signal: abort.signal, cache: "no-store" })
+          if (!response.ok) throw new Error("Log unavailable. Retry when the device is connected.")
+          const text = await response.text()
+          if (id !== generation.current) return
+          applyWindow(text, 0, "newest", false)
+        }
+        loaded.current = true
+        setError(null)
+      } catch (e) {
+        if (!abort.signal.aborted && id === generation.current) setError(e instanceof Error ? e.message : "Could not read log")
+      } finally {
+        inFlight = false
+        if (!abort.signal.aborted && id === generation.current) {
           setLoading(false)
+          if (live && activeTab !== "diagnostics") timer = setTimeout(fetchLog, more ? 100 : 2000)
         }
       }
     }
+    void fetchLog()
+    return () => { abort.abort(); if (timer) clearTimeout(timer) }
+  }, [activeLog.url, activeTab, live, applyWindow])
 
-    fetchLog()
-
-    const interval =
-      activeTab !== "diagnostics" ? setInterval(fetchLog, 2000) : undefined
-
-    return () => {
-      mounted = false
-      if (interval) clearInterval(interval)
-    }
-  }, [activeLog.url, activeTab])
+  function pauseLive() {
+    loaded.current = true
+    generation.current++
+    pollRequest.current?.abort()
+    setLive(false)
+    setLoading(false)
+  }
+  function resumeLive() {
+    generation.current++
+    olderRequest.current?.abort()
+    cursorRef.current = null
+    loaded.current = false
+    setBefore(null)
+    setLive(true)
+  }
+  async function loadOlder() {
+    if (before === null || loadingOlder) return
+    pauseLive()
+    const id = generation.current
+    const current = buffer.current
+    const controller = new AbortController()
+    olderRequest.current = controller
+    setLoadingOlder(true)
+    try {
+      const params = new URLSearchParams({ lines: "500", before: String(current.start) })
+      if (cursorRef.current) params.set("cursor", cursorRef.current)
+      const response = await fetch(`${activeLog.url}/page?${params}`, { signal: controller.signal, cache: "no-store" })
+      if (!response.ok) throw new Error(response.status === 409 ? "Log rotated. Resume Live to load its newest entries." : "Could not load older entries")
+      const data = await response.json()
+      if (controller.signal.aborted || generation.current !== id) return
+      applyWindow(data.content + current.content, data.before ?? 0, "oldest")
+      setError(null)
+    } catch (e) { if (!controller.signal.aborted && generation.current === id) setError(e instanceof Error ? e.message : "Could not load older entries") }
+    finally { if (olderRequest.current === controller) setLoadingOlder(false) }
+  }
+  useEffect(() => () => { olderRequest.current?.abort() }, [])
+  const visibleContent = useMemo(() => content.split("\n").filter(line =>
+    (!search || line.toLowerCase().includes(search.toLowerCase())) &&
+    (level === "all" || parseLine(line).level === level),
+  ).join("\n"), [content, search, level])
 
   async function handleDownload() {
-    const blob = new Blob([content], { type: "text/plain" })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement("a")
-    a.href = url
-    a.download = `${activeTab}.log`
-    a.click()
-    URL.revokeObjectURL(url)
+    if (activeTab === "diagnostics") {
+      await handleCaptureDiagnostics()
+      return
+    }
+    try {
+      const response = await fetch(activeLog.url, { cache: "no-store" })
+      if (!response.ok) throw new Error("Could not download log")
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url; a.download = `${activeTab}.log`; a.click(); URL.revokeObjectURL(url)
+    } catch (e) { setError(e instanceof Error ? e.message : "Could not download log") }
+  }
+
+  async function handleCaptureDiagnostics() {
+    setCapturingDiagnostics(true); setError(null)
+    // A pending read of the cached report must not replace this fresh capture.
+    const id = ++generation.current
+    pollRequest.current?.abort()
+    olderRequest.current?.abort()
+    try {
+      const response = await fetch("/api/diagnostics/download", { method: "POST", cache: "no-store" })
+      if (!response.ok || !response.headers.get("Content-Type")?.includes("text/plain")) {
+        throw new Error("Could not capture diagnostics. Retry while the device is connected.")
+      }
+      const text = await response.text()
+      if (generation.current === id) applyWindow(text, 0, "newest", false)
+      const disposition = response.headers.get("Content-Disposition") || ""
+      const filename = disposition.match(/filename="([^"]+)"/)?.[1] || "dashusb-diagnostics.txt"
+      const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }))
+      try {
+        const a = document.createElement("a")
+        a.href = url; a.download = filename; a.click()
+      } finally { URL.revokeObjectURL(url) }
+    } catch (e) {
+      if (generation.current === id) setError(e instanceof Error ? e.message : "Could not capture diagnostics")
+    } finally {
+      if (generation.current === id) setLoading(false)
+      setCapturingDiagnostics(false)
+    }
   }
 
   async function handleRefreshDiagnostics() {
-    setLoading(true)
-    setContent("Generating diagnostics...")
+    setLoading(true); setError(null)
+    const id = generation.current
     try {
-      await fetch("/api/diagnostics/refresh", { method: "POST" })
-      await new Promise((r) => setTimeout(r, 3000))
-      const res = await fetch("/api/logs/diagnostics?" + Math.random())
-      const text = await res.text()
-      setContent(text || "(empty)")
-    } catch {
-      setContent("Failed to generate diagnostics")
-    }
-    setLoading(false)
+      const refresh = await fetch("/api/diagnostics/refresh", { method: "POST" })
+      if (!refresh.ok) throw new Error("Failed to generate diagnostics")
+      const response = await fetch("/api/diagnostics", { cache: "no-store" })
+      if (!response.ok) throw new Error("Could not read diagnostics")
+      const text = await response.text()
+      if (generation.current === id) applyWindow(text, 0, "newest", false)
+    } catch (e) { if (generation.current === id) setError(e instanceof Error ? e.message : "Failed to generate diagnostics") }
+    finally { if (generation.current === id) setLoading(false) }
   }
 
   return (
@@ -357,7 +516,7 @@ export default function Logs() {
           {activeTab === "diagnostics" && (
             <button
               onClick={handleRefreshDiagnostics}
-              disabled={loading}
+              disabled={loading || capturingDiagnostics}
               className="glass-card glass-card-hover flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-400 transition-colors hover:text-slate-200 disabled:opacity-50"
             >
               <RefreshCw
@@ -368,18 +527,35 @@ export default function Logs() {
           )}
           <button
             onClick={handleDownload}
-            className="glass-card glass-card-hover flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-400 transition-colors hover:text-slate-200"
+            disabled={capturingDiagnostics || (activeTab === "diagnostics" && loading)}
+            title={
+              activeTab === "diagnostics"
+                ? "Captures current USB, recording, power and storage evidence with recent logs in one file."
+                : undefined
+            }
+            className="glass-card glass-card-hover flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-400 transition-colors hover:text-slate-200 disabled:opacity-50"
           >
-            <Download className="h-4 w-4" />
-            Download
+            {capturingDiagnostics ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+            {capturingDiagnostics ? "Capturing…" : activeTab === "diagnostics" ? "Capture & download" : "Download"}
           </button>
         </div>
       </div>
 
-      <div className="flex gap-1">
+      {activeTab === "diagnostics" && (
+        <p className="text-sm text-slate-400">
+          If the vehicle stops recording, use Capture &amp; download before unplugging or rebooting.
+          It saves a fresh report of USB activity, power, storage and recent logs. Capture can take up to a minute.
+          The file stays on your device until you share it and may include device identifiers, network addresses or location details from logs.
+        </p>
+      )}
+
+      {/* Tab bar */}
+      <div className="flex flex-wrap gap-1" role="tablist" aria-label="Log source">
         {logTabs.map((tab) => (
           <button
             key={tab.id}
+            role="tab"
+            aria-selected={activeTab === tab.id}
             onClick={() => setActiveTab(tab.id)}
             className={cn(
               "rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
@@ -393,6 +569,15 @@ export default function Logs() {
         ))}
       </div>
 
+      <div className="flex flex-wrap items-center gap-2">
+        {activeTab !== "diagnostics" && <button className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-200" aria-pressed={live} onClick={() => { if (live) pauseLive(); else resumeLive() }}>{live ? "Pause live" : "Resume live"}</button>}
+        <input aria-label="Search log entries" placeholder="Search loaded entries" value={search} onChange={e => setSearch(e.target.value)} className="min-w-40 flex-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200" />
+        <select aria-label="Log level" value={level} onChange={e => setLevel(e.target.value)} className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-200">{[["all", "All levels"], ["error", "Errors"], ["warning", "Warnings"], ["success", "Success"], ["info", "Info"]].map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
+        {before !== null && <button disabled={loadingOlder} onClick={() => void loadOlder()} className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-200 disabled:opacity-50">{loadingOlder ? "Loading…" : "Load older"}</button>}
+      </div>
+      {error && <p role="alert" className="text-sm text-amber-300">{error}</p>}
+      <p className="text-xs text-slate-400">{live && activeTab !== "diagnostics" ? "Live" : "Paused"} · Up to 2,000 loaded lines · Download includes the unfiltered log tail</p>
+      {/* Log output */}
       <div className="glass-card relative flex-1 overflow-hidden">
         <pre
           ref={preRef}
@@ -405,11 +590,11 @@ export default function Logs() {
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 Loading...
               </span>
-            ) : content ? (
+            ) : visibleContent ? (
               shouldFormat ? (
-                <FormattedLog content={content} />
+                <FormattedLog content={visibleContent} />
               ) : (
-                content
+                visibleContent
               )
             ) : (
               <span className="flex items-center gap-2 text-slate-600">

@@ -53,6 +53,9 @@ fn validate_archive_config(env: &SetupEnv, system: ArchiveSystem) -> Result<()> 
         }
         ArchiveSystem::Cifs => {
             require("SHARE_NAME")?;
+            if normalize_cifs_share(env.config.get("SHARE_NAME").map_or("", String::as_str)).is_empty() {
+                return Err(ConfigError("SHARE_NAME must name a CIFS share, not only slashes".into()).into());
+            }
             require("SHARE_USER")?;
             require("SHARE_PASSWORD")?;
             require("ARCHIVE_SERVER")?;
@@ -219,38 +222,7 @@ const NONE_DISCONNECT_ARCHIVE: &str = include_str!("../../../run/none_archive/di
 fn install_archive_scripts(system: ArchiveSystem, emitter: &SetupEmitter) -> Result<()> {
     let _ = std::fs::create_dir_all("/root/bin");
 
-    let scripts: &[(&str, &str)] = match system {
-        ArchiveSystem::Cifs => &[
-            ("archive-clips.sh", CIFS_ARCHIVE_CLIPS),
-            ("archive-is-reachable.sh", CIFS_ARCHIVE_IS_REACHABLE),
-            ("connect-archive.sh", CIFS_CONNECT_ARCHIVE),
-            ("disconnect-archive.sh", CIFS_DISCONNECT_ARCHIVE),
-        ],
-        ArchiveSystem::Nfs => &[
-            ("archive-clips.sh", NFS_ARCHIVE_CLIPS),
-            ("archive-is-reachable.sh", NFS_ARCHIVE_IS_REACHABLE),
-            ("connect-archive.sh", NFS_CONNECT_ARCHIVE),
-            ("disconnect-archive.sh", NFS_DISCONNECT_ARCHIVE),
-        ],
-        ArchiveSystem::Rsync => &[
-            ("archive-clips.sh", RSYNC_ARCHIVE_CLIPS),
-            ("archive-is-reachable.sh", RSYNC_ARCHIVE_IS_REACHABLE),
-            ("connect-archive.sh", RSYNC_CONNECT_ARCHIVE),
-            ("disconnect-archive.sh", RSYNC_DISCONNECT_ARCHIVE),
-        ],
-        ArchiveSystem::Rclone => &[
-            ("archive-clips.sh", RCLONE_ARCHIVE_CLIPS),
-            ("archive-is-reachable.sh", RCLONE_ARCHIVE_IS_REACHABLE),
-            ("connect-archive.sh", RCLONE_CONNECT_ARCHIVE),
-            ("disconnect-archive.sh", RCLONE_DISCONNECT_ARCHIVE),
-        ],
-        ArchiveSystem::None => &[
-            ("archive-clips.sh", NONE_ARCHIVE_CLIPS),
-            ("archive-is-reachable.sh", NONE_ARCHIVE_IS_REACHABLE),
-            ("connect-archive.sh", NONE_CONNECT_ARCHIVE),
-            ("disconnect-archive.sh", NONE_DISCONNECT_ARCHIVE),
-        ],
-    };
+    let scripts = archive_scripts(system);
 
     for (name, content) in scripts {
         let path = format!("/root/bin/{}", name);
@@ -336,6 +308,14 @@ async fn configure_nfs_mount(env: &SetupEnv, emitter: &SetupEmitter) -> Result<(
     Ok(())
 }
 
+/// SMB wants a share name (optionally a subfolder), not an absolute NAS path.
+/// Strip accidental leading slashes only for CIFS; NFS exports stay absolute.
+pub fn normalize_cifs_share(share: &str) -> &str { share.trim_start_matches('/') }
+
+pub fn cifs_share_looks_like_path(share: &str) -> bool {
+    share.starts_with('/') && normalize_cifs_share(share).contains('/')
+}
+
 async fn configure_cifs_mount(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> {
     let server = env.get("ARCHIVE_SERVER", "");
     let share = env.get("SHARE_NAME", "");
@@ -363,7 +343,7 @@ async fn configure_cifs_mount(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
 
     // fstab encodes spaces in paths as \040, which preserves share names like
     // "Dash Cam" without breaking the field split.
-    let share_escaped = share.replace(' ', "\\040");
+    let share_escaped = normalize_cifs_share(&share).replace(' ', "\\040");
     let line = format!(
         "//{}/{} /mnt/archive cifs rw,noauto,credentials={},iocharset=utf8,file_mode=0777,dir_mode=0777,vers={} 0 0",
         server, share_escaped, creds_path, vers
@@ -372,4 +352,52 @@ async fn configure_cifs_mount(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
     emitter.progress("Added CIFS mount to /etc/fstab");
 
     Ok(())
+}
+
+pub(crate) fn archive_scripts(system: ArchiveSystem) -> &'static [(&'static str, &'static str)] {
+    match system {
+        ArchiveSystem::Cifs => &[
+            ("archive-clips.sh", CIFS_ARCHIVE_CLIPS),
+            ("archive-is-reachable.sh", CIFS_ARCHIVE_IS_REACHABLE),
+            ("connect-archive.sh", CIFS_CONNECT_ARCHIVE),
+            ("disconnect-archive.sh", CIFS_DISCONNECT_ARCHIVE),
+        ],
+        ArchiveSystem::Nfs => &[
+            ("archive-clips.sh", NFS_ARCHIVE_CLIPS),
+            ("archive-is-reachable.sh", NFS_ARCHIVE_IS_REACHABLE),
+            ("connect-archive.sh", NFS_CONNECT_ARCHIVE),
+            ("disconnect-archive.sh", NFS_DISCONNECT_ARCHIVE),
+        ],
+        ArchiveSystem::Rsync => &[
+            ("archive-clips.sh", RSYNC_ARCHIVE_CLIPS),
+            ("archive-is-reachable.sh", RSYNC_ARCHIVE_IS_REACHABLE),
+            ("connect-archive.sh", RSYNC_CONNECT_ARCHIVE),
+            ("disconnect-archive.sh", RSYNC_DISCONNECT_ARCHIVE),
+        ],
+        ArchiveSystem::Rclone => &[
+            ("archive-clips.sh", RCLONE_ARCHIVE_CLIPS),
+            ("archive-is-reachable.sh", RCLONE_ARCHIVE_IS_REACHABLE),
+            ("connect-archive.sh", RCLONE_CONNECT_ARCHIVE),
+            ("disconnect-archive.sh", RCLONE_DISCONNECT_ARCHIVE),
+        ],
+        ArchiveSystem::None => &[
+            ("archive-clips.sh", NONE_ARCHIVE_CLIPS),
+            ("archive-is-reachable.sh", NONE_ARCHIVE_IS_REACHABLE),
+            ("connect-archive.sh", NONE_CONNECT_ARCHIVE),
+            ("disconnect-archive.sh", NONE_DISCONNECT_ARCHIVE),
+        ],
+    }
+}
+
+#[cfg(test)]
+mod share_tests {
+    use super::*;
+    #[test]
+    fn cifs_share_normalization_keeps_subfolders_and_rejects_empty_share() {
+        assert_eq!(normalize_cifs_share("/Recordings"), "Recordings");
+        assert_eq!(normalize_cifs_share("///Recordings/clips/"), "Recordings/clips/");
+        assert_eq!(normalize_cifs_share("///"), "");
+        assert!(!cifs_share_looks_like_path("Recordings/clips"));
+        assert!(cifs_share_looks_like_path("/mnt/user/Recordings"));
+    }
 }
