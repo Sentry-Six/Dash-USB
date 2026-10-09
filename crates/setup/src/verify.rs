@@ -1,29 +1,6 @@
-//! Pre-setup sanity checks — port of `verify-configuration.sh`.
-//!
-//! Split into three phases so we can bail loudly on conditions we can
-//! detect up-front without also false-failing on conditions that the
-//! setup wizard is *about* to fix:
-//!
-//!   * [`early_verify`] — hardware model, XFS+reflink support,
-//!     required config keys. Runs BEFORE any destructive operation
-//!     and BEFORE the dwc2 overlay phase. Checks that are safe to
-//!     run on a stock Pi OS image without any DashUSB-specific
-//!     kernel modules loaded yet.
-//!   * [`verify_udc`] — at least one UDC driver exposed under
-//!     `/sys/class/udc/`. MUST run **after** the dwc2 overlay phase
-//!     has completed (either "already set" or "just added + rebooted
-//!     + resuming"). On a fresh Pi OS image `dtoverlay=dwc2` isn't
-//!     in `config.txt` yet, so `/sys/class/udc/` is empty — the
-//!     check would always false-fail on the very first pass.
-//!   * [`verify_disk_space`] — SD card or USB drive has enough room
-//!     for the backing-files partition. MUST run **after** the root
-//!     shrink phase, because on a fresh Pi OS install the root
-//!     partition fills the entire disk and the `sfdisk -F` query
-//!     would report 0 bytes free. The shrink is what creates the
-//!     8 GB we need; checking before it runs is a false-fail.
-//!
-//! On failure the returned `anyhow::Error` is logged and the runner
-//! aborts before touching the filesystem.
+//! Pre-setup checks ordered around state that setup itself creates.
+//! Hardware/XFS/config checks run first, UDC after the dwc2 reboot, and disk
+//! space after root shrinking. Failures stop before destructive operations.
 
 use std::path::Path;
 use std::time::Duration;
@@ -34,26 +11,17 @@ use crate::env::{PiModel, SetupEnv};
 use crate::error::ConfigError;
 use crate::SetupEmitter;
 
-/// Minimum usable space on the SD card (8 GiB) after root-partition shrink.
-/// Older code required 32 GiB which blocked anything under a ~38 GB card
-/// even though the actual footprint is ~8 GB.
+/// Minimum usable space on the SD card after the root-partition shrink; the
+/// actual footprint is ~8 GB.
 const MIN_SD_SPACE_BYTES: u64 = 8 * (1 << 30);
 
-/// Minimum total size of an external USB drive (59 GiB, rounded to match
-/// the bash threshold).
+/// Minimum total size of an external USB drive: 59 GiB, i.e. a nominal 64 GB
+/// drive.
 const MIN_USB_SIZE_BYTES: u64 = 59 * (1 << 30);
 
-/// Early sanity checks: hardware, XFS, config vars. Call before the
-/// dwc2 overlay phase. Deliberately excludes checks that depend on
-/// kernel state the overlay/shrink phases will establish — see
-/// [`verify_udc`] and [`verify_disk_space`] for those.
+/// Check hardware, XFS, and configuration before the dwc2 overlay phase.
 pub async fn early_verify(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> {
-    // Announce the phase up-front. The XFS loopback check inside
-    // `check_xfs_support` typically takes 30-60s (xfsprogs install on
-    // fresh Pi OS images + the 1 GB truncate/mkfs/mount probe) and
-    // without this the wizard's phase list sits empty for that whole
-    // window — the user sees no progress even though we're actively
-    // working. Idempotent: the phase is logged once per setup run.
+    // Announce before the slow XFS install and loopback probe.
     emitter.begin_phase("verify", "Verifying configuration");
     check_supported_hardware(env)?;
     check_xfs_support(emitter).await?;
@@ -61,35 +29,19 @@ pub async fn early_verify(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> 
     Ok(())
 }
 
-/// UDC driver presence check. Call **after** the dwc2 overlay phase has
-/// completed (either the overlay was already in `config.txt`, or we
-/// added it and are now resuming post-reboot with it loaded). Fails
-/// loudly so we don't proceed into partition/gadget phases that assume
-/// the USB gadget will come up.
+/// Require a UDC after the dwc2 overlay phase and before partitioning.
 pub fn verify_udc() -> Result<()> {
     check_udc()
 }
 
-/// Disk-space availability check. Call **after** the root shrink phase
-/// has completed, because on a fresh Pi OS image root fills the whole
-/// disk and there's zero unpartitioned space until shrink runs. On
-/// repeat runs the fast-path (backingfiles/mutable labels already
-/// present) makes this a cheap O(1) query.
+/// Check disk space after root shrinking; existing labels take the fast path.
 pub async fn verify_disk_space(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> {
     check_available_space(env, emitter).await
 }
 
-// -----------------------------------------------------------------------------
-// Individual checks
-// -----------------------------------------------------------------------------
-
 fn check_supported_hardware(env: &SetupEnv) -> Result<()> {
-    // Not-a-Pi skips the check entirely — matches bash: non-Pi boards
-    // (RockPi, Radxa) are handled by other setup paths and aren't our
-    // problem here. Pi 2 has no USB gadget hardware; Pi Zero W (the
-    // original armv6 board) was dropped in 2026 — too underpowered to
-    // run the daemon comfortably, and the armv6 build was retired to
-    // keep release artifact counts manageable.
+    // Other boards use separate paths; Pi 2 lacks gadget hardware and armv6
+    // has no supported build.
     match env.pi_model {
         PiModel::Pi5 | PiModel::Pi4 | PiModel::Pi3 | PiModel::PiZero2 => {
             Ok(())
@@ -104,8 +56,7 @@ fn check_supported_hardware(env: &SetupEnv) -> Result<()> {
         ),
         PiModel::Rock4CPlus => Ok(()),
         PiModel::Other => {
-            // Could be a RockPi / Radxa Zero / genuinely unknown board.
-            // Bash returns silently for non-Pi boards; we do the same.
+            // Separate board-specific setup paths validate these later.
             Ok(())
         }
     }
@@ -113,7 +64,6 @@ fn check_supported_hardware(env: &SetupEnv) -> Result<()> {
 
 fn check_udc() -> Result<()> {
     let udc_dir = Path::new("/sys/class/udc");
-    // Count symlinks under /sys/class/udc/. Bash uses `find -type l`.
     let count = match std::fs::read_dir(udc_dir) {
         Ok(entries) => entries
             .filter_map(|e| e.ok())
@@ -137,11 +87,7 @@ fn check_udc() -> Result<()> {
 async fn check_xfs_support(emitter: &SetupEmitter) -> Result<()> {
     emitter.progress("Checking XFS support");
 
-    // Install xfsprogs if the mkfs binary is missing. This is the slow
-    // step on a fresh Pi OS image — 30-60s for apt-get to fetch +
-    // install — so we log before and after to keep the UI from looking
-    // hung. Subsequent setup runs skip this entirely because the
-    // binary is already on disk.
+    // Log the potentially slow xfsprogs installation.
     if sentryusb_shell::run("which", &["mkfs.xfs"]).await.is_err() {
         emitter.progress("Installing xfsprogs (this can take 30-60 seconds)...");
         crate::apt::apt_install(
@@ -155,11 +101,7 @@ async fn check_xfs_support(emitter: &SetupEmitter) -> Result<()> {
     let img = "/tmp/xfs.img";
     let mnt = "/tmp/xfsmnt";
 
-    // Cleanup any leftovers from a previous interrupted run. A stuck
-    // mount at `mnt` (umount failed silently, or we crashed mid-check)
-    // would otherwise make the fresh mount below fail with "mount point
-    // busy" and we'd incorrectly report "STOP: xfs does not support
-    // required features". Escalate: plain umount → lazy umount → bail.
+    // Clear interrupted probes so a busy mount is not misreported as no XFS.
     let _ = sentryusb_shell::run("umount", &[mnt]).await;
     if sentryusb_shell::run("findmnt", &[mnt]).await.is_ok() {
         let _ = sentryusb_shell::run("umount", &["-l", mnt]).await;
@@ -173,7 +115,7 @@ async fn check_xfs_support(emitter: &SetupEmitter) -> Result<()> {
     let _ = std::fs::remove_file(img);
     let _ = std::fs::remove_dir_all(mnt);
 
-    // 1 GB sparse loopback image — metadata-only truncate, near-instant.
+    // 1 GB sparse loopback image; the truncate is metadata-only, near-instant.
     emitter.progress("Creating test XFS image");
     sentryusb_shell::run_with_timeout(
         Duration::from_secs(30),
@@ -183,9 +125,7 @@ async fn check_xfs_support(emitter: &SetupEmitter) -> Result<()> {
     .await
     .context("truncate xfs test image")?;
 
-    // reflink=1 is the feature Dash USB actually needs (copy-on-write
-    // snapshots of the cam image). If mkfs can make the fs but mount
-    // fails, the kernel doesn't support the required features.
+    // The snapshot implementation requires XFS reflink support.
     emitter.progress("Formatting test image with XFS (reflink=1)");
     sentryusb_shell::run_with_timeout(
         Duration::from_secs(30),
@@ -203,7 +143,6 @@ async fn check_xfs_support(emitter: &SetupEmitter) -> Result<()> {
         bail!("STOP: xfs does not support required features");
     }
 
-    // Success — clean up.
     let _ = sentryusb_shell::run("umount", &[mnt]).await;
     let _ = std::fs::remove_file(img);
     let _ = std::fs::remove_dir_all(mnt);
@@ -213,16 +152,14 @@ async fn check_xfs_support(emitter: &SetupEmitter) -> Result<()> {
 }
 
 fn check_required_config(env: &SetupEnv) -> Result<()> {
-    // Bash bails if CAM_SIZE isn't set at all. In Rust the config already
-    // has a default of "0" (unset/zero triggers the SD fallback), so an
-    // explicitly empty or literal-0 CAM_SIZE still runs the setup — but
-    // a truly missing key is a user-config error we should surface.
+    // An explicitly empty or literal-0 CAM_SIZE still runs setup (zero
+    // triggers the SD fallback); a missing key is a user-config error.
     if !env.config.contains_key("CAM_SIZE") {
-        // User-config error (a missing key fails identically on retry) →
-        // ConfigError so the boot-loop auto-resume halts and surfaces it.
+        // A missing key fails identically on every retry, so classify it as
+        // ConfigError to halt the boot-loop auto-resume and surface it.
         return Err(ConfigError(
             "STOP: Define the variable CAM_SIZE in dashusb.conf like this: \
-             export CAM_SIZE=32"
+             export CAM_SIZE=64G (GM requires a 64 GB or larger drive)"
                 .into(),
         )
         .into());
@@ -243,13 +180,8 @@ async fn check_available_space(env: &SetupEnv, emitter: &SetupEmitter) -> Result
             ));
             check_available_space_usb(drive, emitter).await
         }
-        // Keep a missing DATA_DRIVE TRANSIENT (not ConfigError): env.data_drive
-        // is the raw config value with no existence check (env.rs), and this is
-        // the first existence gate. A USB/SSD that's just slow to enumerate — or
-        // not back yet after a mid-setup reboot, realistic on a brownout-prone
-        // Pi — must self-heal via the auto-resume retry rather than halt setup
-        // with a "fix your config" wall. A genuine typo only loops (pre-existing
-        // behavior); a transient absence recovers, which is the safer trade.
+        // Missing external media is transient because enumeration can lag a
+        // reboot; auto-resume retries it.
         Some(drive) => bail!(
             "STOP: DATA_DRIVE is set to {}, which does not exist.",
             drive
@@ -282,8 +214,8 @@ async fn check_available_space_sd(env: &SetupEnv, emitter: &SetupEmitter) -> Res
         return Ok(());
     }
 
-    // Fresh partition: `sfdisk -F <disk>` reports free space. The first
-    // line of the "free space" report has "XXX bytes" which we parse.
+    // Fresh partition: `sfdisk -F <disk>` reports free space, with the byte
+    // count on the first line of the report.
     let boot_disk = env
         .boot_disk
         .as_deref()
@@ -294,7 +226,7 @@ async fn check_available_space_sd(env: &SetupEnv, emitter: &SetupEmitter) -> Res
             .await
             .context("sfdisk -F")?;
 
-    // First "N bytes" match wins — matches bash `grep -o '[0-9]* bytes' | head -1`.
+    // First "N bytes" match wins.
     let available_space = sfdisk_out
         .lines()
         .find_map(parse_bytes_from_line)
@@ -319,8 +251,7 @@ async fn check_available_space_sd(env: &SetupEnv, emitter: &SetupEmitter) -> Res
 async fn check_available_space_usb(drive: &str, emitter: &SetupEmitter) -> Result<()> {
     emitter.progress("Verifying that there is sufficient space available on the USB drive ...");
 
-    // 30-second timeout — a sleeping / I/O-error USB drive can hang lsblk
-    // indefinitely otherwise. Match bash's explicit `timeout 30` wrapping.
+    // Bound lsblk for sleeping or failing USB media.
     let lsblk_out = sentryusb_shell::run_with_timeout(
         Duration::from_secs(30),
         "lsblk",
@@ -375,14 +306,9 @@ async fn check_available_space_usb(drive: &str, emitter: &SetupEmitter) -> Resul
     Ok(())
 }
 
-// -----------------------------------------------------------------------------
-// Parsing helpers
-// -----------------------------------------------------------------------------
-
-/// Parse the first "N bytes" occurrence on a line — e.g.
+/// Parse the first "N bytes" occurrence on a line, e.g.
 /// `Unpartitioned space /dev/mmcblk0: 10737418240 bytes, 10.7 GiB`.
 fn parse_bytes_from_line(line: &str) -> Option<u64> {
-    // Scan for a run of digits immediately followed by " bytes".
     let bytes_idx = line.find(" bytes")?;
     let prefix = &line[..bytes_idx];
     let digits: String = prefix
@@ -411,7 +337,6 @@ mod tests {
             .collect();
         SetupEnv {
             pi_model: PiModel::Other,
-            boot_path: String::new(),
             cmdline_path: None,
             piconfig_path: None,
             boot_disk: None,
@@ -423,9 +348,9 @@ mod tests {
 
     #[test]
     fn missing_cam_size_is_a_config_error() {
-        // A missing required key is a user-config error: it fails identically
-        // on every retry, so it must classify as ConfigError (which stops the
-        // setup boot-loop auto-resume) rather than a transient failure.
+        // A missing required key fails identically on every retry, so it must
+        // classify as ConfigError, which stops the setup boot-loop
+        // auto-resume, rather than as a transient failure.
         let env = env_with(&[]);
         let err = check_required_config(&env).unwrap_err();
         assert!(
@@ -436,12 +361,11 @@ mod tests {
 
     #[tokio::test]
     async fn nonexistent_data_drive_stays_transient() {
-        // A missing DATA_DRIVE must NOT be a ConfigError. `env.data_drive`
-        // is the raw config value with no existence check (env.rs), and this
-        // is the first existence gate — a USB/SSD that's merely slow to
-        // enumerate, or not back yet after a mid-setup reboot (realistic on
-        // a brownout-prone Pi), must auto-resume and retry, NOT halt setup as
-        // a config error. Keep it transient so it self-heals.
+        // A missing DATA_DRIVE must NOT be a ConfigError. `env.data_drive` is
+        // the raw config value with no existence check (env.rs) and this is
+        // the first existence gate, so a USB/SSD that is merely slow to
+        // enumerate, or not back yet after a mid-setup reboot, must
+        // auto-resume and retry rather than halt setup as a config error.
         let mut env = env_with(&[]);
         env.data_drive = Some("/no/such/dashusb/drive".to_string());
         let emitter = SetupEmitter::new(|_| {}, |_, _| {});
@@ -461,7 +385,7 @@ mod tests {
 
     #[test]
     fn parse_bytes_none_when_absent() {
-        // " bytes" matches but no digits immediately before → None.
+        // " bytes" matches but no digits immediately before it.
         assert_eq!(parse_bytes_from_line("no bytes here"), None);
         assert_eq!(
             parse_bytes_from_line("/dev/mmcblk0 30GB"),

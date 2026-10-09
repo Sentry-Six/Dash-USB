@@ -69,7 +69,6 @@ export default function Support() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Check if support server is reachable
   useEffect(() => {
     fetch("/api/support/check")
       .then(r => r.json())
@@ -77,12 +76,10 @@ export default function Support() {
       .catch(() => setAvailable(false))
   }, [])
 
-  // Scroll to bottom on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [messages])
 
-  // Fetch messages
   const fetchMessages = useCallback(async () => {
     if (!ticket) return
     try {
@@ -101,7 +98,6 @@ export default function Support() {
           const last = data.messages[data.messages.length - 1]
           if (last.id) setLastMessageId(last.id)
 
-          // Mark as read
           fetch(`/api/support/ticket/${ticket.ticketId}/mark-read`, {
             method: "POST",
             headers: { "X-Auth-Token": ticket.authToken },
@@ -115,7 +111,6 @@ export default function Support() {
     } catch { /* ignore */ }
   }, [ticket, lastMessageId])
 
-  // Poll for messages
   useEffect(() => {
     if (!ticket || ticketClosed) return
     fetchMessages()
@@ -129,7 +124,7 @@ export default function Support() {
       if (t) localStorage.setItem(STORAGE_KEY, JSON.stringify(t))
       else localStorage.removeItem(STORAGE_KEY)
     } catch {
-      // localStorage unavailable (private mode/quota) — ticket just won't persist
+      // Ticket persistence is optional when localStorage is unavailable.
     }
   }
 
@@ -139,11 +134,10 @@ export default function Support() {
     setStatus({ text: "Sending...", type: "loading" })
 
     try {
-      // Track the active ticket for this send (needed because setState is async)
+      // setTicket has not committed within this handler.
       let activeTicket = ticket
 
       if (!activeTicket) {
-        // Create new ticket
         setStatus({ text: "Creating support ticket...", type: "loading" })
         const res = await fetch("/api/support/ticket", {
           method: "POST",
@@ -163,7 +157,6 @@ export default function Support() {
         }
         saveTicket(activeTicket)
       } else {
-        // Send message to existing ticket
         if (!attachment) {
           setStatus({ text: "Sending message...", type: "loading" })
           const res = await fetch(`/api/support/ticket/${activeTicket.ticketId}/message`, {
@@ -179,10 +172,7 @@ export default function Support() {
         }
       }
 
-      // Upload diagnostics as a file attachment (byte-faithful — matches the
-      // Logs tab Download). Use /api/logs/diagnostics, not /api/diagnostics:
-      // the latter strips ANSI/control chars server-side, which loses bytes
-      // (NULs from device-tree files, etc.) the support agent may need.
+      // Use the byte-faithful logs endpoint; /api/diagnostics strips controls.
       if (includeDiagnostics && activeTicket) {
         setStatus({ text: "Collecting diagnostics...", type: "loading" })
         await fetch("/api/diagnostics/refresh", { method: "POST" }).catch(() => { })
@@ -214,7 +204,6 @@ export default function Support() {
         })
       }
 
-      // Upload attachment if present
       if (attachment && activeTicket) {
         setStatus({ text: "Uploading attachment...", type: "loading" })
         const reader = new FileReader()
@@ -240,14 +229,12 @@ export default function Support() {
         })
       }
 
-      // Clear form
       setMessage("")
       setIncludeDiagnostics(false)
       setAttachment(null)
       setStatus({ text: "Sent!", type: "success" })
       setTimeout(() => setStatus(null), 2000)
 
-      // Refresh messages
       setTimeout(() => fetchMessages(), 500)
     } catch (err) {
       setStatus({ text: err instanceof Error ? err.message : "Failed to send", type: "error" })
@@ -283,7 +270,6 @@ export default function Support() {
     setStatus(null)
   }
 
-  // Offline state
   if (available === false) {
     return (
       <div className="flex h-[calc(100vh-120px)] flex-col items-center justify-center gap-4 md:h-[calc(100vh-96px)]">
@@ -318,7 +304,6 @@ export default function Support() {
 
   return (
     <div className="flex h-[calc(100vh-120px)] flex-col md:h-[calc(100vh-96px)]">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <MessageCircle className="h-5 w-5 text-blue-400" />
@@ -340,7 +325,6 @@ export default function Support() {
         )}
       </div>
 
-      {/* Messages area */}
       <div className="mt-4 flex flex-1 flex-col overflow-hidden rounded-xl border border-white/5 bg-white/[0.02]">
         <div className="flex-1 overflow-y-auto px-4 py-4">
           {!ticket && messages.length === 0 && !ticketClosed && (
@@ -445,10 +429,8 @@ export default function Support() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Composer */}
         {!ticketClosed && (
           <div className="shrink-0 border-t border-white/5 px-4 py-3">
-            {/* Attachment preview */}
             {attachment && (
               <div className="mb-2 flex items-center gap-2 rounded-lg bg-white/5 px-3 py-1.5">
                 <Paperclip className="h-3.5 w-3.5 text-slate-500" />
@@ -460,7 +442,6 @@ export default function Support() {
               </div>
             )}
 
-            {/* Options row */}
             <div className="mb-2 flex items-center gap-3">
               <button
                 type="button"
@@ -498,7 +479,6 @@ export default function Support() {
               </label>
             </div>
 
-            {/* Input row */}
             <div className="flex items-end gap-2">
               <textarea
                 value={message}
@@ -518,7 +498,6 @@ export default function Support() {
               </button>
             </div>
 
-            {/* Status + char count */}
             <div className="mt-1.5 flex items-center justify-between">
               {status ? (
                 <span className={cn("flex items-center gap-1 text-xs", {

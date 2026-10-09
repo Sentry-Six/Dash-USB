@@ -1,8 +1,8 @@
-//! Embedded runtime scripts that get installed to /root/bin/.
+//! Embedded runtime shell scripts, installed to /root/bin/ by
+//! [`install_runtime_scripts`].
 //!
-//! These are small shell scripts needed at runtime (after setup). They'll
-//! eventually be ported to Rust subcommands, but for now they're installed
-//! as bash scripts to maintain compatibility.
+//! archiveloop, systemd units, and external scripts call these by fixed path
+//! and filename, so the names here must not change.
 
 use anyhow::Result;
 
@@ -54,11 +54,6 @@ const MANAGE_FREE_SPACE: &str = r#"#!/bin/bash -eu
 dashusb space manage "$@"
 "#;
 
-const FORCE_SYNC: &str = r#"#!/bin/bash -eu
-# Force an immediate archive sync by sending SIGUSR1 to archiveloop.
-pkill -USR1 -f archiveloop || echo "archiveloop not running"
-"#;
-
 const ENABLE_GADGET: &str = r#"#!/bin/bash -eu
 dashusb gadget enable "$@"
 "#;
@@ -67,8 +62,8 @@ const DISABLE_GADGET: &str = r#"#!/bin/bash -eu
 dashusb gadget disable "$@"
 "#;
 
-/// autofs map script for `/tmp/snapshots` — resolves snap-NNN names to the
-/// right disk image + fstype for on-demand read-only mounts.
+/// autofs map script for `/tmp/snapshots`: resolves snap-NNN names to the
+/// right disk image and fstype for on-demand read-only mounts.
 const AUTO_SENTRYUSB: &str = r#"#!/bin/dash
 
 diskimage="/backingfiles/snapshots/$1/snap.bin"
@@ -107,58 +102,9 @@ fi
 cat "$optfile"
 "#;
 
-/// autofs map script for `/var/www/html/fs` — resolves Music to the
-/// corresponding backing disk image with an rw mount.
-const AUTO_WWW: &str = r#"#!/bin/dash
 
-case "$1" in
-  Music)
-    diskimage="/backingfiles/music_disk.bin"
-    ;;
-  *)
-    exit 1
-    ;;
-esac
-
-optfile="${diskimage}.opts"
-
-if [ ! -r "$diskimage" ]
-then
-  exit 1
-fi
-
-if [ -f "$optfile" ] && [ "$diskimage" -nt "$optfile" ]
-then
-  rm -f "$optfile"
-fi
-
-if [ ! -f "$optfile" ]
-then
-  rm -rf "$optfile"
-  /root/bin/mountoptsforimage "${diskimage}" | {
-    read -r fstype opts
-    if [ -z "$fstype" ]
-    then
-      exit 1
-    fi
-    echo "-fstype=${fstype},rw,${opts} :${diskimage}" > "$optfile"
-  }
-fi
-
-cat "$optfile"
-"#;
-
-// ── archiveloop + supporting bash scripts ──────────────────────────────────
-//
-// Pulled in via `include_str!` from the vendored `run/` tree at compile
-// time. Before this, the Rust setup runner only wrote out the small
-// helper scripts above and silently relied on the Go-era pi-gen image
-// having pre-installed `archiveloop`, `archive-clips.sh`, etc. Anyone
-// running `curl | bash install-pi.sh` on a clean Pi OS would end up
-// with a working binary, a perfectly-formatted /root/dashusb.conf,
-// systemd-archive enabled… and an empty /root/bin/ where the script
-// the service tries to exec is supposed to live. Service crashloops,
-// no archive ever runs.
+// Embed archive scripts because dashusb-archive.service executes the installed
+// `/root/bin/archiveloop` even on systems not built through pi-gen.
 
 const ARCHIVELOOP: &str = include_str!("../../../run/archiveloop");
 const SEND_LIVE_ACTIVITY: &str = include_str!("../../../run/send-live-activity");
@@ -166,40 +112,14 @@ const SEND_PUSH_MESSAGE: &str = include_str!("../../../run/send-push-message");
 const TEMPERATURE_MONITOR: &str = include_str!("../../../run/temperature_monitor");
 const WAITFORIDLE: &str = include_str!("../../../run/waitforidle");
 
-/// Install all runtime helper scripts to /root/bin/.
-///
-/// Only announces a phase if at least one script is missing or has changed —
-/// once installed, re-running setup is a no-op.
+/// Install all runtime helper scripts to /root/bin/. Announces a phase only
+/// when at least one script is missing or has changed, so a re-run after a
+/// successful install is a silent no-op.
 pub async fn install_runtime_scripts(emitter: &crate::SetupEmitter) -> Result<bool> {
     let _ = std::fs::create_dir_all("/root/bin");
 
-    let scripts: &[(&str, &str)] = &[
-        ("remountfs_rw", REMOUNTFS_RW),
-        ("mountoptsforimage", MOUNTOPTSFORIMAGE),
-        ("mountimage", MOUNTIMAGE),
-        ("make_snapshot.sh", MAKE_SNAPSHOT),
-        ("release_snapshot.sh", RELEASE_SNAPSHOT),
-        ("manage_free_space.sh", MANAGE_FREE_SPACE),
-        ("force_sync.sh", FORCE_SYNC),
-        ("enable_gadget.sh", ENABLE_GADGET),
-        ("disable_gadget.sh", DISABLE_GADGET),
-        ("auto.dashusb", AUTO_SENTRYUSB),
-        ("auto.www", AUTO_WWW),
-        // Archive flow — these are the universal scripts that don't depend
-        // on which archive system the user picked. The per-system variants
-        // (archive-clips.sh, archive-is-reachable.sh, connect-archive.sh,
-        // disconnect-archive.sh, copy-music.sh, verify-and-configure-
-        // archive.sh) are installed by `archive::install_archive_scripts`
-        // based on ARCHIVE_SYSTEM, since each system has its own copy.
-        ("archiveloop", ARCHIVELOOP),
-        ("send-live-activity", SEND_LIVE_ACTIVITY),
-        ("send-push-message", SEND_PUSH_MESSAGE),
-        ("temperature_monitor", TEMPERATURE_MONITOR),
-        ("waitforidle", WAITFORIDLE),
-    ];
+    let scripts = archive_runtime_scripts();
 
-    // Skip the phase entirely if every script is already present and
-    // byte-for-byte identical to what we'd write.
     let all_current = scripts.iter().all(|(name, content)| {
         let path = format!("/root/bin/{}", name);
         std::fs::read_to_string(&path)
@@ -226,4 +146,29 @@ pub async fn install_runtime_scripts(emitter: &crate::SetupEmitter) -> Result<bo
 
     emitter.progress("Runtime scripts installed.");
     Ok(true)
+}
+
+/// Bundled support files shared by setup and offline update refresh.
+pub fn archive_runtime_scripts() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("remountfs_rw", REMOUNTFS_RW),
+        ("mountoptsforimage", MOUNTOPTSFORIMAGE),
+        ("mountimage", MOUNTIMAGE),
+        ("make_snapshot.sh", MAKE_SNAPSHOT),
+        ("release_snapshot.sh", RELEASE_SNAPSHOT),
+        ("manage_free_space.sh", MANAGE_FREE_SPACE),
+        ("enable_gadget.sh", ENABLE_GADGET),
+        ("disable_gadget.sh", DISABLE_GADGET),
+        ("auto.dashusb", AUTO_SENTRYUSB),
+        // `archive::install_archive_scripts` installs backend-specific helpers.
+        ("archive-control.sh", include_str!("../../../run/archive-control.sh")),
+        ("mounted-archive-monitor.sh", include_str!("../../../run/mounted-archive-monitor.sh")),
+        ("cam-disk-supervisor.sh", include_str!("../../../run/cam-disk-supervisor.sh")),
+        ("wifi-watchdog.sh", include_str!("../../../run/wifi-watchdog.sh")),
+        ("archiveloop", ARCHIVELOOP),
+        ("send-live-activity", SEND_LIVE_ACTIVITY),
+        ("send-push-message", SEND_PUSH_MESSAGE),
+        ("temperature_monitor", TEMPERATURE_MONITOR),
+        ("waitforidle", WAITFORIDLE),
+    ]
 }

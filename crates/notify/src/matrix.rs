@@ -1,4 +1,5 @@
-//! Matrix notification provider — login, send message, logout.
+//! Matrix sends by logging in, posting, then making a best-effort logout.
+//! Preserve the send result across logout failure.
 
 use anyhow::{bail, Result};
 use reqwest::Client;
@@ -12,7 +13,6 @@ pub async fn send(
     title: &str,
     message: &str,
 ) -> Result<()> {
-    // 1. Login
     let login_url = format!("{}/_matrix/client/v3/login", server_url);
     let login_resp = client
         .post(&login_url)
@@ -33,7 +33,6 @@ pub async fn send(
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("no access_token in login response"))?;
 
-    // 2. Send message
     let txn_id = format!("sentryusb_{}", chrono::Utc::now().timestamp_millis());
     let send_url = format!(
         "{}/_matrix/client/v3/rooms/{}/send/m.room.message/{}",
@@ -51,7 +50,6 @@ pub async fn send(
         .send()
         .await?;
 
-    // 3. Logout (best-effort)
     let logout_url = format!("{}/_matrix/client/v3/logout", server_url);
     let _ = client
         .post(&logout_url)

@@ -1,15 +1,5 @@
-//! User preferences (key-value store).
-//!
-//! Concurrency: the load→modify→save flow used by [`set_preference`] is
-//! racy without a lock — two concurrent PUTs would both read the same
-//! baseline, each insert their own key, and the second write would
-//! silently clobber the first. Go guarded this with `prefsMu.RWMutex`;
-//! we do the same here with a process-wide `Mutex<()>` held for the
-//! duration of the RMW.
-//!
-//! Durability: saves go through tmp+rename so a power cut mid-write
-//! can't leave the preferences file half-formed (parseable as empty,
-//! losing every stored flag).
+//! Durable key-value preferences. Read-modify-write operations hold
+//! `PREFS_LOCK`; saves use atomic replacement.
 
 use std::sync::Mutex;
 
@@ -20,59 +10,76 @@ use serde::Deserialize;
 
 use crate::router::AppState;
 
-/// Preferences store path (`/mutable` on the Pi; honors the
-/// `DASHUSB_MUTABLE_DIR` dev override for off-Pi runs).
+/// `/mutable` on the Pi; `DASHUSB_MUTABLE_DIR` overrides it for off-Pi runs.
 pub(crate) fn prefs_file() -> String {
     format!("{}/.dashusb_preferences.json", sentryusb_config::mutable_dir())
 }
-/// Legacy Go preferences path — read-only fallback so upgrades don't lose data.
+/// Legacy path, read-only fallback so upgrades don't lose existing prefs.
 fn legacy_prefs_file() -> String {
     format!("{}/dashusb-prefs.json", sentryusb_config::mutable_dir())
 }
 
-/// Serializes concurrent preference reads + writes. Held around the
-/// RMW in `set_preference` so interleaved PUTs can't lose updates.
+/// Serializes the read-modify-write in `set_preference` so interleaved PUTs
+/// can't lose updates.
 static PREFS_LOCK: Mutex<()> = Mutex::new(());
 
-pub(crate) fn load_prefs() -> serde_json::Map<String, serde_json::Value> {
-    // Primary path first, legacy path as fallback.
-    if let Ok(d) = std::fs::read_to_string(prefs_file()) {
-        if let Ok(v) = serde_json::from_str(&d) {
-            return v;
-        }
+type Preferences = serde_json::Map<String, serde_json::Value>;
+
+fn read_preferences(path: &std::path::Path, legacy: &std::path::Path) -> std::io::Result<Preferences> {
+    let data = match std::fs::read(path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => match std::fs::read(legacy) {
+            Ok(data) => data,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Preferences::new()),
+            Err(error) => return Err(error),
+        },
+        Err(error) => return Err(error),
+    };
+    serde_json::from_slice(&data).map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+fn write_preferences(path: &std::path::Path, prefs: &Preferences) -> std::io::Result<()> {
+    use std::io::Write;
+    let data = serde_json::to_vec_pretty(prefs)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
     }
-    std::fs::read_to_string(legacy_prefs_file())
-        .ok()
-        .and_then(|d| serde_json::from_str(&d).ok())
-        .unwrap_or_default()
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default().as_nanos();
+    let temporary = path.with_extension(format!("{}.{nonce}.tmp", std::process::id()));
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
+    let result = (|| {
+        file.write_all(&data)?;
+        file.sync_all()?;
+        std::fs::rename(&temporary, path)?;
+        #[cfg(unix)]
+        std::fs::File::open(path.parent().unwrap_or(std::path::Path::new(".")))?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() { let _ = std::fs::remove_file(temporary); }
+    result
+}
+
+/// Serialize read/modify/write and fail without replacing unreadable preferences.
+pub(crate) fn edit_prefs(edit: impl FnOnce(&mut Preferences)) -> std::io::Result<()> {
+    let _guard = PREFS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let path = prefs_file();
+    let mut prefs = read_preferences(std::path::Path::new(&path), std::path::Path::new(&legacy_prefs_file()))?;
+    edit(&mut prefs);
+    write_preferences(std::path::Path::new(&path), &prefs)
+}
+
+pub(crate) fn read_prefs() -> std::io::Result<Preferences> {
+    read_preferences(std::path::Path::new(&prefs_file()), std::path::Path::new(&legacy_prefs_file()))
+}
+
+pub(crate) fn load_prefs() -> serde_json::Map<String, serde_json::Value> {
+    read_prefs().unwrap_or_default()
 }
 
 pub(crate) fn save_prefs(prefs: &serde_json::Map<String, serde_json::Value>) {
-    // Atomic tmp+rename — a direct `fs::write` leaves the file in an
-    // intermediate zero-length state if the kernel panics mid-write,
-    // which on next boot would silently reset every toggle (away-mode
-    // notifications, update channel, etc.) to its default.
-    //
-    // On a fresh first install the wizard saves prefs (e.g. the new
-    // community wraps/chimes flags) BEFORE the /mutable partition has
-    // been created and mounted — at that point the parent directory
-    // doesn't exist yet and the write fails with ENOENT, leaving a
-    // noisy warning in journalctl. Pre-create the parent so the write
-    // succeeds onto rootfs as a placeholder; once /mutable is mounted
-    // any subsequent save lands on the persistent partition.
-    let data = serde_json::to_string_pretty(prefs).unwrap_or_default();
-    let prefs_path = prefs_file();
-    if let Some(parent) = std::path::Path::new(&prefs_path).parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let tmp = format!("{}.tmp", prefs_path);
-    if let Err(e) = std::fs::write(&tmp, &data) {
-        tracing::warn!("[preferences] failed to write tmp: {}", e);
-        return;
-    }
-    if let Err(e) = std::fs::rename(&tmp, &prefs_path) {
-        let _ = std::fs::remove_file(&tmp);
-        tracing::warn!("[preferences] failed to rename into place: {}", e);
+    if let Err(error) = write_preferences(std::path::Path::new(&prefs_file()), prefs) {
+        tracing::warn!("[preferences] failed to save: {}", error);
     }
 }
 
@@ -81,12 +88,14 @@ pub struct PrefQuery {
     key: Option<String>,
 }
 
-/// GET /api/config/preference
 pub async fn get_preference(
     State(_s): State<AppState>,
     Query(params): Query<PrefQuery>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let prefs = load_prefs();
+    let prefs = match read_prefs() {
+        Ok(prefs) => prefs,
+        Err(_) => return crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, "Preferences could not be read."),
+    };
     if let Some(key) = &params.key {
         let val = prefs.get(key).cloned().unwrap_or(serde_json::Value::Null);
         (StatusCode::OK, Json(serde_json::json!({"key": key, "value": val})))
@@ -95,7 +104,6 @@ pub async fn get_preference(
     }
 }
 
-/// PUT /api/config/preference
 pub async fn set_preference(
     State(_s): State<AppState>,
     body: String,
@@ -111,18 +119,40 @@ pub async fn set_preference(
         Err(_) => return crate::json_error(StatusCode::BAD_REQUEST, "invalid request body"),
     };
 
-    {
-        // Hold the lock across the entire load→modify→save so two concurrent
-        // PUTs serialize rather than racing on the same baseline snapshot.
-        // Poisoned-guard recovery: treat `into_inner` as "lock was dropped
-        // while held" — safe because we always restore the file from a
-        // complete in-memory map on every save.
-        let _guard = PREFS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let mut prefs = load_prefs();
-        prefs.insert(req.key, req.value);
-        save_prefs(&prefs);
+    match tokio::task::spawn_blocking(move || edit_prefs(|prefs| { prefs.insert(req.key, req.value); })).await {
+        Ok(Ok(())) => crate::json_ok(),
+        _ => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, "Preference could not be saved."),
     }
-
-    crate::json_ok()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn corrupt_preferences_do_not_fall_back_to_old_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("current.json");
+        let legacy = dir.path().join("legacy.json");
+        std::fs::write(&legacy, r#"{"old":true}"#).unwrap();
+        assert_eq!(read_preferences(&current, &legacy).unwrap()["old"], true);
+        std::fs::write(&current, "{broken").unwrap();
+        assert!(read_preferences(&current, &legacy).is_err());
+        assert_eq!(std::fs::read_to_string(current).unwrap(), "{broken");
+    }
+
+    #[test]
+    fn preference_write_is_atomic_and_cleans_up_a_failed_publish() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prefs.json");
+        let prefs = Preferences::from_iter([("unrelated".into(), serde_json::json!("keep"))]);
+        write_preferences(&path, &prefs).unwrap();
+        assert_eq!(read_preferences(&path, &path).unwrap(), prefs);
+        let blocked = dir.path().join("directory.json");
+        std::fs::create_dir(&blocked).unwrap();
+        std::fs::write(blocked.join("keep"), "unchanged").unwrap();
+        assert!(write_preferences(&blocked, &prefs).is_err());
+        assert_eq!(std::fs::read_to_string(blocked.join("keep")).unwrap(), "unchanged");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+}

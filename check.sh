@@ -2,20 +2,18 @@
 
 shopt -s globstar nullglob extglob
 
-# print shellcheck version so we know what Github uses
+# Print the version so the CI log records which shellcheck GitHub ran.
 shellcheck -V
 
-# SC1091 - Don't complain about not being able to find files that don't exist.
+# SC1091: don't flag sourced files that can't be resolved at lint time.
 shellcheck --exclude=SC1091 \
-           ./setup/pi/setup-dashusb \
            ./pi-gen-sources/00-dashusb-tweaks/files/rc.local \
            ./pi-gen-sources/00-dashusb-tweaks/files/dashusb-pick-binary \
            ./run/archiveloop \
-           ./run/auto.dashusb \
-           ./run/awake_start \
-           ./run/awake_stop \
-           ./run/mountimage \
-           ./run/mountoptsforimage \
+           ./run/archive-control.sh \
+           ./run/mounted-archive-monitor.sh \
+           ./run/cam-disk-supervisor.sh \
+           ./run/wifi-watchdog.sh \
            ./run/remountfs_rw \
            ./run/send-push-message \
            ./run/temperature_monitor \

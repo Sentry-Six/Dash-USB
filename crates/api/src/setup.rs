@@ -1,15 +1,4 @@
-//! Setup wizard configuration API.
-//!
-//! The setup process supports mid-setup reboots (e.g. for dwc2 overlay or
-//! root partition shrink). The boot-loop works like this:
-//!
-//! 1. User clicks "Run Setup" in the web wizard → `POST /api/setup/run`
-//! 2. `run_full_setup` creates `DASHUSB_SETUP_STARTED`, runs phases.
-//! 3. If a phase requires a reboot, setup exits early (marker still present).
-//! 4. Pi reboots → systemd starts the web server → `auto_resume_setup()`
-//!    sees STARTED without FINISHED → re-spawns `run_full_setup`.
-//! 5. `run_full_setup` skips already-completed phases and continues.
-//! 6. When all phases finish, STARTED is removed and FINISHED is created.
+//! Setup API with STARTED/FINISHED markers for resuming across required reboots.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -35,6 +24,11 @@ const SETUP_STARTED_PATHS: &[&str] = &[
 ];
 
 fn is_setup_finished() -> bool {
+    // Dev override for desktop UI work: pretend setup completed so the
+    // full app renders instead of the wizard (no Pi paths exist here).
+    if std::env::var_os("DASHUSB_SETUP_FINISHED").is_some_and(|v| v == "1") {
+        return true;
+    }
     SETUP_FINISHED_PATHS.iter().any(|p| std::path::Path::new(p).exists())
 }
 
@@ -42,11 +36,7 @@ fn is_setup_started() -> bool {
     SETUP_STARTED_PATHS.iter().any(|p| std::path::Path::new(p).exists())
 }
 
-/// Persistent record of the last setup failure, written next to the
-/// STARTED/FINISHED markers. Without it, a failure is only a transient
-/// WebSocket event + a log line — so a page reload after the failure
-/// shows the perpetual "Setting Up" spinner forever (no terminal state),
-/// and `auto_resume_setup` silently re-runs the doomed setup every boot.
+/// Persistent terminal failure state for page reloads and auto-resume policy.
 const SETUP_ERROR_MARKER: &str = "/dashusb/DASHUSB_SETUP_ERROR";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -75,9 +65,7 @@ impl SetupFailure {
 
     fn parse(s: &str) -> Option<SetupFailure> {
         let v: serde_json::Value = serde_json::from_str(s).ok()?;
-        // Unknown/missing kinds degrade to "transient" — the conservative
-        // choice, since transient still allows auto-resume rather than
-        // silently wedging a recoverable install.
+        // Unknown kinds remain retryable rather than wedging recovery.
         let kind = if v.get("kind").and_then(|k| k.as_str()) == Some("config") {
             "config"
         } else {
@@ -92,10 +80,7 @@ impl SetupFailure {
     }
 }
 
-/// Decide whether to auto-resume an interrupted setup on boot. A config
-/// failure must NOT auto-resume (it fails identically); the user fixes
-/// settings and retries. A transient failure — and the normal mid-flow
-/// reboot case (no failure marker at all) — does resume.
+/// Resume reboots and transient failures, but wait for user fixes after config errors.
 fn should_auto_resume(started: bool, finished: bool, failure: Option<&SetupFailure>) -> bool {
     started && !finished && failure.map_or(true, |f| f.kind != "config")
 }
@@ -122,9 +107,7 @@ pub fn auto_resume_setup(hub: sentryusb_ws::Hub) {
         info!("[setup] Detected interrupted setup (STARTED marker present, no FINISHED). Auto-resuming...");
         spawn_setup(hub);
     } else if let Some(f) = failure.filter(|f| f.kind == "config") {
-        // A config failure repeats identically on retry — don't spin the
-        // boot loop. Leave the marker so the web UI shows the error and the
-        // user can fix settings and retry explicitly.
+        // Keep the marker visible while a user fixes a deterministic config error.
         info!(
             "[setup] Last setup failed on a configuration error ({}). Not auto-resuming; awaiting user fix + retry.",
             f.message
@@ -132,7 +115,6 @@ pub fn auto_resume_setup(hub: sentryusb_ws::Hub) {
     }
 }
 
-/// GET /api/setup/status
 pub async fn get_setup_status(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
     let running = SETUP_RUNNING.load(Ordering::Relaxed);
     let finished = is_setup_finished();
@@ -140,10 +122,7 @@ pub async fn get_setup_status(State(_s): State<AppState>) -> (StatusCode, Json<s
     // Ignore any stale marker while a run is actively in progress.
     let failure = if running { None } else { read_setup_failure() };
 
-    // STARTED-without-FINISHED normally means "still running" (a mid-flow
-    // reboot). But once a failure is recorded, setup has stopped and is
-    // awaiting a fix/retry — so stop reporting "running" (which is what
-    // kept the web UI stuck on the "Setting Up" spinner forever).
+    // A recorded failure supersedes the otherwise-running STARTED marker.
     let effective_running = running || (!finished && is_setup_started() && failure.is_none());
 
     let mut body = serde_json::json!({
@@ -157,7 +136,6 @@ pub async fn get_setup_status(State(_s): State<AppState>) -> (StatusCode, Json<s
     (StatusCode::OK, Json(body))
 }
 
-/// GET /api/setup/config
 pub async fn get_setup_config(State(_s): State<AppState>) -> axum::response::Response {
     use axum::response::IntoResponse;
     let config_path = sentryusb_config::find_config_path();
@@ -176,10 +154,7 @@ pub async fn get_setup_config(State(_s): State<AppState>) -> axum::response::Res
                     "active": true,
                 }));
             }
-            // Config only changes when the wizard / raw editor PUTs.
-            // A short 30s cache lets the Dashboard skip the round
-            // trip on quick navigations without hiding edits for
-            // long.
+            // Config changes only through PUTs; cache quick navigation for 30 s.
             (
                 StatusCode::OK,
                 [(axum::http::header::CACHE_CONTROL, "private, max-age=30")],
@@ -191,7 +166,6 @@ pub async fn get_setup_config(State(_s): State<AppState>) -> axum::response::Res
     }
 }
 
-/// PUT /api/setup/config
 pub async fn save_setup_config(
     State(_s): State<AppState>,
     Json(body): Json<std::collections::HashMap<String, String>>,
@@ -199,38 +173,21 @@ pub async fn save_setup_config(
     // Remount filesystem read-write (root fs may be read-only)
     let _ = sentryusb_shell::run("mount", &["/", "-o", "remount,rw"]).await;
 
-    // The vendored bash archive scripts (run/{cifs,rsync,rclone,nfs}_archive/
-    // archive-is-reachable.sh and friends) all read `$ARCHIVE_SERVER`
-    // and pass it as $1 to the reachability probe. The wizard, though,
-    // collects the per-system server name in a per-system variable
-    // (RSYNC_SERVER for rsync, RCLONE_DRIVE for rclone). Without
-    // mirroring it into ARCHIVE_SERVER, archiveloop hands the bash
-    // script an empty string, the script exits 1 with "Name or service
-    // not known", and the loop is permanently stuck on
-    // "Waiting for archive to be reachable...".
-    //
-    // CIFS and NFS already use ARCHIVE_SERVER directly in the wizard,
-    // so they're fine unchanged. Mirror only when the user-provided
-    // ARCHIVE_SERVER is empty so we don't clobber an explicit value.
     let body = mirror_archive_server(body);
 
     let config_path = sentryusb_config::find_config_path();
-    match sentryusb_config::write_file(config_path, &body) {
-        Ok(()) => crate::json_ok(),
-        Err(e) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to write config: {}", e)),
+    match tokio::task::spawn_blocking(move || {
+        let _guard = crate::notification_providers::PROVIDER_CONFIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        sentryusb_config::write_file(config_path, &body)
+    }).await {
+        Ok(Ok(())) => crate::json_ok(),
+        Ok(Err(e)) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to write config: {}", e)),
+        Err(e) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Config task failed: {}", e)),
     }
 }
 
-/// Backfill ARCHIVE_SERVER from RSYNC_SERVER for rsync setups so the
-/// legacy bash archive scripts (which all read $ARCHIVE_SERVER) get a
-/// real hostname to probe. cifs and nfs already collect ARCHIVE_SERVER
-/// directly in the wizard. rclone is intentionally NOT mirrored: its
-/// per-system key is RCLONE_DRIVE (a remote name like "myremote"), not
-/// a pingable hostname — copying that into ARCHIVE_SERVER would just
-/// substitute one form of "Name or service not known" for another.
-/// rclone instead has its own ARCHIVE_SERVER input (an IP to ping for
-/// liveness), validated separately on the wizard side.
-/// Idempotent: a non-empty incoming ARCHIVE_SERVER wins.
+/// Backfill RSYNC_SERVER into ARCHIVE_SERVER for reachability probes. Do not
+/// mirror RCLONE_DRIVE because it is a remote name, not a pingable host.
 fn mirror_archive_server(
     mut body: std::collections::HashMap<String, String>,
 ) -> std::collections::HashMap<String, String> {
@@ -256,7 +213,7 @@ fn mirror_archive_server(
     body
 }
 
-/// Shared logic: spawn the setup task in the background.
+/// No-op when a run is already in flight.
 fn spawn_setup(hub: sentryusb_ws::Hub) {
     if SETUP_RUNNING.swap(true, Ordering::SeqCst) {
         info!("[setup] Setup already running, skipping duplicate spawn");
@@ -264,8 +221,7 @@ fn spawn_setup(hub: sentryusb_ws::Hub) {
     }
 
     tokio::spawn(async move {
-        // New attempt — drop any stale failure marker so a fresh run (or a
-        // user-initiated retry after fixing config) isn't reported as failed.
+        // A deliberate retry supersedes the previous failure.
         clear_setup_failure();
         hub.broadcast("setup_status", &serde_json::json!({"status": "running"}));
         info!("[setup] Starting native Rust setup");
@@ -291,17 +247,10 @@ fn spawn_setup(hub: sentryusb_ws::Hub) {
             }
             Err(e) => {
                 tracing::error!("[setup] Failed: {:#}", e);
-                // Persist a classified failure marker so a page reload shows
-                // a terminal "fix & retry" state (not the perpetual spinner)
-                // and `auto_resume_setup` stops silently re-running a config
-                // failure on every boot.
+                // Persist terminal UI and retry policy across reloads/reboots.
                 let failure = SetupFailure::from_error(&e);
                 write_setup_failure(&failure);
-                // Surface the error to the wizard's live log too. Without
-                // this, the failure only lands in journalctl and the
-                // wizard log just stops mid-phase with no explanation —
-                // the user sees "Mounting backingfiles partition..." as
-                // the last line and has no way to know what went wrong.
+                // End the wizard log with the failure, not its last progress step.
                 let line = format!("ERROR: setup failed: {:#}", e);
                 let stamped = format!(
                     "{} : {}",
@@ -336,10 +285,7 @@ fn spawn_setup(hub: sentryusb_ws::Hub) {
 
 const SETUP_PHASES_FILE: &str = "/dashusb/setup-phases.jsonl";
 
-/// GET /api/setup/phases — returns the list of phases that have already been
-/// announced during the current (possibly multi-reboot) setup run. The web UI
-/// fetches this on mount and on WebSocket reconnect so it can reconstruct the
-/// phase list that was built up before the tab connected.
+/// Persisted phases used to reconstruct UI state after reconnects and reboots.
 pub async fn get_setup_phases(
     State(_s): State<AppState>,
 ) -> (StatusCode, Json<serde_json::Value>) {
@@ -351,7 +297,6 @@ pub async fn get_setup_phases(
     (StatusCode::OK, Json(serde_json::json!({ "phases": phases })))
 }
 
-/// POST /api/setup/run
 pub async fn run_setup(State(s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
     if SETUP_RUNNING.load(Ordering::SeqCst) {
         return crate::json_error(StatusCode::CONFLICT, "Setup is already running");
@@ -362,12 +307,9 @@ pub async fn run_setup(State(s): State<AppState>) -> (StatusCode, Json<serde_jso
     (StatusCode::OK, Json(serde_json::json!({"status": "started"})))
 }
 
-/// POST /api/setup/test-archive
-///
-/// Body: JSON map with keys matching dashusb.conf entries:
-/// `ARCHIVE_SYSTEM` (cifs|rsync|rclone|nfs), plus protocol-specific fields.
-/// An actual mount/connect probe,
-/// not just a ping.
+/// Body: JSON map with keys matching dashusb.conf entries, `ARCHIVE_SYSTEM`
+/// (cifs|rsync|rclone|nfs) plus protocol-specific fields. Runs a real
+/// mount/connect probe, not just a ping.
 pub async fn test_archive(
     State(s): State<AppState>,
     Json(params): Json<std::collections::HashMap<String, String>>,
@@ -383,19 +325,8 @@ pub async fn test_archive(
     let timeout = std::time::Duration::from_secs(15);
     let tmp_dir = "/tmp/dashusb-archive-test";
 
-    // `mount -t nfs` / `-t cifs` need userspace helpers (`mount.nfs` from
-    // nfs-common, `mount.cifs` from cifs-utils). Without them the kernel
-    // falls through to its own mount API which can't parse `server:/export`
-    // or `//server/share` — the user-visible symptom is:
-    //   "NFS: mount program didn't pass remote address. fsconfig() failed"
-    // so we install the helper on demand before running the mount test.
-    // Idempotent: apt-get skips already-installed packages quickly.
-    //
-    // Runs in a single request: the frontend's fetch awaits this whole
-    // flow, so the "Testing..." spinner stays up through install +
-    // mount probe. We also broadcast `archive_test_status` so the UI can
-    // show a more specific label ("Installing nfs-common...") instead of
-    // leaving the user wondering what's taking so long.
+    // NFS/CIFS probes require their userspace mount helpers. Broadcast install
+    // and probe stages while the request remains open.
     async fn ensure_mount_helper(
         hub: &sentryusb_ws::Hub,
         pkg: &str,
@@ -408,14 +339,7 @@ pub async fn test_archive(
             "archive_test_status",
             &serde_json::json!({ "stage": "installing", "package": pkg }),
         );
-        // `DPkg::Lock::Timeout` tells apt to wait up to N seconds for
-        // the dpkg frontend lock instead of failing immediately. The
-        // common collision is the setup wizard's own
-        // install_required_packages phase holding the lock when the
-        // user clicks "Test connection" in the Archive step — both
-        // are legitimate apt invocations racing for the same lock.
-        // Shell timeout is a little higher than the apt wait so a
-        // pathological hang surfaces cleanly.
+        // Wait for setup's dpkg lock, with a larger outer timeout for hangs.
         sentryusb_shell::run_with_timeout(
             std::time::Duration::from_secs(240),
             "apt-get",
@@ -437,7 +361,7 @@ pub async fn test_archive(
             let pass = params.get("SHARE_PASSWORD").cloned().unwrap_or_default();
             let domain = params.get("SHARE_DOMAIN").cloned().unwrap_or_default();
             let cifs_ver = params.get("CIFS_VERSION").cloned().unwrap_or_default();
-            if server.is_empty() || share.is_empty() || user.is_empty() || pass.is_empty() {
+            if server.is_empty() || sentryusb_setup::archive::normalize_cifs_share(&share).is_empty() || user.is_empty() || pass.is_empty() {
                 return crate::json_error(StatusCode::BAD_REQUEST, "Missing required CIFS fields");
             }
             if let Err(e) = ensure_mount_helper(&s.hub, "cifs-utils", "/sbin/mount.cifs").await {
@@ -455,7 +379,8 @@ pub async fn test_archive(
             if !cifs_ver.is_empty() {
                 opts.push_str(&format!(",vers={}", cifs_ver));
             }
-            let src = format!("//{}/{}", server, share);
+            let looks_like_path = sentryusb_setup::archive::cifs_share_looks_like_path(&share);
+            let src = format!("//{}/{}", server, sentryusb_setup::archive::normalize_cifs_share(&share));
             let res = sentryusb_shell::run_with_timeout(
                 timeout, "mount", &["-t", "cifs", &src, tmp_dir, "-o", &opts],
             ).await;
@@ -465,7 +390,9 @@ pub async fn test_archive(
                 ).await;
             }
             let _ = std::fs::remove_dir(tmp_dir);
-            res.map(|_| ()).map_err(|e| e.to_string())
+            res.map(|_| ()).map_err(|e| if looks_like_path {
+                format!("Enter the SMB share name, e.g. Recordings, instead of a full NAS path. {e}")
+            } else { e.to_string() })
         }
         "rsync" => {
             let server = params.get("RSYNC_SERVER").cloned().unwrap_or_default();
@@ -512,8 +439,7 @@ pub async fn test_archive(
             );
             let _ = std::fs::create_dir_all(tmp_dir);
             let src = format!("{}:{}", server, export);
-            // soft + short timeo so an unreachable export fails the probe
-            // fast rather than hanging; nolock skips NLM, v3/tcp for NAS compat.
+            // Bound unreachable exports; nolock and v3/tcp improve NAS compatibility.
             let opts = "nolock,soft,timeo=50,proto=tcp,vers=3";
             let res = sentryusb_shell::run_with_timeout(
                 timeout, "mount", &["-t", "nfs", &src, tmp_dir, "-o", opts],
@@ -540,8 +466,8 @@ pub async fn test_archive(
             (StatusCode::OK, Json(serde_json::json!({"success": true})))
         }
         Err(mut err_msg) => {
-            // Strip the "stderr: " prefix the shell helpers prepend, matching
-            // Go's cosmetic cleanup before displaying to the user.
+            // Strip the "stderr: " prefix the shell helpers prepend before
+            // showing the message to the user.
             if let Some(idx) = err_msg.find("stderr: ") {
                 err_msg = err_msg[idx + "stderr: ".len()..].to_string();
             }
@@ -554,30 +480,13 @@ pub async fn test_archive(
     }
 }
 
-/// POST /api/setup/preflight
-///
-/// Body: JSON map of `*_SIZE` keys (CAM_SIZE, MUSIC_SIZE, etc.) as
-/// human-readable size strings ("40G", "4GB", "100M").
-///
-/// Returns whether the proposed sizes will fit on the backingfiles
-/// partition with the runtime safety reserve. Used by the wizard to
-/// reject Apply before any destructive action runs and direct the
-/// user at the snapshot management page when they need to free
-/// space.
-///
-/// On a fresh install where /backingfiles isn't mounted yet, returns
-/// `ok: true` with `checked: false` — the actual check will run at
-/// setup time and bail with the same message if sizes don't fit.
+/// Check human-readable image sizes against available space and its safety
+/// reserve. Fresh unmounted installs return `checked: false` for later validation.
 pub async fn preflight(
     State(_s): State<AppState>,
     Json(body): Json<std::collections::HashMap<String, String>>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    const SIZE_KEYS: &[&str] = &[
-        "CAM_SIZE",
-        "MUSIC_SIZE",
-        "LIGHTSHOW_SIZE",
-        "BOOMBOX_SIZE",
-    ];
+    const SIZE_KEYS: &[&str] = &["CAM_SIZE"];
 
     let mut requested_kb: u64 = 0;
     let mut breakdown = serde_json::Map::new();
@@ -591,12 +500,7 @@ pub async fn preflight(
         }));
     }
 
-    // On a fresh install the /backingfiles directory exists on the
-    // SD-card root FS but the backingfiles partition has not been
-    // carved yet, so `df /backingfiles/` reports root-FS stats and
-    // would falsely reject sizes intended for the (much larger)
-    // external drive the user selected. Defer to the canonical
-    // "partitions set up?" probe used by runner.rs.
+    // An unmounted path reports root-FS capacity, not the future data partition.
     if !sentryusb_setup::partition::partitions_exist().await {
         return (StatusCode::OK, Json(serde_json::json!({
             "ok": true,
@@ -607,10 +511,7 @@ pub async fn preflight(
         })));
     }
 
-    // Use df on /backingfiles. If not mounted yet (transient unmount
-    // window during a re-run), we can't compute available — return
-    // ok with checked=false so the wizard can proceed and the setup
-    // phase will do the real check.
+    // Defer when a transient unmount makes capacity unknowable.
     let df = sentryusb_shell::run(
         "df", &["--output=size,avail", "--block-size=1K", "/backingfiles/"],
     ).await;
@@ -645,8 +546,8 @@ pub async fn preflight(
 
     // Mirror disk_images::available_space_kb: 10% of total, capped 2-10 GB.
     let ten_pct = total_kb / 10;
-    let min_pad = 2 * 1024 * 1024; // 2 GB in KB
-    let max_pad = 10 * 1024 * 1024; // 10 GB in KB
+    let min_pad = 2 * 1024 * 1024;
+    let max_pad = 10 * 1024 * 1024;
     let padding = ten_pct.max(min_pad).min(max_pad);
     let usable_kb = avail_kb.saturating_sub(padding);
 
@@ -689,7 +590,7 @@ mod tests {
 
     #[test]
     fn classifies_config_error() {
-        let e: anyhow::Error = sentryusb_setup::ConfigError("two providers".into()).into();
+        let e: anyhow::Error = sentryusb_setup::ConfigError("AP_PASS too short".into()).into();
         assert_eq!(SetupFailure::from_error(&e).kind, "config");
     }
 
@@ -701,8 +602,8 @@ mod tests {
 
     #[test]
     fn from_error_keeps_the_message() {
-        let e: anyhow::Error = sentryusb_setup::ConfigError("SENTRY_CASE must be 1-3".into()).into();
-        assert!(SetupFailure::from_error(&e).message.contains("SENTRY_CASE"));
+        let e: anyhow::Error = sentryusb_setup::ConfigError("CAM_SIZE must be at least 64G".into()).into();
+        assert!(SetupFailure::from_error(&e).message.contains("CAM_SIZE"));
     }
 
     #[test]

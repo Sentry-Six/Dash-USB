@@ -13,6 +13,7 @@ chrono = { workspace = true }
 axum = { version = "0.8", features = ["ws", "multipart"] }
 ring = "0.17"
 rand = "0.10"
+# "stream" is required by update.rs's download_with_progress (bytes_stream).
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 portable-pty = "0.9"
 crc32fast = "1"
@@ -22,12 +23,6 @@ regex = "1"
 libc = "0.2"
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["io"] }
-# Direct SQLite access for the few API handlers that query
-# telemetry_samples (temperature_series, tire_history). The drives
-# crate already brings this transitively; declaring it here is just
-# so we can reference `rusqlite::params!` directly.
-rusqlite = { version = "0.40", features = ["bundled", "chrono", "blob"] }
-
 sentryusb-config = { path = "../config", package = "sentryusb-config" }
 sentryusb-vehicle-profile = { path = "../vehicle_profile", package = "sentryusb-vehicle-profile" }
 sentryusb-shell = { path = "../shell", package = "sentryusb-shell" }
@@ -39,4 +34,4 @@ sentryusb-gadget = { path = "../usb_gadget", package = "sentryusb-gadget" }
 [dev-dependencies]
 tempfile = "3"
 # Only used by tests to read archives back and validate the hand-rolled writer.
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false }

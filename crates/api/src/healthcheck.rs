@@ -33,19 +33,24 @@ fn item(name: &str, status: &'static str, detail: Option<String>) -> HealthItem 
     HealthItem { name: name.to_string(), status, detail }
 }
 
-/// GET /api/system/health-check
+fn system_temperature_is_fahrenheit(config: &sentryusb_config::SetupConfig) -> bool {
+    config
+        .get("SYSTEM_TEMPERATURE_UNIT")
+        .filter(|unit| !unit.is_empty())
+        .or_else(|| config.get("TEMPERATURE_UNIT"))
+        .is_some_and(|unit| unit.eq_ignore_ascii_case("F"))
+}
+
 pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
     let mut categories: Vec<HealthCategory> = Vec::new();
 
-    // ── Config (needed early for temperature display unit) ────────────────
+    // Config is read first: the temperature display unit comes from it.
     let active_cfg: std::collections::HashMap<String, String> =
         sentryusb_config::parse_file(sentryusb_config::find_config_path())
             .map(|(active, _commented)| active)
             .unwrap_or_default();
 
-    let use_f = active_cfg
-        .get("TEMPERATURE_UNIT")
-        .map_or(false, |v| v.eq_ignore_ascii_case("F"));
+    let use_f = system_temperature_is_fahrenheit(&active_cfg);
     let fmt_temp = |celsius: f64| -> String {
         if use_f {
             format!("{:.1}°F", celsius * 9.0 / 5.0 + 32.0)
@@ -61,7 +66,7 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
         }
     };
 
-    // ── Hardware ──────────────────────────────────────────────────────────
+    // Hardware
     let mut hw = Vec::new();
     let mut cpu_temp_val: Option<f64> = None;
     if let Ok(data) = std::fs::read_to_string("/sys/class/thermal/thermal_zone0/temp") {
@@ -87,7 +92,6 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
         };
         hw.push(item("GPU temperature", "pass", Some(detail)));
     }
-    // Throttling
     if let Ok(out) = sentryusb_shell::run("vcgencmd", &["get_throttled"]).await {
         let raw = out.trim().trim_start_matches("throttled=").to_string();
         let val = u64::from_str_radix(raw.trim_start_matches("0x"), 16).unwrap_or(0);
@@ -101,13 +105,7 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
             hw.push(item("Power/throttling", "pass", None));
         }
     }
-    // ── Picked binary (multi-binary scheme) ──
-    //
-    // /opt/dashusb/active-variant is written by dashusb-pick-binary at
-    // every service start. Presence indicates the new multi-binary layout
-    // is active; the value identifies which per-CPU variant got picked.
-    // First place to look when triaging "why is my Pi 5 not getting LSE
-    // atomics" or "did my upgrade migrate to the new layout."
+    // The picker records the active CPU variant at each service start.
     match std::fs::read_to_string("/opt/dashusb/active-variant") {
         Ok(s) => {
             let variant = s.trim().to_string();
@@ -127,34 +125,101 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
     }
     categories.push(HealthCategory { name: "Hardware".to_string(), items: hw });
 
-    // ── Storage ───────────────────────────────────────────────────────────
+    // Storage
     let mut st = Vec::new();
-    let mut disk_free_pct: Option<f64> = None;
-    if let Ok(out) = sentryusb_shell::run(
-        "stat", &["--file-system", "--format=%f %b", "/backingfiles/."],
-    ).await {
-        let parts: Vec<&str> = out.trim().split_whitespace().collect();
-        if parts.len() >= 2 {
-            if let (Ok(free), Ok(total)) = (parts[0].parse::<f64>(), parts[1].parse::<f64>()) {
-                if total > 0.0 {
-                    disk_free_pct = Some((free / total) * 100.0);
+    let storage = crate::status::managed_storage_health();
+    let storage_status = match storage.state {
+        "healthy" => "pass", "recovering" => "recovering", "fail" => "fail", "warn" => "warn", _ => "unknown",
+    };
+    st.push(item("Recording storage", storage_status, Some(storage.message.clone())));
+    // Measure index capacity only on the actual writable /mutable mount.
+    // Otherwise stat would inspect the root filesystem and report a false pass.
+    let mounts = std::fs::read_to_string("/proc/mounts").ok();
+    let mutable_mounted = mounts
+        .as_deref()
+        .map(|m| m.lines().any(|l| l.split_whitespace().nth(1) == Some("/mutable")));
+    let mutable_rw: Option<bool> = mounts.as_deref().map(|m| {
+        m.lines().any(|line| {
+            let mut f = line.split_whitespace();
+            let _dev = f.next();
+            f.next() == Some("/mutable")
+                && f.nth(1).is_some_and(|opts| opts.split(',').any(|o| o == "rw"))
+        })
+    });
+    match (mutable_mounted, mutable_rw) {
+        (Some(false), _) => st.push(item(
+            "Clip index capacity",
+            "fail",
+            Some("/mutable is not mounted — clips cannot be indexed or archived".to_string()),
+        )),
+        (Some(true), Some(false)) => st.push(item(
+            "Clip index capacity",
+            "fail",
+            Some("/mutable is mounted read-only — clips cannot be indexed until it is rw again (filesystem error?)".to_string()),
+        )),
+        (None, _) => st.push(item(
+            "Clip index capacity",
+            "warn",
+            Some("cannot read /proc/mounts to verify /mutable".to_string()),
+        )),
+        (Some(true), _) => {
+            let stat_out = sentryusb_shell::run(
+                "stat", &["--file-system", "--format=%d %c", "/mutable/."],
+            ).await;
+            let parsed = stat_out.ok().and_then(|out| {
+                let parts: Vec<u64> = out
+                    .trim()
+                    .split_whitespace()
+                    .filter_map(|p| p.parse().ok())
+                    .collect();
+                match parts[..] {
+                    [free, total] if total > 0 => Some((free, total)),
+                    _ => None,
+                }
+            });
+            match parsed {
+                None => st.push(item(
+                    "Clip index capacity",
+                    "warn",
+                    Some("inode statistics unavailable for /mutable".to_string()),
+                )),
+                Some((free, total)) => {
+                    let reserve = sentryusb_gadget::space::inode_reserve(total);
+                    let counts = format!("{} of {} inodes free", free, total);
+                    if free == 0 {
+                        st.push(item("Clip index capacity", "fail", Some(format!(
+                            "{} — index is full; new clips cannot be indexed or archived",
+                            counts
+                        ))));
+                    } else if free <= reserve {
+                        st.push(item("Clip index capacity", "warn", Some(format!(
+                            "{} — below the {} reserve; automatic cleanup should be releasing old snapshots",
+                            counts, reserve
+                        ))));
+                    } else {
+                        st.push(item("Clip index capacity", "pass", Some(counts)));
+                    }
                 }
             }
         }
     }
-    match disk_free_pct {
-        Some(p) if p < 5.0 => st.push(item("Backingfiles free space", "fail", Some(format!("{:.1}% free", p)))),
-        Some(p) if p < 15.0 => st.push(item("Backingfiles free space", "warn", Some(format!("{:.1}% free", p)))),
-        Some(p) => st.push(item("Backingfiles free space", "pass", Some(format!("{:.1}% free", p)))),
-        None => st.push(item("Backingfiles free space", "warn", Some("partition not mounted".to_string()))),
-    }
-    // Only nag about disks the user actually asked for. If MUSIC_SIZE=0
-    // (or unset) the user opted out of the music disk entirely — warning
-    // "music disk image missing" when they never configured it is just noise.
+    let cleanup_status = if std::path::Path::new("/run/dashusb_inode_stall").exists() {
+        "fail"
+    } else {
+        match storage.cleanup_state.as_str() {
+            "healthy" | "recovered" => "pass", "recovering" => "recovering", "failed" => "warn", _ => "unknown",
+        }
+    };
+    st.push(item("Automatic storage cleanup", cleanup_status, Some(match cleanup_status {
+        "fail" => "Cleanup could not restore clip-index inode headroom. Check storage logs and the filesystem.",
+        "warn" => "Cleanup needs attention. Check storage logs for the failed operation.",
+        "unknown" => "No recent cleanup heartbeat. Check that the archive service is running.",
+        "recovering" => "Releasing old snapshots to restore headroom.",
+        _ => "Recording headroom is monitored automatically.",
+    }.into())));
+    // Ignore disabled optional disk images.
     let user_wants = |size_key: &str| -> bool {
-        // "0", "0G", "0M", "0K", empty, unset → disabled. Any non-zero
-        // numeric prefix → enabled. Strict-enough for health: the
-        // actual size value is the installer/setup's problem.
+        // Health needs only zero/nonzero; setup validates exact sizes.
         let Some(raw) = active_cfg.get(size_key) else { return false; };
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -168,12 +233,11 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
     };
 
     let disks: &[(&str, &str, Option<&str>)] = &[
-        // cam disk is always expected — hard fail if it's missing.
+        // The cam disk is always expected, so a miss is a hard fail.
         ("/backingfiles/cam_disk.bin", "cam disk image", None),
-        ("/backingfiles/music_disk.bin", "music disk image", Some("MUSIC_SIZE")),
     ];
     for (img, label, size_key) in disks {
-        // Optional disk the user didn't ask for → skip the check entirely.
+        // Skip optional disks the user never asked for.
         if let Some(key) = size_key {
             if !user_wants(key) {
                 continue;
@@ -182,17 +246,13 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
         if std::path::Path::new(img).exists() {
             st.push(item(label, "pass", None));
         } else {
-            // cam is critical; configured-but-missing optional disks are
-            // warn (something went wrong during setup/archiving).
+            // cam is critical. An optional disk that is configured but
+            // missing only warns: setup or archiving went wrong.
             let status = if size_key.is_none() { "fail" } else { "warn" };
             st.push(item(label, status, Some("missing".to_string())));
         }
     }
-    // Recordings directory on /mutable — the source of the bind mount
-    // at /var/www/html/Recordings. Without it, the Axum ServeDir route
-    // can't expose the cam content to Samba/web downloads, and the
-    // dashboard would otherwise show "all green" while Recordings is
-    // silently empty.
+    // Missing source content makes the recordings bind mount appear empty.
     if std::path::Path::new("/mutable/Recordings").is_dir() {
         st.push(item("Recordings directory", "pass", None));
     } else {
@@ -204,11 +264,7 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
     }
     categories.push(HealthCategory { name: "Storage".to_string(), items: st });
 
-    // ── Core files ────────────────────────────────────────────────────────
-    //
-    // Core-file presence check. Scripts
-    // marked `exec` must be executable; missing-or-not-executable is a fail/warn
-    // because archiveloop invokes these by path.
+    // Runtime scripts must exist and executable entries must retain their mode.
     let mut core = Vec::new();
     let core_files: &[(&str, &str, bool)] = &[
         ("/opt/dashusb/dashusb", "DashUSB binary", true),
@@ -243,10 +299,7 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
     }
     categories.push(HealthCategory { name: "Core Files".to_string(), items: core });
 
-    // ── Configuration ─────────────────────────────────────────────────────
-    //
-    // Config check: config file presence,
-    // setup-finished marker, fstab entries for backingfiles/mutable/cam_disk.
+    // Configuration
     let mut cfg = Vec::new();
     let config_path = sentryusb_config::find_config_path();
     if std::path::Path::new(config_path).exists() {
@@ -290,12 +343,7 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
     }
     categories.push(HealthCategory { name: "Configuration".to_string(), items: cfg });
 
-    // ── USB gadget ────────────────────────────────────────────────────────
-    //
-    // Goes deeper than the Go check: verify the gadget is not just present in
-    // configfs but actually bound to a UDC and exposing at least `lun.0` with
-    // a real backing file. An enumerated-but-no-LUNs gadget is the failure
-    // mode Phase A.2 / A.4 were fixing.
+    // Gadget health requires UDC binding and a backed LUN, not just configfs.
     let mut gad = Vec::new();
     if sentryusb_gadget::is_active() {
         gad.push(item("Gadget UDC bound", "pass", None));
@@ -310,10 +358,7 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
                 Some("gadget is bound but exposes no LUN.0 — car will see the drive but nothing on it".to_string()),
             )),
         }
-        // Bound-in-configfs is the Pi's *intent*; the UDC link state is
-        // what the car actually sees. A gadget can stay "bound" through a
-        // dead link (2026-07-08 incident: car showed an X for ~6 min while
-        // this check would have passed).
+        // UDC state reflects the car link; configfs binding reflects only intent.
         let udc_state = crate::status::read_udc_state();
         match udc_state.as_str() {
             "configured" => gad.push(item("Host link (UDC state)", "pass", None)),
@@ -338,14 +383,10 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
     }
     categories.push(HealthCategory { name: "USB Gadget".to_string(), items: gad });
 
-    // ── BLE ───────────────────────────────────────────────────────────────
-    //
-    // The phone-app GATT peripheral (companion-app pairing: Wi-Fi setup +
-    // API proxy). No vehicle data flows over BLE in Dash USB.
+    // BLE serves companion-app pairing/setup/API proxy, not vehicle data.
     let mut ble = Vec::new();
 
-    // Phone-app peripheral — explicitly labelled so an inactive app GATT
-    // service is never confused with a dead car link.
+    // Distinguish app BLE health from the vehicle USB link.
     let ble_running = sentryusb_shell::run(
         "systemctl", &["is-active", "--quiet", "dashusb-ble"],
     ).await.is_ok();
@@ -370,13 +411,7 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
     ));
     categories.push(HealthCategory { name: "BLE".to_string(), items: ble });
 
-    // ── RTC ───────────────────────────────────────────────────────────────
-    //
-    // Only surface this category when the user opted in (RTC_BATTERY_ENABLED).
-    // Pi 4 and earlier ship without an RTC; warning "no /dev/rtc0" on a Pi 4
-    // whose owner never configured an external RTC module is just noise.
-    // On Pi 5 with RTC_BATTERY_ENABLED=true we expect /dev/rtc0 and a
-    // readable battery voltage; missing either is a warn/fail.
+    // Check RTC hardware only when the user enabled RTC support.
     let rtc_opted_in = active_cfg.get("RTC_BATTERY_ENABLED").map(|v| v.trim() == "true").unwrap_or(false);
     if rtc_opted_in {
         let mut rtc = Vec::new();
@@ -398,11 +433,7 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
         categories.push(HealthCategory { name: "Clock / RTC".to_string(), items: rtc });
     }
 
-    // ── Services ──────────────────────────────────────────────────────────
-    // dashusb-archive is the archiveloop unit — marked critical so a
-    // crashed archive loop shows up as RED on the dashboard instead of
-    // being invisible (the previous list omitted it, so users would see
-    // "all green" while their Tesla footage wasn't being archived).
+    // Archive-loop failure is critical because footage otherwise stays local.
     let mut svcs = Vec::new();
     for (svc, critical) in &[
         ("dashusb", true),
@@ -420,7 +451,7 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
     }
     categories.push(HealthCategory { name: "Services".to_string(), items: svcs });
 
-    // ── Network ───────────────────────────────────────────────────────────
+    // Network
     let mut net = Vec::new();
     let has_ip = sentryusb_shell::run(
         "bash", &["-c", "ip -4 -o addr show scope global 2>/dev/null | grep -v ' lo ' | head -1"],
@@ -432,16 +463,16 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
     ));
     let dns_ok = sentryusb_shell::run_with_timeout(
         std::time::Duration::from_secs(5),
-        "getent", &["hosts", "tesla.com"],
+        "getent", &["hosts", "github.com"],
     ).await.is_ok();
     net.push(item(
         "DNS resolution",
         if dns_ok { "pass" } else { "warn" },
-        if dns_ok { None } else { Some("tesla.com lookup failed".to_string()) },
+        if dns_ok { None } else { Some("github.com lookup failed".to_string()) },
     ));
     categories.push(HealthCategory { name: "Network".to_string(), items: net });
 
-    // ── System ────────────────────────────────────────────────────────────
+    // System
     let mut sys = Vec::new();
     if let Ok(data) = std::fs::read_to_string("/proc/uptime") {
         if let Some(secs) = data.split_whitespace().next().and_then(|s| s.parse::<f64>().ok()) {
@@ -460,7 +491,7 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
     ));
     categories.push(HealthCategory { name: "System".to_string(), items: sys });
 
-    // ── Summary ───────────────────────────────────────────────────────────
+    // Summary
     let mut fails = 0;
     let mut warns = 0;
     for c in &categories {
@@ -476,6 +507,8 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
         format!("{} problem{} found", fails, if fails == 1 { "" } else { "s" })
     } else if warns > 0 {
         format!("{} warning{}", warns, if warns == 1 { "" } else { "s" })
+    } else if categories.iter().flat_map(|category| &category.items).any(|entry| matches!(entry.status, "unknown" | "recovering")) {
+        "No actionable issues reported; some checks are unavailable or recovering".to_string()
     } else {
         "All systems operational".to_string()
     };
@@ -485,23 +518,63 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
 }
 
 /// POST /api/diagnostics/refresh
-pub async fn refresh_diagnostics(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
-    match sentryusb_shell::run_with_timeout(
-        std::time::Duration::from_secs(60),
-        "bash",
-        &["-c", DIAGNOSTICS_SCRIPT],
-    ).await {
-        Ok(_) => crate::json_ok(),
+pub async fn refresh_diagnostics(State(state): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
+    match gather_diagnostics(state).await {
+        Ok(report) => match tokio::fs::write("/tmp/diagnostics.txt", report).await {
+            Ok(_) => crate::json_ok(),
+            Err(e) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to save diagnostics: {}", e)),
+        },
         Err(e) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to generate diagnostics: {}", e)),
     }
 }
 
-/// Inline diagnostics gathering script — replaces the old `setup-dashusb diagnose` command.
+/// A fresh capture is returned directly so downloads cannot read an older
+/// cached report or another request's partially written file.
+pub async fn download_diagnostics(State(state): State<AppState>) -> axum::response::Response {
+    match gather_diagnostics(state).await {
+        Ok(report) => diagnostics_download_response(report),
+        Err(e) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to capture diagnostics: {}", e)).into_response(),
+    }
+}
+
+fn diagnostics_download_response(report: String) -> axum::response::Response {
+    let filename = format!("attachment; filename=\"dashusb-diagnostics-{}.txt\"", chrono::Utc::now().format("%Y%m%d-%H%M%S-UTC"));
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8".to_string()),
+            (axum::http::header::CONTENT_DISPOSITION, filename),
+            (axum::http::header::CACHE_CONTROL, "no-store".to_string()),
+        ],
+        sanitize_diagnostics(&report),
+    ).into_response()
+}
+
+async fn gather_diagnostics(state: AppState) -> anyhow::Result<String> {
+    let capture_time = chrono::Utc::now().to_rfc3339();
+    let script = sentryusb_shell::run_with_timeout(
+        std::time::Duration::from_secs(60),
+        "bash",
+        &["-c", DIAGNOSTICS_SCRIPT],
+    );
+    // Include the UI's status sample without relying on a loopback proxy,
+    // configured HTTP port, or auth cookie. Raw USB probes below are live.
+    let status = tokio::time::timeout(std::time::Duration::from_secs(3), crate::status::get_status(State(state)));
+    let (report, status) = tokio::join!(script, status);
+    let status = match status {
+        Ok((code, Json(value))) if code.is_success() => serde_json::to_string_pretty(&value)?,
+        _ => "Status sample unavailable (timed out or device busy)".into(),
+    };
+    Ok(format!("{}\n====== UI status sample (capture started {capture_time}; may be cached) ======\n{status}\n", report?))
+}
+
+/// Inline diagnostics gathering script.
 const DIAGNOSTICS_SCRIPT: &str = r#"{
   echo "====== DashUSB Diagnostics ======"
   echo "Date: $(date)"
   echo "Hostname: $(hostname)"
   echo "Uptime: $(uptime)"
+  echo "Capture started (UTC): $(date -u +%FT%TZ)"
+  echo "Capture is read-only; USB drives are not toggled or mounted."
   echo ""
 
   echo "====== version ======"
@@ -510,27 +583,95 @@ const DIAGNOSTICS_SCRIPT: &str = r#"{
   cat /sys/firmware/devicetree/base/model 2>/dev/null; echo
   echo ""
 
+  # Capture volatile USB/power evidence before slower storage/log probes.
+  echo "====== USB state and recording activity ======"
+  gadget=/sys/kernel/config/usb_gadget/dashusb
+  if [ -d "$gadget" ]; then
+    for attr in UDC bcdUSB; do
+      echo "$attr: $(cat "$gadget/$attr" 2>/dev/null)"
+    done
+    for cfg in "$gadget"/configs/*; do
+      [ -d "$cfg" ] || continue
+      echo "$cfg/MaxPower (mA): $(cat "$cfg/MaxPower" 2>/dev/null)"
+    done
+    for lun in "$gadget"/functions/mass_storage.*/lun.*; do
+      [ -d "$lun" ] || continue
+      for attr in file ro nofua removable; do
+        echo "$lun/$attr: $(cat "$lun/$attr" 2>/dev/null)"
+      done
+    done
+  else
+    echo "Gadget configuration absent"
+  fi
+  usb_sample() {
+    echo "Sample UTC: $(date -u +%FT%TZ)"
+    for u in /sys/class/udc/*; do
+      [ -d "$u" ] || continue
+      for attr in state current_speed maximum_speed; do
+        echo "$u/$attr: $(cat "$u/$attr" 2>/dev/null)"
+      done
+    done
+    cam=/backingfiles/cam_disk.bin
+    if sample=$(timeout 2 stat -c 'size_bytes=%s mtime_epoch=%Y modified=%y' "$cam" 2>/dev/null); then
+      echo "$cam: $sample"
+      mtime=${sample#*mtime_epoch=}; mtime=${mtime%% *}
+      echo "cam_last_write_secs=$(( $(date +%s) - mtime ))"
+    else
+      echo "cam_disk.bin metadata unavailable"
+    fi
+    for comm in /proc/[0-9]*/comm; do
+      read -r name < "$comm" 2>/dev/null || continue
+      case "$name" in
+        file-storage*|gadgetwatchdog|kmsgmirror)
+          pid=${comm%/comm}; pid=${pid##*/}
+          echo "Thread $name (pid $pid)"
+          cat "/proc/$pid/io" "/proc/$pid/wchan" 2>/dev/null; echo
+          ;;
+      esac
+    done
+  }
+  usb_sample
+  sleep 2
+  usb_sample
+  echo "Two samples show activity only during capture; no writes can also mean recording is paused."
+  echo ""
+
+  echo "====== power / throttling ======"
+  timeout 3 vcgencmd get_throttled 2>&1 || echo "throttling flags unavailable"
+  timeout 3 vcgencmd pmic_read_adc 2>&1 || echo "PMIC rail measurements unavailable on this board"
+  echo ""
+
   echo "====== disk / images ======"
-  df -h /dashusb/ / /backingfiles/ /mutable/ 2>/dev/null
-  for img in cam music; do
+  timeout 3 df -h /dashusb/ / /backingfiles/ /mutable/ 2>&1 || echo "capacity probe unavailable or timed out"
+  timeout 3 df -i /backingfiles/ /mutable/ 2>&1 || echo "inode probe unavailable or timed out"
+  cat /proc/mounts /proc/diskstats 2>/dev/null
+  for scheduler in /sys/block/*/queue/scheduler; do
+    echo "$scheduler: $(cat "$scheduler" 2>/dev/null)"
+  done
+  for img in cam; do
     f="/backingfiles/${img}_disk.bin"
     if [ -f "$f" ]; then
-      echo "$img disk: $(du -h "$f" | cut -f1)"
+      echo "$img disk: $(timeout 2 du -h "$f" 2>/dev/null | cut -f1)"
     fi
   done
   echo ""
 
-  echo "====== USB gadget ======"
-  if [ -d /sys/kernel/config/usb_gadget/dashusb ]; then
-    echo "Gadget: active"
-    for i in 0 1 2 3 4 5; do
-      lun="/sys/kernel/config/usb_gadget/dashusb/functions/mass_storage.0/lun.${i}/file"
-      [ -e "$lun" ] && echo "  lun${i}: $(cat "$lun")"
-    done
-  else
-    echo "Gadget: inactive"
-  fi
-  cat /sys/class/udc/*/state 2>/dev/null || true
+  echo "====== gadget stall evidence (latest 3, up to 200 lines each) ======"
+  # Generated filenames sort chronologically; never scan unrelated files.
+  while IFS= read -r f; do
+    [ -f "$f" ] || continue
+    echo "--- $f ---"
+    timeout 2 tail -200 "$f" 2>&1 || echo "stall evidence unavailable"
+  done < <(printf '%s\n' /mutable/gadget_stall_*.log | sort -r | head -3)
+  echo ""
+
+  echo "====== persistent kernel history (last 500) ======"
+  timeout 2 tail -500 /mutable/kernel.log 2>&1 || echo "no persistent kernel history available"
+  echo ""
+
+  echo "====== storage cleanup state ======"
+  cat /run/dashusb_storage_cleanup.json 2>/dev/null || echo "cleanup state unavailable"
+  [ ! -e /run/dashusb_inode_stall ] || echo "Clip index inode stall flag present"
   echo ""
 
   echo "====== network ======"
@@ -538,26 +679,21 @@ const DIAGNOSTICS_SCRIPT: &str = r#"{
   echo ""
 
   echo "====== services ======"
-  for svc in dashusb dashusb-archive dashusb-ble avahi-daemon bluetooth; do
+  for svc in dashusb dashusb-archive avahi-daemon; do
     status=$(systemctl is-active "$svc" 2>/dev/null || echo "not found")
     echo "  $svc: $status"
   done
   echo ""
 
   echo "====== archiveloop ======"
-  tail -50 /mutable/archiveloop.log 2>/dev/null || echo "no archiveloop log"
+  # Bounded, but wide enough to show a failure repeating across several
+  # archive cycles rather than a single truncated window.
+  timeout 2 tail -1000 /mutable/archiveloop.log 2>/dev/null || echo "no archiveloop log"
   echo ""
 
-  echo "====== drive-import history (persisted, last 20) ======"
-  curl -fsS --max-time 5 http://[::1]/api/drives/data/import-history 2>/dev/null \
-    || echo "could not reach /api/drives/data/import-history"
-  echo ""
-
-  echo "====== drive-import logs (journalctl, last 7 days) ======"
-  journalctl -u dashusb --since "7 days ago" --no-pager 2>/dev/null \
-    | grep -E "import_json|group_clips|hide_tessie_overlapping_sei|upload_data|drive cache:" \
-    | tail -200 \
-    || echo "no matching journalctl entries"
+  echo "====== dashusb service journal (last 300) ======"
+  journalctl -u dashusb -n 300 --no-pager 2>/dev/null \
+    || echo "no dashusb journal entries"
   echo ""
 
   echo "====== temperatures ======"
@@ -565,18 +701,18 @@ const DIAGNOSTICS_SCRIPT: &str = r#"{
   vcgencmd measure_temp 2>/dev/null || true
   echo ""
 
-  echo "====== dmesg (last 30) ======"
-  dmesg -T 2>/dev/null | tail -30
+  echo "====== dmesg (last 200) ======"
+  dmesg -T 2>/dev/null | tail -200
   echo ""
 
+  echo "Capture completed (UTC): $(date -u +%FT%TZ)"
   echo "====== end of diagnostics ======"
-} &> /tmp/diagnostics.txt"#;
+} 2>&1"#;
 
 /// GET /api/diagnostics
 pub async fn get_diagnostics(State(_s): State<AppState>) -> impl IntoResponse {
     match std::fs::read_to_string("/tmp/diagnostics.txt") {
         Ok(data) => {
-            // Strip ANSI escape codes and control chars
             let cleaned = sanitize_diagnostics(&data);
             (
                 StatusCode::OK,
@@ -593,13 +729,61 @@ pub async fn get_diagnostics(State(_s): State<AppState>) -> impl IntoResponse {
 }
 
 fn sanitize_diagnostics(raw: &str) -> String {
-    // Strip ANSI escape codes
     let ansi_re = regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap();
     let cleaned = ansi_re.replace_all(raw, "");
 
-    // Remove control chars except \t \n \r
+    // Preserve text formatting controls only.
     cleaned
         .chars()
         .filter(|&c| c == '\t' || c == '\n' || c == '\r' || c >= '\x20')
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::system_temperature_is_fahrenheit;
+
+    #[tokio::test]
+    async fn fresh_download_is_a_timestamped_uncached_text_attachment() {
+        let response = super::diagnostics_download_response("fresh USB capture\n\x1b[31mconfigured\x1b[0m\x00".into());
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let headers = response.headers();
+        assert_eq!(headers[axum::http::header::CONTENT_TYPE], "text/plain; charset=utf-8");
+        assert_eq!(headers[axum::http::header::CACHE_CONTROL], "no-store");
+        let disposition = headers[axum::http::header::CONTENT_DISPOSITION].to_str().unwrap();
+        assert!(disposition.starts_with("attachment; filename=\"dashusb-diagnostics-"));
+        assert!(disposition.ends_with("-UTC.txt\""));
+        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        assert_eq!(&body[..], b"fresh USB capture\nconfigured");
+    }
+
+    #[test]
+    fn system_temperature_override_takes_priority_over_measurement_system() {
+        for (overall, system, expected_fahrenheit) in [("F", "C", false), ("C", "F", true)] {
+            let config = sentryusb_config::SetupConfig::from([
+                ("TEMPERATURE_UNIT".into(), overall.into()),
+                ("SYSTEM_TEMPERATURE_UNIT".into(), system.into()),
+            ]);
+            assert_eq!(system_temperature_is_fahrenheit(&config), expected_fahrenheit);
+        }
+    }
+
+    #[test]
+    fn unset_system_temperature_inherits_overall_unit_or_celsius_default() {
+        let mut config = sentryusb_config::SetupConfig::new();
+        assert!(!system_temperature_is_fahrenheit(&config));
+        config.insert("TEMPERATURE_UNIT".into(), "F".into());
+        assert!(system_temperature_is_fahrenheit(&config));
+        config.insert("SYSTEM_TEMPERATURE_UNIT".into(), String::new());
+        assert!(system_temperature_is_fahrenheit(&config));
+    }
+
+    #[test]
+    fn commented_system_temperature_does_not_override_active_unit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dashusb.conf");
+        std::fs::write(&path, "export TEMPERATURE_UNIT=F\n#export SYSTEM_TEMPERATURE_UNIT=C\n").unwrap();
+        let (active, _) = sentryusb_config::parse_file(path.to_str().unwrap()).unwrap();
+        assert!(system_temperature_is_fahrenheit(&active));
+    }
 }

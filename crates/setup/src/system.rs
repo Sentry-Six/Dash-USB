@@ -1,10 +1,5 @@
-//! System configuration — replaces various configure-*.sh scripts.
-//!
-//! Handles hostname, dwc2 overlay, Avahi mDNS, SSH hardening, Samba, etc.
-//!
-//! Each phase-level function only announces itself via `emitter.begin_phase`
-//! when it actually has work to do. No-op re-runs are silent so the wizard's
-//! phase list doesn't light up for phases that did nothing.
+//! Hostname, mDNS, SSH, Samba, timezone, and RTC configuration.
+//! Phase functions announce only when work is required.
 
 use std::path::Path;
 use std::time::Duration;
@@ -15,11 +10,7 @@ use tracing::info;
 use crate::env::SetupEnv;
 use crate::SetupEmitter;
 
-/// Set the Pi hostname (and /etc/hosts). Idempotent — silent if already set.
-///
-/// This phase is bundled with `configure_timezone` under the "System
-/// configuration" UI phase. The caller announces that phase once; we just do
-/// the work quietly.
+/// Set the hostname and /etc/hosts without announcing the caller-owned phase.
 pub async fn configure_hostname(env: &SetupEnv, emitter: &SetupEmitter) -> Result<bool> {
     let hostname = env.get("DASHUSB_HOSTNAME", "dashusb");
     let current = std::fs::read_to_string("/etc/hostname").unwrap_or_default();
@@ -48,25 +39,16 @@ pub async fn configure_hostname(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
 
 const AVAHI_DAEMON_CONF: &str = "/etc/avahi/avahi-daemon.conf";
 
-/// Daemon settings forcing IPv4-only mDNS advertising. Windows/Chrome
-/// prefer the AAAA answer for .local names; the Pi's global SLAAC address
-/// rotates (privacy extensions) so the advertised AAAA goes stale (slow
-/// loads), and Chrome classifies global IPv6 as *public* address space, so
-/// the plain-http Web UI reached through it hits Private Network Access
-/// blocks that surface as CORS errors. A-record-only sidesteps both;
-/// kernel/socket IPv6 on the device is untouched.
-/// Mirrored for the shell paths in setup/pi/avahi-ipv4-only.sh.
+/// Force IPv4-only mDNS. Rotating SLAAC addresses make AAAA answers stale, and
+/// Chrome applies Private Network Access restrictions to global IPv6. Kernel
+/// IPv6 remains enabled. Keep setup/pi/avahi-ipv4-only.sh in sync.
 const AVAHI_IPV4_ONLY: &[(&str, &str, &str)] = &[
     ("server", "use-ipv6", "no"),
     ("publish", "publish-aaaa-on-ipv4", "no"),
 ];
 
-/// Set `key=value` inside `[section]` of INI-style content. Section-aware:
-/// replaces the first active or commented assignment of the key within that
-/// section (dropping repeats), inserts after the section header when absent,
-/// appends the section itself when missing. Assignments of the same key in
-/// *other* sections are left alone — avahi can refuse to start on a key
-/// planted in the wrong group. Returns (new_content, changed).
+/// Set one key in an INI section, replacing active/commented duplicates or
+/// inserting a missing section. Identically named keys elsewhere are preserved.
 fn set_ini_key(content: &str, section: &str, key: &str, value: &str) -> (String, bool) {
     let header = format!("[{section}]");
     let desired = format!("{key}={value}");
@@ -121,12 +103,8 @@ fn set_ini_key(content: &str, section: &str, key: &str, value: &str) -> (String,
     (new_content, changed)
 }
 
-/// Compute the IPv4-only rewrite of avahi-daemon.conf, or `None` when the
-/// file is already correct. A missing conf is rebuilt from scratch (it's
-/// abnormal once avahi is installed, and before installation the caller
-/// recomputes after apt lays the real one down); an *unreadable* one is
-/// left alone — clobbering a conf we couldn't inspect is worse than
-/// advertising AAAA for one more release.
+/// Return an IPv4-only avahi rewrite, rebuilding a missing file but preserving
+/// an unreadable one.
 fn avahi_ipv4_only_rewrite() -> Option<String> {
     let content = match std::fs::read_to_string(AVAHI_DAEMON_CONF) {
         Ok(content) => content,
@@ -146,11 +124,7 @@ fn avahi_ipv4_only_rewrite() -> Option<String> {
     changed.then_some(current)
 }
 
-/// Set up Avahi mDNS service for local network discovery.
-///
-/// Idempotent: if the service file is already present and matches, and the
-/// daemon config already advertises IPv4-only, do nothing and return
-/// `false` so the caller can skip announcing this phase.
+/// Publish `_http._tcp` on port 80 and enforce IPv4-only advertising.
 pub async fn configure_avahi(env: &SetupEnv, emitter: &SetupEmitter) -> Result<bool> {
     let hostname = env.get("DASHUSB_HOSTNAME", "dashusb");
     let service_file = "/etc/avahi/services/dashusb.service";
@@ -185,8 +159,7 @@ pub async fn configure_avahi(env: &SetupEnv, emitter: &SetupEmitter) -> Result<b
             &["avahi-daemon"],
             Duration::from_secs(600),
         ).await.context("failed to install avahi-daemon")?;
-        // The package install just laid down avahi-daemon.conf — recompute
-        // from the real file, not whatever preceded it.
+        // Recompute from the configuration installed by the package.
         conf_rewrite = avahi_ipv4_only_rewrite();
     }
 
@@ -201,8 +174,7 @@ pub async fn configure_avahi(env: &SetupEnv, emitter: &SetupEmitter) -> Result<b
         if !Path::new(&prev).exists() {
             let _ = std::fs::copy(AVAHI_DAEMON_CONF, &prev);
         }
-        // Write-then-rename so a power loss mid-write can't leave a
-        // truncated conf that stops avahi from starting.
+        // Atomically replace the configuration to survive power loss.
         let tmp = format!("{AVAHI_DAEMON_CONF}.dashusb-tmp");
         std::fs::write(&tmp, new_conf)?;
         if let Ok(meta) = std::fs::metadata(AVAHI_DAEMON_CONF) {
@@ -218,7 +190,7 @@ pub async fn configure_avahi(env: &SetupEnv, emitter: &SetupEmitter) -> Result<b
     Ok(true)
 }
 
-/// Harden SSH configuration. Idempotent — silent when no changes are needed.
+/// Harden SSH configuration. Idempotent and silent when nothing changes.
 pub async fn configure_ssh(emitter: &SetupEmitter) -> Result<bool> {
     let sshd_config = Path::new("/etc/ssh/sshd_config");
     if !sshd_config.exists() {
@@ -227,32 +199,18 @@ pub async fn configure_ssh(emitter: &SetupEmitter) -> Result<bool> {
     }
 
     let content = std::fs::read_to_string(sshd_config)?;
-    // Don't disable password auth automatically. Locking the user out
-    // of SSH on a fresh install — when they may not have copied a
-    // public key into the wizard yet — is hostile. Pi OS already
-    // defaults to PermitRootLogin=prohibit-password (root only via
-    // key); we re-assert that, leave the user's normal-account
-    // password auth alone, and let them harden further from Settings
-    // if they want to.
+    // Do not disable password auth before a fresh install has a public key.
+    // Root remains key-only; normal-account policy stays user-controlled.
     let settings = [
         ("PermitRootLogin", "prohibit-password"),
         ("UsePAM", "yes"),
     ];
 
-    // Earlier setup runs wrote `PasswordAuthentication no` and
-    // `ChallengeResponseAuthentication no`, which locked out anyone
-    // who hadn't placed a public key in their authorized_keys before
-    // running the wizard. If those exact lines are still present from
-    // a prior install, drop them so the OS default (password auth on)
-    // is restored on the next sshd reload. We only touch lines that
-    // exactly match what the previous setup wrote — anything the user
-    // edited by hand stays untouched.
+    // Remove only exact legacy lines that could lock out keyless users.
     let aggressive_lines = ["PasswordAuthentication no", "ChallengeResponseAuthentication no"];
     let needs_cleanup = content.lines().any(|l| aggressive_lines.contains(&l.trim_start()));
 
-    // Quick idempotency check — if every setting already has an active line
-    // with the desired value, AND no leftover aggressive lines need
-    // removing, there's nothing to do.
+    // Avoid rewriting an already-correct configuration.
     let all_set = settings.iter().all(|(k, v)| {
         let expected = format!("{} {}", k, v);
         content.lines().any(|l| l.trim_start() == expected)
@@ -264,7 +222,7 @@ pub async fn configure_ssh(emitter: &SetupEmitter) -> Result<bool> {
     emitter.begin_phase("ssh", "SSH hardening");
     emitter.progress("Hardening SSH...");
 
-    // Drop any leftover aggressive lines first.
+    // Remove legacy lockout settings before applying current policy.
     let mut lines: Vec<String> = content
         .lines()
         .filter(|l| !aggressive_lines.contains(&l.trim_start()))
@@ -293,14 +251,8 @@ pub async fn configure_ssh(emitter: &SetupEmitter) -> Result<bool> {
     Ok(true)
 }
 
-/// Configure Samba shares if enabled.
-///
-/// Critical bits:
-///   * tmpfs entries for /var/run/samba + /var/cache/samba (without them
-///     smbd can't write PID/cache on a read-only root).
-///   * /var/lib/samba → /mutable/varlib/samba symlink (so bond databases
-///     survive reboots).
-///   * Default password for the `pi` user (so shares are actually usable).
+/// Configure Samba with writable tmpfs runtime paths, persistent state under
+/// /mutable, and credentials for the `pi` user.
 pub async fn configure_samba(env: &SetupEnv, emitter: &SetupEmitter) -> Result<bool> {
     if !env.get_bool("SAMBA_ENABLED", false) {
         info!("Samba not enabled, skipping");
@@ -318,9 +270,7 @@ pub async fn configure_samba(env: &SetupEnv, emitter: &SetupEmitter) -> Result<b
     if !smbd_installed {
         emitter.progress("Installing samba and dependencies...");
 
-        // Move writable dirs off root BEFORE the package install — apt may
-        // run smbd briefly and we don't want those writes to land on the
-        // soon-to-be-readonly root.
+        // Move writable paths before apt can start smbd on the read-only root.
         let _ = std::fs::create_dir_all("/var/cache/samba");
         let _ = std::fs::create_dir_all("/var/run/samba");
 
@@ -357,7 +307,6 @@ pub async fn configure_samba(env: &SetupEnv, emitter: &SetupEmitter) -> Result<b
             let _ = std::os::unix::fs::symlink("/mutable/varlib/samba", "/var/lib/samba");
         }
 
-        // Install samba non-interactively.
         let mut install = tokio::process::Command::new("apt-get");
         install.env("DEBIAN_FRONTEND", "noninteractive")
             .args(["-y", "install", "samba"]);
@@ -382,17 +331,7 @@ pub async fn configure_samba(env: &SetupEnv, emitter: &SetupEmitter) -> Result<b
         l == "tmpfs /mnt/smbexport tmpfs nodev,nosuid 0 0"
     })?;
 
-    // Move link folder from backingfiles to mutable if needed.
-    if !Path::new("/mutable/TeslaCam").is_dir() && Path::new("/backingfiles/TeslaCam").is_dir() {
-        emitter.progress("Moving TeslaCam symlink folder from backingfiles to mutable");
-        let _ = sentryusb_shell::run(
-            "mv", &["/backingfiles/TeslaCam", "/mutable/TeslaCam"],
-        ).await;
-    }
-
-    // Always update smb.conf — matches bash behavior so upgrade installs
-    // pick up config improvements. Exact contents mirror configure-samba.sh
-    // so Samba clients behave identically across Go and Rust builds.
+    // Rewrite smb.conf so upgrades receive current share settings.
     let smb_conf = format!(
         r#"[global]
    deadtime = 2
@@ -415,10 +354,10 @@ pub async fn configure_samba(env: &SetupEnv, emitter: &SetupEmitter) -> Result<b
    unix extensions = no
    wide links = yes
 
-[TeslaCam]
+[Recordings]
    read only = yes
    locking = no
-   path = /mutable/TeslaCam
+   path = /mutable/Recordings
    guest ok = {guest_ok}
    create mask = 0775
    veto files = /._*/.DS_Store/
@@ -434,8 +373,9 @@ pub async fn configure_samba(env: &SetupEnv, emitter: &SetupEmitter) -> Result<b
     Ok(true)
 }
 
-/// Set the default Samba password for the `pi` user by piping
-/// `raspberry\nraspberry\n` through `smbpasswd -s -a pi`.
+/// Register the `pi` user with smbpasswd using the stock default password.
+/// Best-effort: a failure here leaves the shares unusable but must not abort
+/// setup.
 async fn set_default_samba_password() {
     use tokio::io::AsyncWriteExt;
 
@@ -459,7 +399,6 @@ async fn set_default_samba_password() {
     let _ = child.wait().await;
 }
 
-/// Remove lines from a file where `pred(line) == true`.
 fn sed_delete_line_matching<F: Fn(&str) -> bool>(path: &str, pred: F) -> Result<()> {
     let content = std::fs::read_to_string(path).unwrap_or_default();
     let had_trailing = content.ends_with('\n');
@@ -472,8 +411,9 @@ fn sed_delete_line_matching<F: Fn(&str) -> bool>(path: &str, pred: F) -> Result<
     Ok(())
 }
 
-/// Install the archive loop systemd service (runs the bash archiveloop
-/// script).
+/// Install the systemd unit that execs /root/bin/archiveloop. The script
+/// itself is installed by `scripts::install_runtime_scripts`, which MUST have
+/// run or the unit crashloops.
 pub fn install_archive_service() -> Result<()> {
     let service = r#"[Unit]
 Description=DashUSB archiveloop service
@@ -493,44 +433,17 @@ WantedBy=backingfiles.mount
     Ok(())
 }
 
-/// Ensure required system packages are installed. Only announces a phase if
-/// one or more packages actually need installing.
-///
-/// We test for the *binary* via `which` rather than the *package* via
-/// `dpkg -s` because Debian splits binaries across packages differently
-/// across releases — e.g. `fdisk` is its own package on bookworm but ships
-/// inside `util-linux` on bullseye, so `dpkg -s fdisk` would falsely report
-/// missing on bullseye and `apt-get install fdisk` would then fail. The
-/// binary check works regardless of which package owns the file.
+/// Install missing tools, probing binaries because Debian package ownership
+/// differs by release.
 pub async fn install_required_packages(emitter: &SetupEmitter) -> Result<bool> {
-    // (binary_to_check, package_to_install_when_missing)
-    //
-    // `ntpsec-ntpdig` provides the `ntpdig` binary that
-    // `run/archiveloop`'s `set_time()` calls via
-    //   `ntpdig -S time.google.com || sntp -S 129.6.15.28`
-    // On a fresh Pi OS bookworm image neither tool is present; without
-    // this, archiveloop logs "sntp failed, retrying..." five times per
-    // cycle and falls through with "Failed to set time" — harmless for
-    // the clock (systemd-timesyncd keeps sync quietly in the background)
-    // but it floods the archive log and causes a cold-boot window where
-    // clip folder timestamps are wrong until timesyncd catches up.
-    //
-    // `netcat-openbsd` provides the `nc` binary used by
-    // `run/{nfs,cifs}_archive/archive-is-reachable.sh` (`nc -z -w 5
-    // $HOST 2049|445`). The official Pi OS image preinstalls it, but
-    // alternative images (DietPi, Radxa Debian, etc.) don't, so without
-    // this every archive cycle exits 127 from the reachability probe
-    // and archiveloop is permanently stuck on "Waiting for archive to
-    // be reachable..." — clips and music never sync. The bash flow
-    // installed it inside `verify-and-configure-archive.sh`, which is
-    // no longer executed in the Rust port.
+    // ntpdig supports cold-boot time correction; nc supports CIFS/NFS probes
+    // on minimal distributions that do not preinstall it.
     let packages: &[(&str, &str)] = &[
         ("dos2unix", "dos2unix"),
         ("parted", "parted"),
         ("fdisk", "fdisk"),
         ("curl", "curl"),
         ("rsync", "rsync"),
-        ("jq", "jq"),
         ("ntpdig", "ntpsec-ntpdig"),
         ("nc", "netcat-openbsd"),
     ];
@@ -557,32 +470,15 @@ pub async fn install_required_packages(emitter: &SetupEmitter) -> Result<bool> {
     Ok(true)
 }
 
-/// Set the system timezone. Idempotent — silent if already matching.
-///
-/// Previously this only read `/etc/timezone`, but on Raspberry Pi OS
-/// (bookworm/bullseye) `timedatectl set-timezone` primarily rewrites the
-/// `/etc/localtime` symlink and `/etc/timezone` is often absent. That
-/// meant every mid-setup resume (dwc2 reboot, root-shrink reboot,
-/// cmdline reboot…) would re-decide the timezone wasn't set and re-emit
-/// the progress line, flooding the setup log with duplicate "Setting
-/// timezone to X" messages on a single run. Read both sources before
-/// acting, and keep `/etc/timezone` in sync ourselves so legacy tools
-/// that consult it (apt, logrotate, some cron jobs) agree with systemd.
+/// Set the timezone from `/etc/timezone` and systemd's `/etc/localtime`
+/// symlink, keeping both representations synchronized across setup resumes.
 pub async fn configure_timezone(env: &SetupEnv, emitter: &SetupEmitter) -> Result<bool> {
     let raw = match env.config.get("TIME_ZONE") {
         Some(v) if !v.is_empty() => v.clone(),
         _ => return Ok(false),
     };
 
-    // The setup wizard ships "auto" as the default timezone, but "auto" is
-    // NOT a valid IANA zone — `timedatectl set-timezone auto` fails with
-    // "Invalid or not installed time zone". Left unhandled that either
-    // loops the setup phase (the error propagates and the phase retries
-    // forever) or silently leaves the Pi on UTC. A UTC Pi then mis-links
-    // drive telemetry: Tesla clip filenames are in the car's LOCAL clock
-    // but `telemetry_samples` are UTC epoch, so the odometer/battery/temps
-    // join pulls from the wrong (tz-offset) window. Resolve "auto" to a
-    // real zone via IP geolocation; fall back gracefully if that fails.
+    // `auto` is not an IANA zone; resolve it or retain the system default.
     let tz = if raw.eq_ignore_ascii_case("auto") {
         match resolve_timezone_via_geoip().await {
             Some(z) => {
@@ -598,12 +494,7 @@ pub async fn configure_timezone(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
             }
         }
     } else {
-        // Newer Pi OS / Debian images (bookworm and later) ship only the
-        // canonical IANA tzdata zones and drop the legacy `US/*` and
-        // single-name aliases that older images still carried. Configs
-        // saved with one of those shortcuts then fail timedatectl with
-        // "Invalid or not installed time zone". Map them up front so we
-        // hand timedatectl a name every shipped tzdata version recognizes.
+        // Minimal Bookworm tzdata omits legacy aliases; use canonical names.
         normalize_timezone(&raw)
     };
 
@@ -621,27 +512,16 @@ pub async fn configure_timezone(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
         return Ok(false);
     }
 
-    // Keep /etc/timezone in sync with the symlink. On images where the
-    // file is missing this also creates it, which makes our own
-    // idempotency check cheap on the next resume.
+    // Keep textual consumers consistent with systemd's symlink.
     let _ = std::fs::write("/etc/timezone", format!("{}\n", tz));
 
     Ok(true)
 }
 
-/// Best-effort IANA timezone via IP geolocation, used when the wizard
-/// leaves the timezone as "auto". The setup phase already requires
-/// network, so we shell `curl`. Tries several free, no-key providers in
-/// turn so one being down or rate-limited doesn't break timezone setup;
-/// each returns the bare zone name (e.g. "America/New_York"). Returns
-/// `None` only when ALL providers fail, so the caller can fall back.
+/// Resolve `auto` through the first-party geo-IP endpoint, or return `None`.
 pub(crate) async fn resolve_timezone_via_geoip() -> Option<String> {
-    // First-party ONLY: DashUSB's own server geolocates the caller's IP
-    // (MaxMind GeoLite2) and returns it as JSON, so IP processing stays
-    // under the DashUSB privacy policy (sentry-six.com/legal/privacy) with
-    // NO third party. We deliberately do NOT fall back to public geo-IP
-    // services — if this is unreachable / rate-limited we leave the system
-    // default (UTC) and the boot-time retry resolves it on a later boot.
+    // Keep IP processing first-party; do not add public geo-IP fallbacks.
+    // Unavailable lookups retain UTC and retry on a later boot.
     const ENDPOINTS: &[&str] = &["https://sentry-six.com/api/geoip/me"];
     for url in ENDPOINTS {
         if let Ok(out) = sentryusb_shell::run("curl", &["-s", "--max-time", "5", url]).await {
@@ -653,11 +533,7 @@ pub(crate) async fn resolve_timezone_via_geoip() -> Option<String> {
     None
 }
 
-/// Pull an IANA zone from the first-party geo-IP response. The
-/// `sentry-six.com/api/geoip/me` endpoint returns JSON with a `timeZone`
-/// field (e.g. `{"timeZone":"America/New_York", ...}`); we also accept
-/// `timezone`/`time_zone`, nested `location.time_zone`, and a bare-text
-/// body — defensively, so a future response-shape tweak won't break it.
+/// Accept current and legacy geo-IP response shapes containing an IANA zone.
 fn extract_timezone(body: &str) -> Option<String> {
     let t = body.trim();
     if t.starts_with('{') {
@@ -688,7 +564,7 @@ fn extract_timezone(body: &str) -> Option<String> {
 }
 
 /// Cheap sanity check that a string looks like an IANA zone
-/// ("Area/Location") and not an error page / empty body.
+/// ("Area/Location") rather than an error page or empty body.
 pub(crate) fn is_valid_iana_zone(tz: &str) -> bool {
     !tz.is_empty()
         && tz.len() < 64
@@ -697,38 +573,29 @@ pub(crate) fn is_valid_iana_zone(tz: &str) -> bool {
         && tz.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-' | '+'))
 }
 
-/// Boot-time safety net for `TIME_ZONE=auto`. If setup couldn't reach a
-/// geo-IP provider (e.g. the network wasn't up yet during setup), the Pi
-/// is left on UTC and drive telemetry mis-links — clip filenames are in
-/// the car's local clock but `telemetry_samples` are UTC epoch.
-///
-/// The main service spawns this NON-BLOCKING on startup, so it never
-/// delays boot. It re-resolves once and sets the zone only if we're still
-/// on UTC; it's a cheap no-op when `TIME_ZONE` isn't "auto" or the zone is
-/// already a real (non-UTC) one. If geolocation still fails (no network
-/// yet) it simply leaves UTC and a later boot tries again.
+/// Non-blocking boot retry for unresolved `TIME_ZONE=auto`; changes only UTC
+/// systems so clip-local timestamps align with UTC telemetry.
 pub async fn ensure_timezone_resolved() {
     let path = sentryusb_config::find_config_path();
     let Ok((active, commented)) = sentryusb_config::parse_file(path) else {
         return;
     };
-    // Only act when the user left the wizard on "auto".
     let raw = sentryusb_config::get_config_value(&active, &commented, "TIME_ZONE");
     if !matches!(raw.as_deref(), Some(v) if v.eq_ignore_ascii_case("auto")) {
         return;
     }
-    // Already on a real zone? Nothing to do (don't override a resolved tz).
+    // Preserve any resolved or user-selected zone.
     match current_timezone().as_deref() {
         Some("UTC") | Some("Etc/UTC") | None => {}
         Some(_) => return,
     }
     let Some(tz) = resolve_timezone_via_geoip().await else {
-        return; // still no network — a later boot will retry
+        return; // Still no network; a later boot retries.
     };
     if current_timezone().as_deref() == Some(tz.as_str()) {
         return;
     }
-    // RO root → flip to rw just for the write, then back.
+    // Temporarily remount the read-only root for timezone state.
     let _ = sentryusb_shell::run(
         "sh",
         &[
@@ -751,7 +618,7 @@ pub async fn ensure_timezone_resolved() {
 /// Returns the input unchanged if it isn't a known alias.
 fn normalize_timezone(tz: &str) -> String {
     match tz {
-        // US/* aliases — all dropped from minimal tzdata installs
+        // US/* aliases omitted by minimal tzdata installs.
         "US/Alaska" => "America/Anchorage",
         "US/Aleutian" => "America/Adak",
         "US/Arizona" => "America/Phoenix",
@@ -764,7 +631,7 @@ fn normalize_timezone(tz: &str) -> String {
         "US/Mountain" => "America/Denver",
         "US/Pacific" => "America/Los_Angeles",
         "US/Samoa" => "Pacific/Pago_Pago",
-        // Common single-name legacy zones
+        // Common single-name aliases.
         "GMT" | "UTC" | "Universal" | "Zulu" => "UTC",
         "Navajo" => "America/Denver",
         "Cuba" => "America/Havana",
@@ -811,7 +678,7 @@ mod set_ini_key_tests {
 
     #[test]
     fn only_touches_key_in_target_section() {
-        // A use-ipv6 line under [publish] must be left alone — rewriting it
+        // A use-ipv6 line under [publish] must be left alone: rewriting it
         // there could produce a conf avahi refuses to load.
         let conf = "[publish]\n#use-ipv6=yes\n";
         let (out, changed) = set_ini_key(conf, "server", "use-ipv6", "no");
@@ -845,7 +712,7 @@ mod set_ini_key_tests {
 
     #[test]
     fn does_not_match_prefixed_keys() {
-        // "use-ipv6" must not swallow a hypothetical "use-ipv6-foo=..." line.
+        // "use-ipv6" must not swallow a "use-ipv6-foo=..." line.
         let conf = "[server]\nuse-ipv6-foo=yes\n";
         let (out, changed) = set_ini_key(conf, "server", "use-ipv6", "no");
         assert!(changed);
@@ -883,15 +750,14 @@ mod timezone_extract_tests {
 
     #[test]
     fn parses_first_party_geoip_json() {
-        // Shape of sentry-six.com/api/geoip/me (camelCase `timeZone`).
-        // Placeholder values — RFC 5737 documentation IP, no real location.
+        // First-party camelCase response with an RFC 5737 test address.
         let body = r#"{"ip":"203.0.113.7","country":"US","region":"CA","city":"Mountain View","timeZone":"America/Los_Angeles"}"#;
         assert_eq!(extract_timezone(body).as_deref(), Some("America/Los_Angeles"));
     }
 
     #[test]
     fn parses_bare_text_fallback() {
-        // ipinfo.io/timezone / ipapi.co/timezone style.
+        // Legacy bare-text response.
         assert_eq!(extract_timezone("America/New_York\n").as_deref(), Some("America/New_York"));
     }
 
@@ -910,10 +776,7 @@ mod timezone_extract_tests {
     }
 }
 
-/// Best-effort detection of the system's current timezone. Tries
-/// `/etc/timezone` first (cheap, textual), falls back to the target of
-/// the `/etc/localtime` symlink (systemd's source of truth on Pi OS).
-/// Returns `None` only when neither source is usable.
+/// Read `/etc/timezone`, then systemd's `/etc/localtime` symlink.
 fn current_timezone() -> Option<String> {
     if let Ok(raw) = std::fs::read_to_string("/etc/timezone") {
         let trimmed = raw.trim();
@@ -926,14 +789,7 @@ fn current_timezone() -> Option<String> {
     s.find("/zoneinfo/").map(|idx| s[idx + "/zoneinfo/".len()..].to_string())
 }
 
-/// Configure the RTC if enabled.
-///
-/// Dispatches on Pi model:
-///   * Pi 5: uses the built-in RTC via `/dev/rtc0`; installs
-///     `dashusb-hwclock.service` for boot-time hctosys sync and optionally
-///     enables trickle charging via `dtparam=rtc_bbat_vchg`.
-///   * Other models: adds a DS3231 I²C overlay to config.txt (for users
-///     wiring in an external RTC module).
+/// Configure Pi 5's built-in RTC or a DS3231 overlay on other models.
 pub async fn configure_rtc(env: &SetupEnv, emitter: &SetupEmitter) -> Result<bool> {
     if env.pi_model == crate::env::PiModel::Pi5 {
         return configure_rtc_pi5(env, emitter).await;
@@ -951,7 +807,7 @@ async fn configure_rtc_pi5(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
     let enabled = env.get_bool("RTC_BATTERY_ENABLED", false);
     let trickle = env.get_bool("RTC_TRICKLE_CHARGE", false);
 
-    // Quick idempotency check. If already in the desired state, silent skip.
+    // Silent skip when already in the desired state.
     let service_path = "/lib/systemd/system/dashusb-hwclock.service";
     let config = std::fs::read_to_string(&config_path).unwrap_or_default();
     let service_installed = Path::new(service_path).exists();
@@ -985,8 +841,7 @@ async fn configure_rtc_pi5(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
         let _ = sentryusb_shell::run("systemctl", &["daemon-reload"]).await;
         let _ = sentryusb_shell::run("systemctl", &["enable", "dashusb-hwclock.service"]).await;
 
-        // Sync current system time to the RTC right now so reboots during
-        // the rest of setup have a good time source.
+        // Preserve time across any remaining setup reboots.
         rtc_sync_systohc(emitter).await;
 
         // Trickle charging (only relevant for rechargeable cells).
@@ -1021,8 +876,7 @@ async fn configure_rtc_pi5(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
     Ok(true)
 }
 
-/// External DS3231 I²C RTC — kept as a feature addition for non-Pi5 users
-/// who wire their own RTC module (the Go/bash project never had this path).
+/// External DS3231 I²C RTC, for non-Pi5 users who wire their own RTC module.
 async fn configure_rtc_ds3231(env: &SetupEnv, emitter: &SetupEmitter) -> Result<bool> {
     if !env.get_bool("RTC_BATTERY_ENABLED", false) {
         return Ok(false);

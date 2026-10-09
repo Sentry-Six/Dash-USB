@@ -71,7 +71,7 @@ export default function TerminalPage() {
                         if (xtermRef.current) {
                             xtermRef.current.write(msg.data)
                         } else {
-                            // Buffer output until xterm is initialized
+                            // Buffer until xterm exists; see the init effect.
                             pendingOutputRef.current.push(msg.data)
                         }
                     }
@@ -106,7 +106,7 @@ export default function TerminalPage() {
         }
     }, [username, password, disconnect])
 
-    // Initialize xterm AFTER React renders the terminal container div
+    // Init after render: term.open needs the container div in the DOM.
     useEffect(() => {
         if (state !== "connected" || !termRef.current || xtermRef.current) return
         const ws = wsRef.current
@@ -149,26 +149,23 @@ export default function TerminalPage() {
         xtermRef.current = term
         fitRef.current = fit
 
-        // Flush any buffered output that arrived before xterm was ready
+        // Flush output that arrived before xterm existed.
         for (const chunk of pendingOutputRef.current) {
             term.write(chunk)
         }
         pendingOutputRef.current = []
 
-        // Send terminal size
         const dims = fit.proposeDimensions()
         if (dims && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "resize", cols: dims.cols, rows: dims.rows }))
         }
 
-        // Input → WebSocket
         term.onData((data) => {
             if (ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: "input", data }))
             }
         })
 
-        // Handle resize
         const container = termRef.current
         const resizeObserver = new ResizeObserver(() => {
             if (fitRef.current && xtermRef.current) {
@@ -188,7 +185,6 @@ export default function TerminalPage() {
         }
     }, [state])
 
-    // Cleanup on unmount
     useEffect(() => {
         return () => {
             if (wsRef.current) {
@@ -207,7 +203,6 @@ export default function TerminalPage() {
         connect()
     }
 
-    // Login / disconnected view
     if (state !== "connected") {
         return (
             <div className="flex h-[calc(100vh-120px)] flex-col items-center justify-center md:h-[calc(100vh-96px)]">
@@ -289,10 +284,8 @@ export default function TerminalPage() {
         )
     }
 
-    // Connected terminal view
     return (
         <div className="flex h-[calc(100vh-120px)] flex-col md:h-[calc(100vh-96px)]">
-            {/* Header */}
             <div className="mb-2 flex items-center justify-between">
                 <div className="flex items-center gap-2">
                     <div className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]" />
@@ -309,7 +302,6 @@ export default function TerminalPage() {
                 </button>
             </div>
 
-            {/* Terminal container */}
             <div
                 ref={termRef}
                 className="flex-1 overflow-hidden rounded-lg border border-white/5 bg-[#0b1120]"

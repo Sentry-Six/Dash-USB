@@ -10,8 +10,17 @@ then
   exit 0
 fi
 
+# Re-read only the temperature unit so changes apply without re-exporting config.
+function current_unit() {
+  local unit
+  unit=$(sed -n "s/^export TEMPERATURE_UNIT=[\"']\?\([CFcf]\).*/\1/p" /root/dashusb.conf 2>/dev/null | tail -1)
+  echo "${unit:-${TEMPERATURE_UNIT:-C}}"
+}
+
 function readable() {
-  if [ "${TEMPERATURE_UNIT:-C}" = "F" ]; then
+  local unit
+  unit=$(current_unit)
+  if [ "${unit^^}" = "F" ]; then
     awk -v r="$1" 'BEGIN { printf "%.1f°F", r/1000 * 9/5 + 32 }'
   else
     awk -v r="$1" 'BEGIN { printf "%.1f°C", r/1000 }'
@@ -35,10 +44,9 @@ do
     peak_time=$timestamp
   fi
 
-  # Log Warning threshold exceeded
   if [[ ! ( -z "${TEMPERATURE_WARNING:+x}" ) ]]
   then
-    if [[ "$raw_temp" -lt $((TEMPERATURE_WARNING - 5000)) ]] # Clear Warning flag if below threshold - 5 degrees (hysteresis)
+    if [[ "$raw_temp" -lt $((TEMPERATURE_WARNING - 5000)) ]] # 5 degrees of hysteresis
     then
       set_warning=0
     fi
@@ -50,10 +58,9 @@ do
     fi
   fi
 
-  # Log Caution threshold exceeded
   if [[ ! ( -z "${TEMPERATURE_CAUTION:+x}" ) ]]
   then
-    if [[ "$raw_temp" -lt $((TEMPERATURE_CAUTION - 5000)) ]] # Clear Caution flag if below threshold - 5 degrees (hysteresis)
+    if [[ "$raw_temp" -lt $((TEMPERATURE_CAUTION - 5000)) ]] # 5 degrees of hysteresis
     then
       set_caution=0
     fi
@@ -65,7 +72,7 @@ do
     fi
   fi
 
-  # Log temperature at fixed interval
+  # Convert the minute interval to this loop's seconds counter.
   if [[ ! ( -z "${TEMPERATURE_INTERVAL:+x}" ) ]]
   then
     counter_mod=$((counter % (TEMPERATURE_INTERVAL * 60)))
@@ -75,10 +82,10 @@ do
     fi
   fi
 
-  # Log right after Archive_Clips
+  # Report right after an archive cycle; archiveloop drops the flag file.
   if [[ -e /tmp/flag_post_archive ]]
   then
-    rm /tmp/flag_post_archive # Clear flag
+    rm /tmp/flag_post_archive
     if [[ "${TEMPERATURE_POSTARCHIVE:-false}" = "true" ]]
     then
       message="Temperature Monitor: $(readable "$raw_temp") (max=$(readable "$peak_temp") $peak_time)"

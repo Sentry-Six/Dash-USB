@@ -26,14 +26,14 @@ export function StorageStep({ data, onChange }: StepProps) {
 
   useEffect(() => { fetchDevices() }, [])
 
-  // Calculate dashcam warning — only meaningful for GB values
+  // The dashcam warning only applies to GB values.
   const camRaw = data.CAM_SIZE ?? ""
   const camIsGB = !/[mM]$/.test(camRaw)
   const camSize = parseInt(camRaw.replace(/[^0-9]/g, "") || "0")
-  const camWarning = camIsGB && camSize >= 100
-    ? "Large dashcam sizes leave very little room for snapshots. The car saves ~1 hour of recent footage and rotates it. If there's not enough free space for snapshots, you won't see clips beyond the last hour. We recommend 40-60 GB for dashcam and leaving the rest for snapshots."
-    : camIsGB && camSize >= 80
-      ? "Consider leaving more space for snapshots. If the dashcam partition is too large, the car's recent clips may not save properly."
+  const camWarning = camIsGB && camSize > 0 && camSize < 64
+    ? "GM requires a drive of at least 64 GB with 32 GB available — the car will refuse to record onto anything smaller."
+    : camIsGB && camSize >= 100
+      ? "Large dashcam sizes leave very little room for snapshots — and snapshots are your footage history (the car itself only keeps ~2 hours). 64 GB is all the car needs; leave the rest for snapshots."
       : undefined
 
   return (
@@ -60,37 +60,8 @@ export function StorageStep({ data, onChange }: StepProps) {
           hint="GM requires a drive of at least 64 GB, so keep this at 64 or higher. Do NOT use your entire card — leave room for snapshots, which hold your archived footage."
           warning={camWarning}
         />
-        <SizeInput
-          label="Music"
-          field="MUSIC_SIZE"
-          data={data}
-          onChange={onChange}
-          defaultVal=""
-          hint="Optional. Leave empty for no music drive."
-        />
-        {(data.MUSIC_SIZE ?? "").replace(/[^0-9]/g, "") && (
-          <div className="rounded-lg border border-white/5 bg-white/[0.02] p-4">
-            <div className="mb-2">
-              <label className="text-sm font-medium text-slate-300">Music Share Name</label>
-              <span className="ml-2 text-xs text-slate-600">(optional)</span>
-            </div>
-            <input
-              type="text"
-              value={data.MUSIC_SHARE_NAME ?? ""}
-              onChange={(e) => onChange("MUSIC_SHARE_NAME", e.target.value)}
-              placeholder={(data.ARCHIVE_SYSTEM ?? "cifs") === "rsync" ? "/mnt/user/music" : "e.g. Music or Media/Music"}
-              className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-100 placeholder-slate-600 outline-none transition focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/25"
-            />
-            <p className="mt-1 text-xs text-slate-600">
-              {(data.ARCHIVE_SYSTEM ?? "cifs") === "rsync"
-                ? "The absolute path to your music folder on the rsync server (e.g. /mnt/user/music). Leave empty to skip music syncing."
-                : "The share name on your Archive Server where your music is stored. Leave empty to skip music syncing — the drive will be created but not auto-synced."}
-            </p>
-          </div>
-        )}
       </div>
 
-      {/* Data Drive */}
       <div>
         <label className="mb-1 block text-sm font-medium text-slate-300">
           External Data Drive

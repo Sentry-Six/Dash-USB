@@ -1,14 +1,4 @@
-//! Startup migration: update peripheral files (shell scripts, BLE daemon,
-//! Avahi service, etc.) when the binary has been replaced by a newer version
-//! but the surrounding artifacts on disk are stale.
-//!
-//! This solves the bootstrap problem for existing installs whose Rust binary
-//! was updated via a minimal replace-only update path — their scripts, BLE
-//! daemon, and service files were left at the old version. Once this code
-//! has run once, future boots will self-heal automatically.
-//!
-//! Gated by a marker file (`/opt/dashusb/.migrated-<version>`) so it runs
-//! at most once per installed version. Never touches user setup configuration.
+//! Once-per-version support-file refresh and idempotent configuration-key migration.
 
 use std::time::Duration;
 
@@ -16,16 +6,25 @@ use tracing::{info, warn};
 
 const VERSION_FILE: &str = "/opt/dashusb/version";
 const MIGRATE_DIR: &str = "/opt/dashusb";
-const MIGRATE_REPO: &str = "Sentry-Six/Dash-USB";
-const MIGRATE_BRANCH: &str = "main";
+/// Ref used by the generated migration script for its support files.
+const USED_REF_FILE: &str = "/opt/dashusb/.migrate-used-ref";
 
 pub async fn run_startup_migration() {
-    // Skip in dev mode (no version file, or explicit "dev")
+    // Heals must run outside the per-version marker so later additions apply.
+    heal_temperature_unit_key();
+
     let current_version = match tokio::fs::read_to_string(VERSION_FILE).await {
         Ok(v) => v.trim().to_string(),
         Err(_) => return,
     };
-    if current_version.is_empty() || current_version == "dev" {
+    if current_version.is_empty() || current_version == "dev" || !installed_device() {
+        return;
+    }
+
+    // Upgrade from an older updater must receive this binary's helpers even
+    // offline, and even if an existing per-version migration marker is present.
+    // Only an installed device may touch /root/bin; local previews never do.
+    if !refresh_bundled_archive_runtime().await {
         return;
     }
 
@@ -36,57 +35,105 @@ pub async fn run_startup_migration() {
 
     info!("[migrate] Running startup migration for {}...", current_version);
 
-    // Prefer the exact version tag; fall back to the tracking branch if missing.
+    // Prefer the exact version tag so the refreshed scripts match the
+    // installed binary; the configured branch is only the fallback ref.
+    let source = sentryusb_config::github_source();
     let script_ref = if current_version == "unknown" {
-        MIGRATE_BRANCH.to_string()
+        source.branch.clone()
     } else {
         current_version.clone()
     };
     let tarball_url = format!(
         "https://github.com/{}/archive/{}.tar.gz",
-        MIGRATE_REPO, script_ref
+        source.repo_slug, script_ref
     );
+    let fallback_url = format!(
+        "https://github.com/{}/archive/{}.tar.gz",
+        source.repo_slug, source.branch
+    );
+    // Default devices keep tag-matched helpers; explicit branches track their
+    // branch helper.
+    let patches_url = if source.branch_explicit {
+        tracing::info!(
+            "[migrate] explicit BRANCH={} set — support files track that branch",
+            source.branch
+        );
+        format!(
+            "https://raw.githubusercontent.com/{}/{}/setup/pi/apply-runtime-patches.sh",
+            source.repo_slug, source.branch
+        )
+    } else {
+        String::new()
+    };
+    // The script reports the actual ref if its fallback changes this guess.
+    let mut effective_ref = if source.branch_explicit {
+        source.branch.clone()
+    } else {
+        script_ref.clone()
+    };
+    let _ = std::fs::remove_file(USED_REF_FILE);
 
-    let script = build_migration_script(&tarball_url);
+    // Pass validated config values as arguments, never interpolated shell.
+    let script = build_migration_script();
 
-    // Retry up to 3 times with exponential backoff. The script itself
-    // fails fast on `curl: Could not resolve host: github.com` when DNS
-    // isn't ready yet — and that's exactly the state we hit racing
-    // network-online.target at boot. Every retry is a full script run;
-    // `set -e` + idempotent file writes mean re-running after a partial
-    // success is safe (existing files get overwritten with identical
-    // bytes from the tarball).
-    //
-    // The `nss-lookup.target` dependency on the service unit is the
-    // primary fix; this is belt-and-suspenders for the edge case where
-    // the resolver comes up but its first query fails because the
-    // upstream DNS cache is cold.
+    // Retry transient boot-time DNS/network failures. Script writes are
+    // idempotent, so a partial first attempt is safe to repeat.
     let mut last_err: Option<String> = None;
     for attempt in 1..=3 {
         match sentryusb_shell::run_with_timeout(
             Duration::from_secs(180),
             "bash",
-            &["-c", &script],
+            &[
+                "-c",
+                &script,
+                "dashusb-migrate",
+                &tarball_url,
+                &fallback_url,
+                &patches_url,
+                &script_ref,
+                &source.branch,
+                USED_REF_FILE,
+            ],
         )
         .await
         {
             Ok(_) => {
-                // Re-apply runtime patches AFTER the migration. The migration
-                // script unconditionally rewrites /root/bin/dashusb-ble.py
-                // from the upstream tarball — which silently undoes board-
-                // specific fixes the OTA updater already applied (BCM4345C0
-                // non-fatal-adv on Rock 4C+ is the headline case: OTA patches
-                // ble.py → reboot → this migration unpatches it → BLE crash
-                // loop on next start). Invoke the standalone runtime-patches
-                // script (idempotent + detection-gated) so the patches survive
-                // every migration. Best-effort: a missing script just yields
-                // an info log — the OTA flow's bootstrap path will populate
-                // it on the next update.
+                // Fail closed unless the script reports its actual ref; mixing
+                // a branch helper with a tag ref can select incompatible files.
+                let reported = std::fs::read_to_string(USED_REF_FILE)
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                let _ = std::fs::remove_file(USED_REF_FILE);
+                let Some(reported) = reported else {
+                    warn!(
+                        "[migrate] migration reported success but wrote no ref to {} — not marking \
+                         migrated; will retry on next boot",
+                        USED_REF_FILE
+                    );
+                    return;
+                };
+                if reported != effective_ref {
+                    info!(
+                        "[migrate] support files came from {} (not {}) — using it for DASHUSB_REF",
+                        reported, effective_ref
+                    );
+                    effective_ref = reported;
+                }
+
+                // Migration replaces BLE files, so reapply idempotent,
+                // hardware-gated runtime patches afterward. Missing helpers
+                // are restored by the next OTA update.
                 if std::path::Path::new("/usr/local/bin/dashusb-apply-runtime-patches").exists() {
                     match sentryusb_shell::run_with_timeout(
                         Duration::from_secs(30),
-                        "/usr/local/bin/dashusb-apply-runtime-patches",
-                        &[],
+                        "env",
+                        &[
+                            &format!("DASHUSB_REPO_SLUG={}", source.repo_slug),
+                            // Match the ref from which the helper was installed.
+                            &format!("DASHUSB_REF={}", effective_ref),
+                            "/usr/local/bin/dashusb-apply-runtime-patches",
+                        ],
                     )
                     .await
                     {
@@ -100,6 +147,11 @@ pub async fn run_startup_migration() {
                     info!("[migrate] runtime-patches script not present (pre-bootstrap install) — skipping; OTA path will populate it");
                 }
 
+                // Hardware patches may edit archive scripts. The final on-disk
+                // generation must match this binary rather than a tarball fallback.
+                if !refresh_bundled_archive_runtime().await {
+                    return;
+                }
                 let _ = tokio::fs::create_dir_all(MIGRATE_DIR).await;
                 if let Err(e) = tokio::fs::write(&marker_file, b"migrated\n").await {
                     warn!("[migrate] Failed to write marker {}: {}", marker_file, e);
@@ -109,11 +161,7 @@ pub async fn run_startup_migration() {
             }
             Err(e) => {
                 let msg = e.to_string();
-                // Only retry for transient failure signatures. A genuine
-                // 404 on the tarball URL, a write permission error, or
-                // an archive-corrupt error isn't going to fix itself on
-                // a second try, and we don't want to burn 30+ seconds
-                // on guaranteed-failing retries.
+                // Retrying permanent archive or permission errors only delays boot.
                 let transient = msg.contains("Could not resolve host")
                     || msg.contains("Temporary failure in name resolution")
                     || msg.contains("Connection timed out")
@@ -137,12 +185,77 @@ pub async fn run_startup_migration() {
         "[migrate] Warning: startup migration failed after retries: {}",
         last_err.as_deref().unwrap_or("unknown")
     );
-    // Don't write marker — retry on next boot.
+    // Absence of the marker retries the migration next boot.
 }
 
-fn build_migration_script(tarball_url: &str) -> String {
+/// Merge the retired `SYSTEM_TEMPERATURE_UNIT` into `TEMPERATURE_UNIT`, with
+/// the specific override taking precedence. Idempotent after the old key is
+/// commented out.
+fn heal_temperature_unit_key() {
+    let path = sentryusb_config::find_config_path();
+    let Ok((mut active, _)) = sentryusb_config::parse_file(path) else {
+        return;
+    };
+    let Some(sys) = active.remove("SYSTEM_TEMPERATURE_UNIT") else {
+        return;
+    };
+    active.insert("TEMPERATURE_UNIT".to_string(), sys.to_uppercase());
+    match sentryusb_config::write_file(path, &active) {
+        Ok(()) => info!("[migrate] merged SYSTEM_TEMPERATURE_UNIT into TEMPERATURE_UNIT"),
+        Err(e) => tracing::warn!("[migrate] temperature-unit key heal failed: {}", e),
+    }
+}
+
+fn installed_device() -> bool {
+    cfg!(target_os = "linux")
+        && std::env::var_os("DASHUSB_CONFIG_PATH").is_none()
+        && std::env::var_os("DASHUSB_MUTABLE_DIR").is_none()
+        && std::env::current_exe().is_ok_and(|path| path.starts_with("/opt/dashusb"))
+        && std::path::Path::new(sentryusb_config::find_config_path()).is_file()
+}
+
+async fn refresh_bundled_archive_runtime() -> bool {
+    let directory = std::path::Path::new("/root/bin");
+    match sentryusb_setup::archive_runtime::configured_is_current(directory) {
+        Ok(true) => return true,
+        Ok(false) => {},
+        Err(error) => {
+            warn!("[migrate] Cannot select bundled archive helpers: {error:#}");
+            return false;
+        },
+    }
+    let _ = sentryusb_shell::run("/root/bin/remountfs_rw", &[]).await;
+    let _ = sentryusb_shell::run("mount", &["-o", "remount,rw", "/"]).await;
+    let refreshed = tokio::task::spawn_blocking(move || {
+        sentryusb_setup::archive_runtime::refresh_configured(directory)
+    }).await;
+    match refreshed {
+        Ok(Ok(())) => {
+            // Archive service starts independently of the API. Atomic replacement
+            // lets an already running shell retain its old inode until its next
+            // normal start; never restart it mid-transfer or cycle the USB gadget.
+            info!("[migrate] Matching archive helpers installed offline; active recording and archive services left running");
+            true
+        },
+        Ok(Err(error)) => { warn!("[migrate] Bundled archive refresh failed: {error:#}"); false },
+        Err(error) => { warn!("[migrate] Archive refresh task failed: {error}"); false },
+    }
+}
+
+fn build_migration_script() -> String {
+    // Arguments: tag and fallback URLs, optional patch URL, tag and branch
+    // refs, then the path where the selected ref is reported.
     format!(
         r#"set -e
+TARBALL_URL="$1"
+FALLBACK_URL="$2"
+PATCHES_URL="$3"
+TAG_REF="$4"
+BRANCH_REF="$5"
+USED_REF_FILE="$6"
+# Assume the tag until a fallback actually fires. The caller runs the helper
+# with this ref, so guessing wrong yields a branch helper fed tag payloads.
+USED_REF="$TAG_REF"
 
 # Remount filesystem as read-write (no-op if already rw)
 /root/bin/remountfs_rw 2>/dev/null || mount -o remount,rw / 2>/dev/null || true
@@ -155,40 +268,15 @@ TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
 
 # Download repo tarball — try version tag first, fall back to tracking branch
-if ! curl -fsSL "{tarball_url}" | tar xz --strip-components=1 -C "$TMPDIR" 2>/dev/null; then
-  FALLBACK="https://github.com/{repo}/archive/{branch}.tar.gz"
-  curl -fsSL "$FALLBACK" | tar xz --strip-components=1 -C "$TMPDIR" 2>/dev/null || exit 1
+if ! curl -fsSL "$TARBALL_URL" | tar xz --strip-components=1 -C "$TMPDIR" 2>/dev/null; then
+  curl -fsSL "$FALLBACK_URL" | tar xz --strip-components=1 -C "$TMPDIR" 2>/dev/null || exit 1
+  # The tag tarball lost; everything unpacked below is branch content.
+  USED_REF="$BRANCH_REF"
 fi
 
-# ── Update run/ scripts ──
-if [ -d "$TMPDIR/run" ]; then
-  for f in "$TMPDIR"/run/*; do
-    [ -f "$f" ] || continue
-    name=$(basename "$f")
-    cp "$f" "/root/bin/$name"
-    chmod +x "/root/bin/$name"
-  done
-fi
-
-# ── Update archive module scripts ──
-ARCHIVE_SYSTEM=""
-for conf in /root/dashusb.conf /dashusb/dashusb.conf; do
-  if [ -f "$conf" ]; then
-    ARCHIVE_SYSTEM=$(grep -m1 'ARCHIVE_SYSTEM=' "$conf" 2>/dev/null | tail -1 | sed "s/.*ARCHIVE_SYSTEM=//;s/['\"]//g;s/#.*//" | tr -d ' ') || true
-    [ -n "$ARCHIVE_SYSTEM" ] && break
-  fi
-done
-if [ -n "$ARCHIVE_SYSTEM" ]; then
-  subdir="${{ARCHIVE_SYSTEM}}_archive"
-  if [ -d "$TMPDIR/run/$subdir" ]; then
-    for f in "$TMPDIR/run/$subdir"/*; do
-      [ -f "$f" ] || continue
-      name=$(basename "$f")
-      cp "$f" "/root/bin/$name"
-      chmod +x "/root/bin/$name"
-    done
-  fi
-fi
+# Runtime and backend scripts are installed offline from the running binary.
+# Do not copy run/* from a tag/branch tarball over that matched generation.
+# Compatibility wrappers below are not part of the bundled archive runtime.
 
 # ── Update setup-dashusb (kept as compatibility wrapper) ──
 if [ -f "$TMPDIR/setup/pi/setup-dashusb" ]; then
@@ -212,8 +300,15 @@ if [ -f "$TMPDIR/server/ble/dashusb-ble.service" ]; then
   systemctl daemon-reload
 fi
 
+# ── Update the BLE dbus policy alongside the daemon ──
+if [ -f "$TMPDIR/server/ble/com.dashusb.ble.conf" ]; then
+  cp "$TMPDIR/server/ble/com.dashusb.ble.conf" "/etc/dbus-1/system.d/com.dashusb.ble.conf"
+fi
+
 # ── Install BLE Python dependencies if missing ──
-for pkg in python3-dbus python3-gi bluez; do
+# pi-bluetooth/rfkill are Pi-OS niceties: best-effort (absent on other
+# distros, usually preinstalled on Pi OS — cheap insurance either way).
+for pkg in python3-dbus python3-gi bluez pi-bluetooth rfkill; do
   if ! dpkg-query -W --showformat='${{db:Status-Status}}\n' "$pkg" 2>/dev/null | grep -q '^installed$'; then
     DEBIAN_FRONTEND=noninteractive apt-get -y install "$pkg" 2>/dev/null || true
   fi
@@ -286,22 +381,33 @@ if [ -f "$TMPDIR/pi-gen-sources/00-dashusb-tweaks/files/dashusb-pick-binary" ]; 
   install -m 755 "$TMPDIR/pi-gen-sources/00-dashusb-tweaks/files/dashusb-pick-binary" /usr/local/bin/dashusb-pick-binary
 fi
 
-# ── Refresh the runtime-patches helper from the tarball ──
-# Without this, new patches we add to apply-runtime-patches.sh never reach
-# existing installs — the OTA invocation (the Rust caller after this shell
-# script exits) would re-run the OLD on-disk version. Bootstrap pre-v3.11
-# installs that never had the helper at all (the file just appears).
-if [ -f "$TMPDIR/setup/pi/apply-runtime-patches.sh" ]; then
+# ── Refresh the runtime-patches helper ──
+# $PATCHES_URL is non-empty only when the conf explicitly sets BRANCH; then
+# the branch copy wins so the updater's selection survives this migration.
+# Default devices take the tag-tarball copy, which matches their binary.
+# Without either, existing installs would re-run the OLD on-disk version.
+PATCHES_STAGE="$TMPDIR/patches.new"
+if [ -n "$PATCHES_URL" ] \
+   && curl -fsSL --max-time 15 -o "$PATCHES_STAGE" "$PATCHES_URL" 2>/dev/null \
+   && [ -s "$PATCHES_STAGE" ] && bash -n "$PATCHES_STAGE" 2>/dev/null; then
+  install -m 755 "$PATCHES_STAGE" /usr/local/bin/dashusb-apply-runtime-patches
+  # Explicit-BRANCH copy won, whatever the tarball was.
+  USED_REF="$BRANCH_REF"
+elif [ -f "$TMPDIR/setup/pi/apply-runtime-patches.sh" ]; then
   install -m 755 "$TMPDIR/setup/pi/apply-runtime-patches.sh" /usr/local/bin/dashusb-apply-runtime-patches
 fi
+
+# Report the ref the helper actually came from so the caller runs it with a
+# matching DASHUSB_REF instead of assuming the tag. NOT best-effort: if this
+# write is lost, the caller keeps its tag guess and can run a branch helper
+# with the tag ref. `set -e` turns a failure here into a failed migration,
+# which is retried.
+printf '%s' "$USED_REF" > "$USED_REF_FILE"
 
 # ── Restart the phone-app BLE daemon ──
 systemctl enable dashusb-ble 2>/dev/null || true
 systemctl restart dashusb-ble 2>/dev/null || true
-"#,
-        tarball_url = tarball_url,
-        repo = MIGRATE_REPO,
-        branch = MIGRATE_BRANCH
+"#
     )
 }
 
@@ -309,19 +415,32 @@ systemctl restart dashusb-ble 2>/dev/null || true
 mod tests {
     use super::*;
 
-    /// The migration script is a format!() template full of shell — a
-    /// stray unescaped `{` or a typo'd quote renders a script that fails
-    /// at runtime on every user's Pi. Render it and let bash parse it.
+    /// Render the shell template and verify its syntax.
     #[test]
     fn migration_script_parses() {
-        let script = build_migration_script(
-            "https://github.com/Sentry-Six/Dash-USB/archive/v0.0.0.tar.gz",
-        );
-        // Placeholders must all have been substituted.
+        let script = build_migration_script();
+        // Config-derived URLs must arrive only as positional arguments.
         assert!(!script.contains("{repo}"), "unsubstituted {{repo}}");
         assert!(!script.contains("{branch}"), "unsubstituted {{branch}}");
         assert!(!script.contains("{tarball_url}"), "unsubstituted {{tarball_url}}");
+        assert!(script.contains("TARBALL_URL=\"$1\""), "primary URL must come from $1");
+        assert!(script.contains("FALLBACK_URL=\"$2\""), "fallback URL must come from $2");
+        assert!(script.contains("PATCHES_URL=\"$3\""), "patches URL must come from $3");
+        assert!(script.contains("TAG_REF=\"$4\""), "tag ref must come from $4");
+        assert!(script.contains("BRANCH_REF=\"$5\""), "branch ref must come from $5");
+        assert!(
+            script.contains("USED_REF_FILE=\"$6\""),
+            "used-ref report path must come from $6"
+        );
+        // The caller must receive the helper's actual source ref.
+        assert!(
+            script.contains("> \"$USED_REF_FILE\""),
+            "script must report the ref it actually installed from"
+        );
 
+        assert!(!script.contains("for f in \"$TMPDIR\"/run/*"), "tarball must not overwrite bundled runtime");
+        assert!(!script.contains("subdir=\"${ARCHIVE_SYSTEM}_archive\""), "tarball must not overwrite backend selection");
+        assert!(script.contains("setup/pi/envsetup.sh"), "keep unbundled compatibility wrapper migration");
         let dir = std::env::temp_dir().join("dashusb-migrate-test");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("migration.sh");

@@ -12,10 +12,9 @@ use serde_json;
 use tracing::{info, warn};
 
 const SESSION_COOKIE_NAME: &str = "sentryusb_session";
-const SESSION_TTL: Duration = Duration::from_secs(24 * 60 * 60); // 24 hours
-const CLEANUP_INTERVAL: Duration = Duration::from_secs(60 * 60); // 1 hour
+const SESSION_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const CLEANUP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
-/// Authentication state shared across the application.
 #[derive(Clone)]
 pub struct AuthState {
     inner: std::sync::Arc<AuthInner>,
@@ -29,7 +28,6 @@ struct AuthInner {
 }
 
 impl AuthState {
-    /// Creates an AuthState with no credentials (auth disabled).
     pub fn disabled() -> Self {
         AuthState {
             inner: std::sync::Arc::new(AuthInner {
@@ -41,17 +39,11 @@ impl AuthState {
         }
     }
 
-    /// Whether authentication is required.
     pub fn auth_required(&self) -> bool {
-        // BOTH must be set. A username with no password is effectively
-        // unusable — there's no credential the user could supply that
-        // would let them log in — but the previous version would still
-        // gate the UI with 401s. That trapped users who tried to
-        // disable auth by blanking just one field.
+        // Require both fields so partial configuration cannot lock out the UI.
         !self.inner.username.is_empty() && !self.inner.password.is_empty()
     }
 
-    /// Create a new session token.
     pub fn create_session(&self) -> Option<String> {
         let rng = SystemRandom::new();
         let mut bytes = [0u8; 32];
@@ -69,7 +61,6 @@ impl AuthState {
         Some(token)
     }
 
-    /// Validate a session token.
     pub fn validate_session(&self, token: &str) -> bool {
         if let Ok(sessions) = self.inner.sessions.read() {
             if let Some(expiry) = sessions.get(token) {
@@ -79,7 +70,6 @@ impl AuthState {
         false
     }
 
-    /// Remove a session.
     pub fn remove_session(&self, token: &str) {
         if let Ok(mut sessions) = self.inner.sessions.write() {
             sessions.remove(token);
@@ -94,7 +84,6 @@ impl AuthState {
         u_match && p_match
     }
 
-    /// Start the background cleanup task.
     pub fn start_cleanup_task(&self) {
         let state = self.clone();
         tokio::spawn(async move {
@@ -170,10 +159,7 @@ impl AuthState {
 
         if let Ok(data) = serde_json::to_vec(&stored) {
             let _ = std::fs::write(path, data);
-            // Session tokens are bearer credentials — keep the file 0600
-            // so a non-root account or an over-broad backup can't read
-            // them. /root itself is 0700 on Pi OS; this is
-            // defense-in-depth, not the only barrier.
+            // Session tokens are bearer credentials; persist them as 0600.
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -186,7 +172,6 @@ impl AuthState {
     }
 }
 
-/// Initialize authentication from the config file.
 pub fn init_auth() -> AuthState {
     let config_path = sentryusb_config::find_config_path();
     let sessions_file = Path::new(config_path)
@@ -223,13 +208,7 @@ pub fn init_auth() -> AuthState {
     state
 }
 
-/// True when any of the DASHUSB_SETUP_FINISHED marker files exists.
-/// Used by the auth middleware to decide whether `/api/setup/*` still
-/// needs to be reachable without credentials.
-///
-/// Checks both boot partition paths — the setup wizard writes one or the
-/// other depending on whether `/dashusb` resolves to `/boot/firmware`
-/// (Bookworm+) or `/boot` (older images).
+/// Check both legacy and Bookworm setup-finished marker paths.
 fn setup_is_finished() -> bool {
     const MARKERS: &[&str] = &[
         "/dashusb/DASHUSB_SETUP_FINISHED",
@@ -239,25 +218,21 @@ fn setup_is_finished() -> bool {
     MARKERS.iter().any(|p| std::path::Path::new(p).exists())
 }
 
-/// Axum middleware for authentication.
 pub async fn auth_middleware(
     axum::extract::State(auth): axum::extract::State<AuthState>,
     req: Request,
     next: Next,
 ) -> Response {
-    // Skip auth if not configured
     if !auth.auth_required() {
         return next.run(req).await;
     }
 
     let path = req.uri().path().to_string();
 
-    // Only protect /api/* paths
     if !path.starts_with("/api/") {
         return next.run(req).await;
     }
 
-    // Allow localhost
     if let Some(addr) = req.extensions().get::<axum::extract::ConnectInfo<std::net::SocketAddr>>() {
         // Fold IPv4-mapped IPv6 (::ffff:127.0.0.1) back to v4 so loopback
         // matches on a dual-stack listener.
@@ -266,14 +241,9 @@ pub async fn auth_middleware(
         }
     }
 
-    // Always-exempt: login, logout, session check, and the status
-    // endpoints that the frontend uses to decide whether to show the
-    // login screen / wizard in the first place. These must work
-    // without a session cookie even after the device is fully set up
-    // — without `/api/setup/status` in this list, the SPA's initial
-    // routing call gets 401, can't tell setup is finished, and falls
-    // through to rendering the SetupWizard on every page load.
+    // Initial routing and login endpoints must work before a session exists.
     const EXEMPT_ALWAYS: &[&str] = &[
+        "/api/health",
         "/api/status",
         "/api/setup/status",
         "/api/auth/login",
@@ -284,26 +254,14 @@ pub async fn auth_middleware(
         return next.run(req).await;
     }
 
-    // Conditionally-exempt: `/api/setup/*` is only open while the
-    // setup wizard hasn't finished. On a fresh flash the user has no
-    // credentials yet, so the wizard needs to be reachable; once
-    // DASHUSB_SETUP_FINISHED exists, the same endpoints become
-    // privileged (otherwise anyone on the LAN could repoint archive
-    // URLs, change hostnames, re-run setup, etc. on a provisioned Pi).
-    //
-    // The setup-log poll (`/api/logs/setup`) is also exempt during
-    // setup. The wizard polls it once per second to render the live
-    // log; if auth blocks the poll, the log silently freezes mid-flow
-    // (the user sees the spinner but no text after auth gets configured
-    // on the security step). Limited to the literal "setup" log name
-    // — every other `/api/logs/*` path stays auth-gated.
+    // Setup is unauthenticated only before FINISHED. Exempt its live log during
+    // provisioning, while all other log routes remain protected.
     if !setup_is_finished()
         && (path.starts_with("/api/setup/") || path == "/api/logs/setup")
     {
         return next.run(req).await;
     }
 
-    // Check session cookie
     let cookie_header = req
         .headers()
         .get("cookie")
@@ -324,7 +282,6 @@ pub async fn auth_middleware(
     response
 }
 
-/// Extract a cookie value from a Cookie header string.
 fn extract_cookie<'a>(header: &'a str, name: &str) -> Option<&'a str> {
     for part in header.split(';') {
         let part = part.trim();
@@ -337,7 +294,6 @@ fn extract_cookie<'a>(header: &'a str, name: &str) -> Option<&'a str> {
     None
 }
 
-/// Constant-time byte comparison.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -349,19 +305,15 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     result == 0
 }
 
-// --- HTTP Handlers ---
-
 use axum::Json;
 use axum::response::IntoResponse;
 use serde::Deserialize;
 
 use crate::router::AppState;
 
-/// Per-IP failed-login throttle: 5 failures in 5 minutes locks the IP
-/// out until the window drains. Same policy as the web terminal's
-/// shadow-auth limiter (terminal.rs) — without it the web login was
-/// the only credential surface on the box an attacker could
-/// brute-force without backoff.
+/// Per-IP failed-login throttle: 5 failures in 5 minutes lock the IP out until
+/// the window drains. Same policy as the web terminal's shadow-auth limiter in
+/// terminal.rs, so no credential surface is brute-forceable without backoff.
 const LOGIN_RATE_WINDOW: Duration = Duration::from_secs(5 * 60);
 const LOGIN_RATE_MAX_FAILS: usize = 5;
 
@@ -405,7 +357,6 @@ pub struct LoginRequest {
     password: String,
 }
 
-/// POST /api/auth/login
 pub async fn handle_login(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
@@ -455,7 +406,6 @@ pub async fn handle_login(
     response
 }
 
-/// POST /api/auth/logout
 pub async fn handle_logout(
     axum::extract::State(state): axum::extract::State<AppState>,
     req: Request,
@@ -484,7 +434,6 @@ pub async fn handle_logout(
     response
 }
 
-/// GET /api/auth/check
 pub async fn handle_auth_check(
     axum::extract::State(state): axum::extract::State<AppState>,
     req: Request,

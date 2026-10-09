@@ -1,7 +1,4 @@
-//! Partition management — replaces `create-backingfiles-partition.sh`.
-//!
-//! Handles detecting existing partitions, creating new backingfiles (XFS) and
-//! mutable (ext4) partitions, and updating /etc/fstab.
+//! Safe provisioning of backingfiles (XFS) and mutable (ext4) partitions.
 
 use std::path::Path;
 use std::time::Duration;
@@ -15,13 +12,13 @@ use crate::SetupEmitter;
 const BACKINGFILES_MOUNT: &str = "/backingfiles";
 const MUTABLE_MOUNT: &str = "/mutable";
 
-/// Check if the backingfiles and mutable partitions already exist and are valid.
+/// Probe for both label symlinks. Can momentarily return false on a udev race
+/// even when the partitions are fine, so never treat false as "safe to wipe".
 pub async fn partitions_exist() -> bool {
     Path::new("/dev/disk/by-label/backingfiles").exists()
         && Path::new("/dev/disk/by-label/mutable").exists()
 }
 
-/// Ensure xfsprogs is installed.
 async fn ensure_xfs_tools(emitter: &SetupEmitter) -> Result<()> {
     if sentryusb_shell::run("which", &["mkfs.xfs"]).await.is_err() {
         info!("Installing xfsprogs...");
@@ -35,7 +32,7 @@ async fn ensure_xfs_tools(emitter: &SetupEmitter) -> Result<()> {
     Ok(())
 }
 
-/// Determine the partition name prefix for a device (e.g. "p" for mmcblk, "" for sd).
+/// "p" for mmcblk/nvme/loop devices, "" for sd-style devices.
 fn partition_prefix(device: &str) -> &'static str {
     if device.contains("mmcblk") || device.contains("nvme") || device.contains("loop") {
         "p"
@@ -44,7 +41,8 @@ fn partition_prefix(device: &str) -> &'static str {
     }
 }
 
-/// Create partitions on an external DATA_DRIVE. Returns true if any work was performed.
+/// Create partitions on an external DATA_DRIVE. Returns true if any work was
+/// performed.
 pub async fn setup_data_drive(env: &SetupEnv, emitter: &SetupEmitter) -> Result<bool> {
     let data_drive = env.data_drive.as_deref()
         .context("DATA_DRIVE not set")?;
@@ -53,14 +51,8 @@ pub async fn setup_data_drive(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
     let p1 = format!("{}{}{}", data_drive, prefix, 1);
     let p2 = format!("{}{}{}", data_drive, prefix, 2);
 
-    // Change 7: detect a DATA_DRIVE swap where the old drive is still
-    // attached. If LABEL=backingfiles or LABEL=mutable resolves to a
-    // partition that does NOT live on the new data_drive, the user
-    // has changed DATA_DRIVE without disconnecting the old disk.
-    // Proceeding would either wipe the old drive (data loss) or leave
-    // a label conflict that makes mount LABEL=… ambiguous. Refuse
-    // with a clear message so the user can disconnect the old drive
-    // first; their old data is preserved untouched.
+    // Refuse a new DATA_DRIVE while old labeled partitions remain attached;
+    // duplicate labels make mounts ambiguous and risk wiping the wrong disk.
     if let Some(stale) = label_on_other_drive(data_drive).await {
         bail!(
             "DATA_DRIVE is set to {} but the {} from a previous setup is still \
@@ -70,16 +62,8 @@ pub async fn setup_data_drive(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
         );
     }
 
-    // Belt-and-suspenders: refuse to enter the destructive
-    // wipefs/parted/mkfs branch on a system where setup previously
-    // completed. The runner's skip_partitioning guard is the primary
-    // defense, but it depends on partitions_exist() (label symlink
-    // probe) which can momentarily miss on a udev race. If the
-    // FINISHED marker exists at this point we KNOW the user already
-    // had a working install — surfacing a hard error is always the
-    // right answer over silently destroying their data. They can
-    // delete the marker manually and re-run setup if they really
-    // mean to wipe.
+    // FINISHED is a second guard against a transient udev miss entering the
+    // destructive path. Manual marker removal is the explicit wipe opt-in.
     let setup_finished = std::path::Path::new("/dashusb/DASHUSB_SETUP_FINISHED").exists()
         || std::path::Path::new("/boot/firmware/DASHUSB_SETUP_FINISHED").exists()
         || std::path::Path::new("/boot/DASHUSB_SETUP_FINISHED").exists();
@@ -91,30 +75,14 @@ pub async fn setup_data_drive(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
 
     let already_partitioned = bf_ok && mut_ok && bf_xfs && mut_ext4;
 
-    // Idempotency: if the partitions already have the right labels and
-    // filesystems, KEEP them and just (re)write fstab. Fstab is output,
-    // not input — a missing LABEL= line is a 4 KB text repair, not a
-    // reason to wipefs a TB of dashcam footage. This matches how the
-    // original teslausb create-backingfiles-partition.sh has always
-    // behaved. A user re-running the wizard for a config-only change
-    // (e.g. ARCHIVE_SERVER) hits this branch and never loses data.
+    // Correct labels/filesystems are authoritative; repair fstab without
+    // touching data.
     if already_partitioned {
         emitter.progress(&format!(
             "Existing backingfiles (xfs) and mutable (ext4) partitions found on {}. Keeping them.",
             data_drive
         ));
-        // Quiesce anything that might be holding the partitions open,
-        // then return. Match teslausb's keep-existing path exactly:
-        // no xfs_repair, no mkfs, just stop using the device so the
-        // next mount call gets it clean. The previous incarnation
-        // ran xfs_repair here, which on the bash side wiped users
-        // when it timed out and fell back to mkfs. Even with a safer
-        // Rust repair_xfs (5 min timeout, no reformat), running it
-        // on every config-only re-run is unnecessary work that
-        // blocks the wizard for minutes on TB-class drives. Mount
-        // itself replays the XFS log when needed; if the log is
-        // genuinely broken, mount surfaces a clear error and the
-        // user can recover manually.
+        // Quiesce holders, but never repair or format an established drive.
         let _ = sentryusb_shell::run("bash", &["-c", "killall archiveloop 2>/dev/null"]).await;
         let _ = sentryusb_gadget::disable();
         let _ = sentryusb_shell::run(
@@ -133,12 +101,7 @@ pub async fn setup_data_drive(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
         return Ok(false);
     }
 
-    // We're about to fall through to the destructive branch (wipefs,
-    // parted mktable, mkfs). On an already-finished install this is
-    // never the right answer — refuse loudly. The user gets a clear
-    // error in the wizard log and their data stays put. Recovery
-    // path: investigate why the labels/fstypes drifted (often an
-    // unmounted partition or a transient blkid blip) and re-run.
+    // Never enter wipefs/parted/mkfs after setup has finished.
     if setup_finished {
         bail!(
             "Refusing to wipe {}: setup previously completed on this device, \
@@ -161,22 +124,12 @@ pub async fn setup_data_drive(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
     emitter.progress(&format!("Unmounting partitions on {}...", data_drive));
     cleanup_mounts().await;
 
-    // Comprehensive teardown: covers the auto-mounters and loop devices
-    // that cleanup_mounts (well-known paths only) misses. Without this,
-    // parted writes the new GPT but the kernel refuses to switch to it
-    // because something on the system (commonly udisks2 having
-    // auto-mounted the prior install's partition at /media/pi/<label>)
-    // still has a partition open.
+    // Release automounts and loops outside the known managed paths.
     emitter.progress(&format!("Releasing kernel-side holders on {}...", data_drive));
     release_data_drive(data_drive, emitter).await;
 
     emitter.progress(&format!("WARNING: This will delete EVERYTHING on {}", data_drive));
-    // Bound every block-device operation. A stalled / wedged USB
-    // bridge can hang wipefs or parted indefinitely, leaving the
-    // wizard stuck on "Creating partitions..." with no way to recover.
-    // 2 minutes is long enough for any healthy drive (mkfs.ext4
-    // lazy-init means even multi-TB drives finish in seconds) and
-    // short enough that the user notices a problem.
+    // Bound operations so a wedged USB bridge cannot hang setup indefinitely.
     let op_timeout = Duration::from_secs(120);
     sentryusb_shell::run_with_timeout(op_timeout, "wipefs", &["-afq", data_drive]).await
         .context("wipefs failed (drive unresponsive?)")?;
@@ -197,7 +150,7 @@ pub async fn setup_data_drive(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
         &["-F", "-L", "mutable", &p1]).await.context("mkfs.ext4 failed")?;
 
     emitter.progress(&format!("Formatting backingfiles partition (xfs) on {}...", p2));
-    // -K: skip the default full-device TRIM (slow on large media, useless on a fresh partition).
+    // Skip full-device TRIM on a fresh partition.
     sentryusb_shell::run_with_timeout(op_timeout, "mkfs.xfs",
         &["-f", "-K", "-m", "reflink=1", "-L", "backingfiles", &p2]).await.context("mkfs.xfs failed")?;
 
@@ -207,22 +160,19 @@ pub async fn setup_data_drive(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
     Ok(true)
 }
 
-/// Create partitions on the SD card (after the root partition). Returns true if work was done.
+/// Create partitions on the SD card after the root partition. Returns true if
+/// work was done.
 pub async fn setup_sd_card(env: &SetupEnv, emitter: &SetupEmitter) -> Result<bool> {
     let boot_disk = env.boot_disk.as_deref()
         .context("Could not detect boot disk")?;
 
-    // Idempotency: if the partitions exist with the right labels, keep
-    // them and just (re)write fstab. Fstab is output, not input.
+    // Repair fstab without touching correct partitions.
     if partitions_exist().await {
         update_fstab().await?;
         return Ok(false);
     }
 
-    // Belt-and-suspenders: if setup previously finished we should
-    // never be carving fresh partitions on the SD card. Bail with a
-    // clear error rather than running sfdisk against a working
-    // install. Same reasoning as the data-drive path above.
+    // Never run sfdisk against a completed installation.
     let setup_finished = std::path::Path::new("/dashusb/DASHUSB_SETUP_FINISHED").exists()
         || std::path::Path::new("/boot/firmware/DASHUSB_SETUP_FINISHED").exists()
         || std::path::Path::new("/boot/DASHUSB_SETUP_FINISHED").exists();
@@ -242,7 +192,6 @@ pub async fn setup_sd_card(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
 
     emitter.progress("Creating backingfiles and mutable partitions on SD card...");
 
-    // Get last partition info
     let output = sentryusb_shell::run(
         "bash", &["-c", &format!(
             "sfdisk -q -l {} | tail +2 | sort -n -k 2 | tail -1 | awk '{{print $1}}'", boot_disk
@@ -263,13 +212,12 @@ pub async fn setup_sd_card(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
     let bf_dev = format!("{}{}{}", boot_disk, prefix, last_part_num + 1);
     let mut_dev = format!("{}{}{}", boot_disk, prefix, last_part_num + 2);
 
-    // Calculate sectors
     let disk_sectors: u64 = sentryusb_shell::run(
         "blockdev", &["--getsz", boot_disk],
     ).await?.trim().parse().context("blockdev parse error")?;
 
     let last_disk_sector = disk_sectors - 1;
-    // 300 MB for mutable
+    // Reserve the trailing 300 MB (614400 sectors) for mutable.
     let first_mutable_sector = last_disk_sector - 614400 + 1;
 
     let last_part_end: u64 = sentryusb_shell::run(
@@ -278,11 +226,12 @@ pub async fn setup_sd_card(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
         )],
     ).await?.trim().parse().context("sfdisk End parse error")?;
 
-    // Round up to 1MB boundary
+    // Round up to a 1 MB (2048-sector) boundary.
     let first_bf_sector = ((last_part_end + 1 + 2047) / 2048) * 2048;
     let bf_num_sectors = first_mutable_sector - first_bf_sector;
 
-    // Preserve disk identifier for fstab/cmdline.txt
+    // Capture before repartitioning: sfdisk can change the disk identifier,
+    // and fstab plus cmdline.txt still reference the old one.
     let orig_id = get_disk_identifier(boot_disk).await?;
 
     emitter.progress("Creating backingfiles partition...");
@@ -304,7 +253,6 @@ pub async fn setup_sd_card(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
     let _ = sentryusb_shell::run("partprobe", &[boot_disk]).await;
     let _ = sentryusb_shell::run("udevadm", &["settle", "--timeout=30"]).await;
 
-    // Add partitions to kernel if needed
     if !Path::new(&bf_dev).exists() || !Path::new(&mut_dev).exists() {
         let _ = sentryusb_shell::run(
             "partx", &["--add", "--nr", &format!("{}:{}", last_part_num + 1, last_part_num + 2), boot_disk],
@@ -316,7 +264,6 @@ pub async fn setup_sd_card(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
         bail!("Failed to create partitions: {} or {} not found", bf_dev, mut_dev);
     }
 
-    // Update disk identifier in fstab and cmdline.txt
     let new_id = get_disk_identifier(boot_disk).await?;
     if orig_id != new_id {
         emitter.progress("Updating disk identifier in fstab and cmdline.txt...");
@@ -331,14 +278,10 @@ pub async fn setup_sd_card(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
         }
     }
 
-    // Calculate mutable inodes: ~1 per 20000 sectors of backingfiles
+    // ~1 mutable inode per 20000 sectors of backingfiles.
     let mutable_inodes = bf_num_sectors / 20000;
 
-    // -K skips mkfs.xfs's default full-device TRIM. On a large, slow SD
-    // card (1 TB on a Pi 3) discarding the backingfiles partition takes
-    // minutes and trips the 30 s default command timeout; the discard is
-    // useless on a fresh partition anyway. Bound the format with an
-    // explicit timeout so a wedged card can't hang the wizard.
+    // Skip full-device TRIM and bound mkfs on slow or wedged media.
     let op_timeout = Duration::from_secs(120);
     emitter.progress(&format!("Formatting backingfiles (xfs) on {}...", bf_dev));
     sentryusb_shell::run_with_timeout(op_timeout, "mkfs.xfs",
@@ -364,26 +307,19 @@ async fn get_disk_identifier(disk: &str) -> Result<String> {
     Ok(output.trim().to_string())
 }
 
-/// One of the DashUSB labels resolved to a partition on a disk
-/// other than the configured DATA_DRIVE. Returned by
-/// `label_on_other_drive` so the wizard can identify the old disk in
-/// the error message.
+/// A managed label resolved outside the configured DATA_DRIVE.
 struct StaleLabel {
     label: &'static str,
     device: String,
     parent: String,
 }
 
-/// Check whether either `backingfiles` or `mutable` is currently a
-/// label on a partition that does NOT belong to `data_drive`. Returns
-/// `Some(stale)` for the first one found, or `None` when there is no
-/// conflict (no symlink, or it points to a partition on the new
-/// data_drive).
+/// Return the first managed label that resolves outside `data_drive`.
 async fn label_on_other_drive(data_drive: &str) -> Option<StaleLabel> {
     for label in &["backingfiles", "mutable"] {
         let symlink = format!("/dev/disk/by-label/{}", label);
         let Ok(target) = std::fs::read_link(&symlink) else { continue };
-        // Resolve relative target like "../../sda2" → "/dev/sda2".
+        // Resolve a relative target like "../../sda2" to "/dev/sda2".
         let resolved = std::path::Path::new("/dev/disk/by-label")
             .join(target)
             .canonicalize()
@@ -393,8 +329,7 @@ async fn label_on_other_drive(data_drive: &str) -> Option<StaleLabel> {
         if resolved.is_empty() {
             continue;
         }
-        // Strip trailing partition digits to get the parent disk.
-        // e.g. /dev/sda2 -> /dev/sda, /dev/mmcblk0p3 -> /dev/mmcblk0
+        // /dev/sda2 -> /dev/sda, /dev/mmcblk0p3 -> /dev/mmcblk0
         let parent = strip_partition_suffix(&resolved);
         if !parent.is_empty() && parent != data_drive {
             return Some(StaleLabel {
@@ -407,22 +342,12 @@ async fn label_on_other_drive(data_drive: &str) -> Option<StaleLabel> {
     None
 }
 
-/// Drop the trailing partition number from a partition device path.
-/// `sd*` partitions are suffixed with the number directly (sda2);
-/// `mmcblk*`/`nvme*`/`loop*` use a `p` separator (mmcblk0p3, nvme0n1p2).
-///
-/// Important: parent disks for the p-style families end in a digit
-/// already (e.g. `/dev/mmcblk0`, `/dev/nvme0n1`), so we cannot just
-/// strip trailing digits universally — that would chop the `0` off
-/// `mmcblk0` and yield a non-existent device. The function dispatches
-/// on the device family and only strips the `p<digits>` suffix when
-/// it's actually present.
+/// Return a partition's parent device, handling direct numeric and `pN`
+/// suffixes without stripping digits from mmcblk/nvme parent names.
 fn strip_partition_suffix(part: &str) -> String {
     let p_style = part.contains("mmcblk") || part.contains("nvme") || part.contains("loop");
     if p_style {
-        // Look for `p<digits>$` and strip exactly that. Anything else
-        // (no `p`, or non-digits after the last `p`) means the input
-        // is already the parent disk — return unchanged.
+        // Strip only a terminal p<digits> partition suffix.
         if let Some(p_idx) = part.rfind('p') {
             let suffix = &part[p_idx + 1..];
             if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()) {
@@ -431,8 +356,7 @@ fn strip_partition_suffix(part: &str) -> String {
         }
         return part.to_string();
     }
-    // sd-style: parent ends in a letter; the partition number is just
-    // trailing digits with no separator. Strip any trailing digit run.
+    // sd-style partitions append digits directly.
     part.trim_end_matches(|c: char| c.is_ascii_digit()).to_string()
 }
 
@@ -456,45 +380,19 @@ async fn check_fstype(device: &str, expected: &str) -> bool {
 }
 
 async fn cleanup_mounts() {
-    for mount in &["/mnt/cam", "/mnt/music", "/mnt/lightshow", "/mnt/boombox", "/backingfiles", "/mutable"] {
+    for mount in &["/mnt/cam", "/backingfiles", "/mutable"] {
         let _ = sentryusb_shell::run("umount", &[mount]).await;
     }
     tokio::time::sleep(Duration::from_secs(2)).await;
 }
 
-/// Aggressively release every kernel-side reference to `drive` and its
-/// partitions before we rewrite the partition table.
-///
-/// Required because `parted ... mktable` writes the new GPT to disk but
-/// then asks the kernel to re-read it — and that ioctl fails with
-/// "Partition(s) N on /dev/X have been written, but we have been unable
-/// to inform the kernel of the change, probably because it/they are in
-/// use" if anything still holds a reference. The user reported this on
-/// a fresh boot where systemd/udisks2 had auto-mounted the previous
-/// install's `mutable` partition at `/media/pi/mutable`, which the
-/// well-known-paths cleanup never touched.
-///
-/// Steps mirror what desktop "Disks" apps do before reformatting:
-///   1. Disable the USB gadget so configfs isn't holding cam_disk.bin
-///      across this teardown.
-///   2. swapoff any swap partitions on the drive.
-///   3. Lazy-force-unmount every mountpoint anywhere on the system that
-///      lives on a partition of this drive (covers /media/pi/<label>,
-///      /run/media/<user>/<label>, custom locations, anything).
-///   4. Detach any loop devices backed by partitions of this drive.
-///   5. wipefs each existing partition (clears the FS signature so
-///      autofs / udisks2 don't immediately re-probe and grab it back).
-///   6. `partx -d` to drop kernel partition table entries.
-///   7. udevadm settle so pending change events finish.
-///   8. blockdev --flushbufs + --rereadpt to make the kernel re-examine
-///      the disk; if this still fails, parted will too, and the error
-///      surfaces with enough context for the user to act.
+/// Release gadget, swap, mounts, loops, signatures, and kernel mappings before
+/// rewriting a partition table.
 async fn release_data_drive(drive: &str, emitter: &SetupEmitter) {
+    // Drop gadget references to cam_disk.bin.
     let _ = sentryusb_gadget::disable();
 
-    // Snapshot every partition of this drive plus its mountpoint and
-    // fstype. lsblk pairs are stable; -P quotes them so spaces in
-    // mountpoints don't break parsing. Skip the parent device row.
+    // -P protects mountpoints containing spaces.
     let lsblk_out = sentryusb_shell::run(
         "lsblk", &["-Pno", "NAME,MOUNTPOINT,FSTYPE", "-p", drive],
     ).await.unwrap_or_default();
@@ -518,7 +416,7 @@ async fn release_data_drive(drive: &str, emitter: &SetupEmitter) {
         }
     }
 
-    // Step 2 — swapoff
+    // Disable swap partitions on the drive.
     for (name, _mp, fst) in &parts {
         if fst == "swap" {
             emitter.progress(&format!("swapoff {}", name));
@@ -526,10 +424,7 @@ async fn release_data_drive(drive: &str, emitter: &SetupEmitter) {
         }
     }
 
-    // Step 3 — lazy-force-unmount every active mountpoint. Lazy + force
-    // covers cases where a process still has the directory open: the
-    // mount is detached from the namespace immediately so parted can
-    // proceed, and the open fd is reaped when the process exits.
+    // Detach managed and desktop-automounted paths even when a process holds one.
     for (name, mp, _fst) in &parts {
         if !mp.is_empty() && mp != "[SWAP]" {
             emitter.progress(&format!("Unmounting {} from {}", name, mp));
@@ -537,8 +432,7 @@ async fn release_data_drive(drive: &str, emitter: &SetupEmitter) {
         }
     }
 
-    // Step 4 — detach loopbacks. Cheap to ignore failures; -j prints the
-    // matching loop device(s) which we then `-d`.
+    // Detach loops backed by this drive.
     for (name, _mp, _fst) in &parts {
         let loops = sentryusb_shell::run("losetup", &["-j", name]).await.unwrap_or_default();
         for line in loops.lines() {
@@ -548,30 +442,28 @@ async fn release_data_drive(drive: &str, emitter: &SetupEmitter) {
         }
     }
 
-    // Step 5 — wipe FS signatures on each partition. Stops auto-probers
-    // (udisks2, blkid, autofs) from re-grabbing the partition between
-    // our umount and parted's BLKRRPART.
+    // Remove signatures so auto-probers do not reclaim partitions.
     for (name, _mp, _fst) in &parts {
         let _ = sentryusb_shell::run_with_timeout(
             Duration::from_secs(60), "wipefs", &["-afq", name],
         ).await;
     }
 
-    // Step 6 — drop kernel partition table mappings.
+    // Drop kernel partition mappings.
     let _ = sentryusb_shell::run("partx", &["-d", drive]).await;
 
-    // Step 7 — let pending udev events finish before we touch the disk.
+    // Drain pending udev events.
     let _ = sentryusb_shell::run("udevadm", &["settle", "--timeout=10"]).await;
 
-    // Step 8 — flush page cache and force a partition-table reread. If
-    // rereadpt still fails here, parted will give a clearer error.
+    // Flush and force a final partition-table reread.
     let _ = sentryusb_shell::run("blockdev", &["--flushbufs", drive]).await;
     let _ = sentryusb_shell::run("blockdev", &["--rereadpt", drive]).await;
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 }
 
-/// Ensure /etc/fstab has entries for backingfiles and mutable.
+/// Append LABEL= entries for backingfiles and mutable if absent, leaving any
+/// existing lines untouched, and create the mount points.
 async fn update_fstab() -> Result<()> {
     let fstab = std::fs::read_to_string("/etc/fstab").unwrap_or_default();
 
@@ -598,7 +490,6 @@ async fn update_fstab() -> Result<()> {
         info!("Updated /etc/fstab with backingfiles and mutable entries");
     }
 
-    // Ensure mount points exist
     let _ = std::fs::create_dir_all(BACKINGFILES_MOUNT);
     let _ = std::fs::create_dir_all(MUTABLE_MOUNT);
 
@@ -611,7 +502,7 @@ mod tests {
 
     #[test]
     fn strip_partition_suffix_handles_sd_style() {
-        // sd*: trailing digits attach directly to the device name.
+        // Trailing digits attach directly to the device name.
         assert_eq!(strip_partition_suffix("/dev/sda1"), "/dev/sda");
         assert_eq!(strip_partition_suffix("/dev/sda12"), "/dev/sda");
         assert_eq!(strip_partition_suffix("/dev/sdb"), "/dev/sdb");
@@ -619,7 +510,7 @@ mod tests {
 
     #[test]
     fn strip_partition_suffix_handles_p_style() {
-        // mmcblk/nvme/loop use a `p` separator before the digits.
+        // A `p` separator precedes the digits.
         assert_eq!(strip_partition_suffix("/dev/mmcblk0p1"), "/dev/mmcblk0");
         assert_eq!(strip_partition_suffix("/dev/mmcblk0p11"), "/dev/mmcblk0");
         assert_eq!(strip_partition_suffix("/dev/nvme0n1p2"), "/dev/nvme0n1");
@@ -628,7 +519,7 @@ mod tests {
 
     #[test]
     fn strip_partition_suffix_no_digits_returns_input() {
-        // Already a parent disk → unchanged.
+        // Already a parent disk, so unchanged.
         assert_eq!(strip_partition_suffix("/dev/sda"), "/dev/sda");
         assert_eq!(strip_partition_suffix("/dev/mmcblk0"), "/dev/mmcblk0");
     }

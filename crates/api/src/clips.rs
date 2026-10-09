@@ -1,4 +1,4 @@
-//! Clip listing and telemetry.
+//! Clip listing.
 
 use std::path::Path;
 
@@ -23,34 +23,9 @@ struct ClipEntry {
     date: String,
     path: String,
     files: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    event: Option<EventMeta>,
 }
 
-#[derive(Serialize, Deserialize)]
-struct EventMeta {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    timestamp: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    city: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    camera: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    latitude: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    longitude: Option<String>,
-}
-
-/// Read a category directory (today just `Continuous/`) and return its
-/// dated subfolders, newest first.
-///
-/// The snapshot symlink builder (`sentryusb_gadget::snapshot`)
-/// date-buckets the car's flat recording files into `YYYY-MM-DD/`
-/// folders under `/mutable/Recordings/Continuous`. `path().is_dir()`
-/// follows symlinks — required, since each entry is a symlink into a
-/// reflink snapshot.
+/// Dated category folders newest-first, following snapshot symlinks.
 fn enumerate_event_dirs(base: &Path) -> Vec<String> {
     let mut dirs: Vec<String> = match std::fs::read_dir(base) {
         Ok(entries) => entries
@@ -64,10 +39,8 @@ fn enumerate_event_dirs(base: &Path) -> Vec<String> {
     dirs
 }
 
-/// Build the `[{ name, clips, hasMore }]` JSON the Viewer expects for
-/// one category — each clip group is a dated subfolder of `.mp4` files
-/// plus an optional `event.json` (unused by GM; kept for profiles with
-/// event folders).
+/// Build the `[{ name, clips, hasMore }]` JSON the Viewer expects for one
+/// category. Each clip group is a dated subfolder of `.mp4` files.
 fn list_clips_in(
     teslacam_dir: &Path,
     category: &str,
@@ -104,15 +77,10 @@ fn list_clips_in(
         }
         files.sort();
 
-        let event = std::fs::read_to_string(dir_path.join("event.json"))
-            .ok()
-            .and_then(|s| serde_json::from_str::<EventMeta>(&s).ok());
-
         entries.push(ClipEntry {
             date: dir_name.clone(),
             path: format!("/Recordings/{}/{}", category, dir_name),
             files,
-            event,
         });
     }
 
@@ -123,7 +91,8 @@ fn list_clips_in(
     }])
 }
 
-/// GET /api/clips?category=Continuous&limit=20[&before=<date>]
+/// Query params: `category` (only `Continuous` is accepted), `limit` (default
+/// 20, capped at 200), and a `before` date cursor.
 pub async fn get_clips(
     State(_s): State<AppState>,
     Query(params): Query<ClipParams>,
@@ -134,11 +103,7 @@ pub async fn get_clips(
     }
     let limit = params.limit.unwrap_or(20).min(200);
 
-    // Each dated clip folder is read off disk, and the folders are
-    // symlinks into on-demand (autofs) snapshot mounts — the first read
-    // can block for seconds while the kernel mounts the image. Run it on
-    // the blocking pool so it can't stall the async reactor and drop the
-    // WebSocket heartbeat ("Reconnecting to DashUSB…").
+    // Autofs-backed clip reads may block; keep them off async workers.
     let category = category.to_string();
     let before = params.before;
     let response = tokio::task::spawn_blocking(move || {
@@ -167,9 +132,7 @@ mod tests {
         assert_eq!(dirs, vec!["2025-02-23_09-12-00", "2025-02-22_17-58-00"]);
     }
 
-    /// Continuous recordings under `/mutable/Recordings` are dated
-    /// `YYYY-MM-DD/` subfolders (the snapshot symlink builder
-    /// date-buckets them from the parsed filename timestamps).
+    /// Continuous recordings are date-bucketed under `/mutable/Recordings`.
     #[test]
     fn lists_continuous_clips_from_dated_subdirs() {
         let root = TempDir::new().unwrap();
@@ -202,7 +165,6 @@ mod tests {
                 "REAR_2026_07_17_T_19_34_53.mp4",
             ],
         );
-        // Continuous folders carry no event.json, so `event` is skipped.
         assert!(clips[0].get("event").is_none());
     }
 
@@ -246,9 +208,7 @@ mod tests {
         assert_eq!(value[0]["hasMore"].as_bool().unwrap(), false);
     }
 
-    /// The real `/mutable/Recordings` clip entries are symlinks into
-    /// reflink snapshots, so `enumerate_event_dirs` must follow
-    /// symlinked directories.
+    /// Clip directories may be symlinks into reflink snapshots.
     #[cfg(unix)]
     #[test]
     fn list_clips_follows_symlinked_dirs() {

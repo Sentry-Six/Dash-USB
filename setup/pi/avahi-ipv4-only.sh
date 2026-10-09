@@ -1,23 +1,9 @@
 #!/bin/bash
-#
-# avahi-ipv4-only.sh — make Avahi advertise <hostname>.local over IPv4 only.
-#
-# Why: Windows/Chrome prefer the AAAA answer for .local names. The Pi's
-# global SLAAC address rotates (IPv6 privacy extensions), so the advertised
-# AAAA goes stale and page loads stall until IPv4 fallback. Worse, Chrome
-# classifies a global IPv6 address as *public* address space, so the plain
-# http:// Web UI loaded through it gets Private Network Access blocks that
-# surface as "blocked by CORS policy: ... not a secure context ... more-
-# restricted address space" errors. Advertising the A record only fixes
-# both. Kernel/socket IPv6 on the device is untouched — this only changes
-# what mDNS hands out.
-#
-# Edits are section-aware (a use-ipv6 line under [publish] can keep avahi
-# from starting), dedupe repeated assignments, and append the section when
-# missing. Idempotent: prints "changed" or "unchanged" on stdout so callers
-# know whether an avahi-daemon restart is needed. Does NOT restart avahi.
-# Exits nonzero when the conf is missing or an edit fails — callers treat
-# that as a warning, not a fatal error.
+# Make Avahi advertise <hostname>.local over IPv4 only. Device IPv6 is
+# untouched; this changes only what mDNS hands out.
+# Rotating SLAAC AAAA records become stale, and Chrome treats global IPv6 as
+# public address space. Edits remain section-aware and atomic; output reports
+# whether the caller should restart Avahi.
 
 set -eu
 
@@ -31,14 +17,12 @@ fi
 
 CHANGED=0
 
-# set_key <section> <key> <value> — atomically rewrites $CONF in place.
-# Sets CHANGED=1 when the file was modified; returns nonzero only on a
-# real failure (never for "already correct").
+# Atomically set one INI key and update CHANGED.
 set_key() {
   local section="$1" key="$2" value="$3" tmp
   tmp=$(mktemp "$CONF.dashusb-tmp.XXXXXX") || return 1
-  # Carry the conf's owner/mode onto the temp file before filling it, so
-  # the final rename doesn't change the file's metadata.
+  # Carry the conf's owner and mode onto the temp file before filling it, so
+  # the rename doesn't change the file's metadata.
   cp -p -- "$CONF" "$tmp" || { rm -f -- "$tmp"; return 1; }
   if ! awk -v section="$section" -v key="$key" -v value="$value" '
     BEGIN { insec = 0; done = 0; foundsec = 0 }
@@ -79,10 +63,10 @@ set_key() {
     rm -f -- "$tmp"
     return 0
   fi
-  # Keep one pristine copy from before our first edit ever.
+  # Retain the pre-edit configuration once.
   [ -f "$CONF.dashusb-prev" ] || cp -p -- "$CONF" "$CONF.dashusb-prev" \
     || { rm -f -- "$tmp"; return 1; }
-  # Rename is atomic — a crash mid-edit leaves the previous conf intact.
+  # The rename is atomic: a crash mid-edit leaves the previous conf intact.
   mv -f -- "$tmp" "$CONF" || { rm -f -- "$tmp"; return 1; }
   CHANGED=1
 }

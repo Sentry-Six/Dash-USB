@@ -7,10 +7,8 @@ import { SetupProgress } from "@/components/setup/SetupProgress"
 import { AuthProvider, useAuth } from "@/hooks/useAuth"
 import { ErrorBoundary } from "@/components/ErrorBoundary"
 
-// Lazy routes — each page becomes its own JS chunk. Visiting the
-// Dashboard no longer pulls in xterm (Terminal) on first paint. The
-// Login screen is also lazy so unauthenticated users don't pay for
-// the shell.
+// One chunk per route keeps heavy deps (xterm, via Terminal) out of the
+// first paint, and keeps the shell off the unauthenticated Login path.
 const Dashboard = lazy(() => import("@/pages/Dashboard"))
 const Viewer = lazy(() => import("@/pages/Viewer"))
 const Files = lazy(() => import("@/pages/Files"))
@@ -36,8 +34,7 @@ export default function App() {
   )
 }
 
-/** Last-resort fallback: an uncaught render error anywhere would otherwise
- *  unmount the whole root and leave a blank page with no recovery. */
+/** Last-resort fallback for uncaught root render errors. */
 function CrashScreen({ error }: { error: Error }) {
   return (
     <div className="flex h-screen items-center justify-center bg-slate-950 p-4">
@@ -70,9 +67,7 @@ function AppContent() {
         if (data.setup_finished) {
           setAppState("ready")
         } else if (data.error) {
-          // Setup stopped on an error. Show a terminal "fix & retry" state
-          // instead of the perpetual "Setting Up" spinner — this is what a
-          // page reload after a config failure used to get stuck on.
+          // Replace the running spinner with the recoverable error state.
           setSetupError(data.error)
           setAppState("setup_error")
         } else if (data.setup_running) {
@@ -88,12 +83,7 @@ function AppContent() {
     return () => { cancelled = true }
   }, [])
 
-  // Poll while configuring — wait for setup to finish. The backend sets
-  // DASHUSB_SETUP_FINISHED *before* the 5-second delay and final
-  // `systemctl reboot`, so going straight to "ready" here would land the
-  // user on the dashboard just in time for the Pi to kill the network.
-  // Transition to "finalizing" first and let that effect wait for the
-  // reboot to actually happen.
+  // The finished marker precedes the final reboot; wait for that reboot.
   useEffect(() => {
     if (appState !== "configuring") return
     const interval = setInterval(async () => {
@@ -103,24 +93,18 @@ function AppContent() {
         if (data.setup_finished) {
           setAppState("finalizing")
         } else if (data.error) {
-          // Failed mid-run (e.g. a config validation bail) — surface it
-          // instead of spinning forever.
+          // Surface stopped setup instead of spinning indefinitely.
           setSetupError(data.error)
           setAppState("setup_error")
         }
       } catch {
-        // Server rebooting — keep polling
+        // Server rebooting: keep polling.
       }
     }, 3000)
     return () => clearInterval(interval)
   }, [appState])
 
-  // Finalizing: wait for the server to drop off (confirming the final
-  // reboot actually started) and then come back before redirecting to
-  // the dashboard. Without the `wentDown` gate we could bounce straight
-  // to "ready" on the very next poll and then lose the connection mid-
-  // navigation when the Pi finally reboots. Matches the same pattern
-  // the SetupWizard's own finalize effect uses.
+  // Require an outage before accepting a response as post-reboot.
   useEffect(() => {
     if (appState !== "finalizing") return
     let wentDown = false
@@ -137,7 +121,6 @@ function AppContent() {
     return () => clearInterval(id)
   }, [appState])
 
-  // Still checking
   if (appState === "loading") {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-950">
@@ -146,9 +129,6 @@ function AppContent() {
     )
   }
 
-  // Setup stopped on an error — terminal "fix & retry" state. Replaces the
-  // old behavior where a config failure left the UI on the "Setting Up"
-  // spinner forever while the device silently re-ran the doomed setup.
   if (appState === "setup_error") {
     const isConfig = setupError?.kind === "config"
     return (
@@ -199,7 +179,6 @@ function AppContent() {
     )
   }
 
-  // Setup is actively running (user refreshed during setup)
   if (appState === "configuring") {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-950">
@@ -223,9 +202,7 @@ function AppContent() {
     )
   }
 
-  // Setup finished but the Pi hasn't rebooted yet — stay on this screen
-  // until the network drops and recovers so we don't redirect the user
-  // into a dashboard that's about to vanish.
+  // Hold until the network drops and recovers after final setup.
   if (appState === "finalizing") {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-950">
@@ -245,7 +222,6 @@ function AppContent() {
     )
   }
 
-  // Setup not done — show wizard full screen
   if (appState === "setup") {
     return (
       <div className="min-h-screen bg-slate-950 p-4">
@@ -254,7 +230,6 @@ function AppContent() {
     )
   }
 
-  // Auth check — show login if required and not authenticated
   if (authState === "loading") {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-950">

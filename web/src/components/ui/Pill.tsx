@@ -1,7 +1,7 @@
 import type { ReactNode } from "react"
 import { cn } from "@/lib/utils"
 
-export type PillKind = "accent" | "amber" | "rose" | "sky" | "slate"
+type PillKind = "accent" | "slate"
 
 export function Pill({
   kind = "slate",
@@ -17,7 +17,7 @@ export function Pill({
   )
 }
 
-/** Animated dot for live indicators. Inherits colour from parent. */
+/** Inherits its colour from the parent. */
 export function LiveDot() {
   return <span className="dot-live" />
 }

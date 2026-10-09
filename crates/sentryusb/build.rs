@@ -1,19 +1,5 @@
-//! Guarantees the rust-embed source folder (`static/`) exists at compile
-//! time so a bare `cargo build` still compiles.
-//!
-//! The real web UI is produced by `npm run build` and copied into
-//! `static/` by `build.sh` and the CI release job. That output is
-//! gitignored and never committed: a stale *committed* copy silently
-//! shipped an old UI when someone ran `cargo build` without first
-//! rebuilding the frontend (the `static/` `.gitignore` entry exists for
-//! exactly this reason).
-//!
-//! When `static/` has no `index.html` (a fresh checkout, or a
-//! backend-only `cargo build`/`check`/`test`), write an unmistakable
-//! placeholder so the resulting binary serves a clear "frontend not
-//! built" page — never a stale or empty one. CI's frontend step runs
-//! before the cargo build, so by then `static/index.html` already
-//! exists and this script is a no-op (it never clobbers a real build).
+//! Ensure rust-embed always has a `static/` source. A backend-only build gets
+//! a clear placeholder; frontend builds replace it before compiling.
 
 use std::path::Path;
 
@@ -37,7 +23,6 @@ release job. Run <code>./build.sh</code> before building, or install an official
 release binary.</p></div></body></html>";
         let _ = std::fs::write(&index, placeholder);
     }
-    // Re-run when the embed folder changes so a wiped `static/` gets its
-    // placeholder back on the next build.
+    // Recreate the placeholder after a later static-directory cleanup.
     println!("cargo:rerun-if-changed=static");
 }

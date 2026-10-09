@@ -26,7 +26,7 @@ You can also pass a pre-built binary:
 ### Manual Method
 
 1. Clone pi-gen: `git clone https://github.com/RPi-Distro/pi-gen`
-2. From the pi-gen folder, run: `bash /path/to/Sentry-USB/pi-gen-sources/prepare.sh`
+2. From the pi-gen folder, run: `bash /path/to/Dash-USB/pi-gen-sources/prepare.sh`
 3. Optionally set `DASHUSB_BINARY=/path/to/dashusb-linux-arm64` to inject a local binary
 4. Run `./build-docker.sh` (Docker recommended) or `./build.sh`
 5. Image will be in `deploy/`. Flash with Raspberry Pi Imager.
@@ -51,4 +51,4 @@ Images are automatically built on every GitHub Release. You can also trigger a b
 2. Boots Pi → WiFi connects → Dash USB web server starts on port 80
 3. User opens `http://dashusb.local` → sees the dashboard
 4. Completes Setup Wizard → Pi reboots several times (10–20 min) → done
-5. Plugs into Tesla
+5. Plugs into the vehicle

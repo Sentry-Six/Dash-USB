@@ -1,23 +1,6 @@
-//! Push notification pairing + mobile app proxy.
-//!
-//! Owns the Pi's long-lived `(device_id, device_secret)` credentials used
-//! to authenticate against the Sentry Connect backend. Credentials live
-//! at `/root/.dashusb/notification-credentials.json` and are read back
-//! by `envsetup.sh` so the bash `send-push-message` wrapper can forward
-//! them to the Rust API's `/api/notifications/send` via `MOBILE_PUSH_*`
-//! env vars.
-//!
-//! Pairing-code flow:
-//!   1. iOS app hits `POST /api/notifications/generate-code`.
-//!   2. Server mints a 6-char alphanumeric code (no ambiguous chars),
-//!      registers it with the notification backend, and returns it plus
-//!      an expiry timestamp.
-//!   3. User types the code into the iOS app; the app hits the backend
-//!      directly to finalize pairing.
-//!
-//! Paired-device management endpoints are thin proxies — the Pi's only
-//! role is to authenticate with its device_secret; the backend owns the
-//! per-device state.
+//! Notification pairing, backend proxying, and runtime dispatch.
+//! Long-lived random device credentials are shared with the shell wrapper;
+//! paired-device state remains authoritative on the backend.
 
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
@@ -34,9 +17,8 @@ use crate::router::AppState;
 
 const CREDENTIALS_PATH: &str = "/root/.dashusb/notification-credentials.json";
 
-/// Alphanumeric charset excluding ambiguous glyphs (0/O, 1/I/l).
-/// Must match Go `pairingCodeCharset` exactly so codes generated on a
-/// mixed Rust/Go fleet are cross-verifiable.
+/// Alphanumeric charset excluding ambiguous glyphs (0/O, 1/I/l). Any client
+/// that validates a typed code locally must use this exact set.
 const PAIRING_CHARSET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const PAIRING_CODE_LEN: usize = 6;
 const PAIRING_EXPIRY: Duration = Duration::from_secs(5 * 60);
@@ -47,20 +29,14 @@ const MAX_ACTIVE_CODES: usize = 3;
 const DEFAULT_NOTIFICATION_BASE_URL: &str = "https://notifications.sentry-six.com";
 
 fn notification_base_url() -> String {
-    // 1. Env var first — covers dev overrides + any future systemd
-    //    EnvironmentFile= setup.
+    // Environment and systemd overrides take precedence.
     if let Ok(v) = std::env::var("SENTRY_NOTIFICATION_URL") {
         let trimmed = v.trim().trim_end_matches('/');
         if !trimmed.is_empty() {
             return trimmed.to_string();
         }
     }
-    // 2. Parse `dashusb.conf` directly. systemd starts the binary
-    //    without sourcing the config (no shell wrapper), so the env
-    //    var won't be set on a normal install — without this fallback,
-    //    the user's SENTRY_NOTIFICATION_URL is silently ignored and
-    //    every pairing/test/list call hits notifications.sentry-six.com
-    //    regardless of what the conf says.
+    // Normal systemd starts do not source dashusb.conf; read its override directly.
     let config_path = sentryusb_config::find_config_path();
     if let Ok((active, _)) = sentryusb_config::parse_file(config_path) {
         if let Some(v) = active.get("SENTRY_NOTIFICATION_URL") {
@@ -70,13 +46,10 @@ fn notification_base_url() -> String {
             }
         }
     }
-    // 3. Hardcoded default.
     DEFAULT_NOTIFICATION_BASE_URL.to_string()
 }
 
-// -----------------------------------------------------------------------------
 // Device credentials (long-lived)
-// -----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct NotificationCredentials {
@@ -86,16 +59,13 @@ struct NotificationCredentials {
 
 static CACHED_CREDS: OnceLock<NotificationCredentials> = OnceLock::new();
 
-/// Load or generate the Pi's notification credentials. Cached after the
-/// first call for the lifetime of the process — credentials do not
-/// change without explicit re-pairing, so refreshing mid-process would
-/// complicate nothing and cost us durability.
+/// Load or generate persistent notification credentials and cache them for the
+/// process lifetime.
 fn get_or_create_credentials() -> Option<&'static NotificationCredentials> {
     if let Some(existing) = CACHED_CREDS.get() {
         return Some(existing);
     }
 
-    // Try existing file first.
     if let Ok(data) = std::fs::read_to_string(CREDENTIALS_PATH) {
         if let Ok(c) = serde_json::from_str::<NotificationCredentials>(&data) {
             if !c.device_id.is_empty() && !c.device_secret.is_empty() {
@@ -105,16 +75,12 @@ fn get_or_create_credentials() -> Option<&'static NotificationCredentials> {
         }
     }
 
-    // Generate new credentials. 32 bytes → 64 hex chars for device_id;
-    // 64 bytes → 128 hex chars for device_secret. Generated
-    // `generateSecureToken(32)` / `generateSecureToken(64)`.
+    // device_id: 32 random bytes; device_secret: 64 random bytes.
     let device_id = random_hex(32);
     let device_secret = random_hex(64);
     let new = NotificationCredentials { device_id, device_secret };
 
-    // Remount rootfs rw so the write lands on real disk, not an overlay
-    // that gets wiped on reboot. Best-effort — `remountfs_rw` is a
-    // runtime helper installed by setup.
+    // Persist credentials beyond any writable overlay.
     let _ = std::process::Command::new("bash")
         .args(["-c", "/root/bin/remountfs_rw"])
         .status();
@@ -171,16 +137,12 @@ fn random_hex(byte_len: usize) -> String {
     hex::encode(buf)
 }
 
-/// Auto-enable `MOBILE_PUSH_ENABLED=true` in the config when the user
-/// first pairs a device. Runs in a background task so it doesn't block
-/// the pairing response — the code is already registered with the
-/// backend by that point, and this only affects the next notification
-/// dispatch.
+/// Enable mobile push asynchronously after pairing-code registration succeeds.
 async fn auto_enable_mobile_push_in_config() {
-    // Best-effort: parse the active-only map, flip the flag, write back.
-    // sentryusb_config::parse_file returns (active, commented); we only
-    // write the active set.
+    // Only the active set is written back; parse_file's commented map is
+    // dropped.
     tokio::task::spawn_blocking(|| {
+        let _guard = crate::notification_providers::PROVIDER_CONFIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let config_path = sentryusb_config::find_config_path();
         let (mut active, _) = match sentryusb_config::parse_file(config_path) {
             Ok(v) => v,
@@ -202,9 +164,7 @@ async fn auto_enable_mobile_push_in_config() {
     .ok();
 }
 
-// -----------------------------------------------------------------------------
 // Pairing codes (short-lived)
-// -----------------------------------------------------------------------------
 
 #[derive(Clone)]
 struct PairingCode {
@@ -236,7 +196,6 @@ fn to_rfc3339(t: SystemTime) -> String {
         .unwrap_or_default()
 }
 
-/// POST /api/notifications/generate-code
 pub async fn generate_pairing_code(
     State(_s): State<AppState>,
 ) -> (StatusCode, Json<serde_json::Value>) {
@@ -250,9 +209,7 @@ pub async fn generate_pairing_code(
         }
     };
 
-    // Mint the code under the lock, register with backend, then commit
-    // or roll back. Ordering: the user only sees a code if
-    // the backend has acknowledged it.
+    // Expose only codes acknowledged by the backend.
     let (code, expires_at) = {
         let mut codes = ACTIVE_CODES.lock().unwrap_or_else(|p| p.into_inner());
         clean_expired_codes(&mut codes);
@@ -285,9 +242,7 @@ pub async fn generate_pairing_code(
             )
         }
         Err(e) => {
-            // Roll back the pending code — we never gave it to the user,
-            // and leaving it would eat one of the three active slots
-            // until expiry.
+            // Release the active slot for a code the user never received.
             let mut codes = ACTIVE_CODES.lock().unwrap_or_else(|p| p.into_inner());
             codes.retain(|c| c.code != code);
             warn!("[notifications] Failed to register code {} with backend: {}", code, e);
@@ -311,9 +266,7 @@ async fn register_code_with_backend(
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
 
-    // Privacy: fingerprint deliberately omitted. The notification pairing
-    // identifies this device via its randomly-generated `device_id`; we no
-    // longer cross-link it to the telemetry-side hardware fingerprint.
+    // Pairing uses only its random device_id, never the telemetry fingerprint.
     let body = serde_json::json!({
         "device_id": creds.device_id,
         "device_secret": creds.device_secret,
@@ -340,15 +293,9 @@ async fn register_code_with_backend(
     Ok(())
 }
 
-// -----------------------------------------------------------------------------
 // Paired-device proxy endpoints
-// -----------------------------------------------------------------------------
 
-/// GET /api/notifications/paired-devices
-///
-/// Proxies `GET {base}/devices?device_id=X` with `X-Device-Secret`. The
-/// backend is authoritative — we don't keep a local device list, because
-/// a device can unpair from the iOS app without touching the Pi.
+/// Proxy the backend-authoritative paired-device list.
 pub async fn list_paired_devices(
     State(_s): State<AppState>,
 ) -> (StatusCode, Json<serde_json::Value>) {
@@ -386,7 +333,6 @@ pub async fn list_paired_devices(
     proxy_response(resp).await
 }
 
-/// DELETE /api/notifications/paired-devices/{id}
 pub async fn remove_paired_device(
     State(_s): State<AppState>,
     AxumPath(id): AxumPath<String>,
@@ -431,8 +377,8 @@ pub async fn remove_paired_device(
     proxy_response(resp).await
 }
 
-/// Forward the backend's status + JSON body. If the backend returned
-/// non-JSON (shouldn't happen but let's not 500 on our side), wrap it.
+/// Forward the backend's status and JSON body. A non-JSON response is wrapped
+/// rather than turned into a 500 here.
 async fn proxy_response(resp: reqwest::Response) -> (StatusCode, Json<serde_json::Value>) {
     let status = resp.status();
     let bytes = resp.bytes().await.unwrap_or_default();
@@ -443,15 +389,10 @@ async fn proxy_response(resp: reqwest::Response) -> (StatusCode, Json<serde_json
     (status_code, Json(body))
 }
 
-// -----------------------------------------------------------------------------
 // Test notification
-// -----------------------------------------------------------------------------
 
-/// POST /api/notifications/test
-///
-/// Sends a test notification to the mobile push backend only.
-/// Exclusively targets the
-/// Sentry Connect relay — other providers are not exercised here.
+/// Sends a test notification through the Sentry Connect relay only. No other
+/// provider is exercised.
 pub async fn send_test_notification(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
     let creds = match get_or_create_credentials() {
         Some(c) => c,
@@ -486,7 +427,7 @@ pub async fn send_test_notification(State(_s): State<AppState>) -> (StatusCode, 
             )
         }
         Err(e) => {
-            let msg = e.to_string();
+            let msg = sentryusb_notify::safe_provider_error(&e, &[&creds.device_secret]);
             warn!("[notifications] Test notification failed: {}", msg);
             (
                 StatusCode::BAD_GATEWAY,
@@ -497,13 +438,7 @@ pub async fn send_test_notification(State(_s): State<AppState>) -> (StatusCode, 
         }
     };
 
-    // Record in notification history so the web UI / Notification Center
-    // can show test results alongside real archive/temperature events.
-    // Matches the real /api/notifications/send path which calls
-    // record_event() after each send. Without this, users testing the
-    // pairing flow see "sent successfully" in the API response but the
-    // History tab stays empty — which incorrectly looks like the push
-    // never happened.
+    // Record tests through the same history path as runtime notifications.
     let mut results_map: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     results_map.insert(
@@ -515,7 +450,11 @@ pub async fn send_test_notification(State(_s): State<AppState>) -> (StatusCode, 
         timestamp: 0,
         event_type: "test".to_string(),
         title: "DashUSB Test".to_string(),
-        message: format!("Test notification from {} — push notifications are working!", hostname),
+        message: format!("Test notification from {}.", hostname),
+        summary: Some(format!("Test notification from {}.", hostname)),
+        provider_errors: if send_ok { Default::default() } else {
+            std::collections::HashMap::from([("sentry_connect".to_string(), error_msg)])
+        },
         providers: vec!["sentry_connect".to_string()],
         results: results_map,
     };
@@ -526,13 +465,9 @@ pub async fn send_test_notification(State(_s): State<AppState>) -> (StatusCode, 
     (status_code, Json(body))
 }
 
-// -----------------------------------------------------------------------------
-// Runtime send endpoint (called by `/root/bin/send-push-message` wrapper)
-// -----------------------------------------------------------------------------
-
 /// Body for `POST /api/notifications/send`.
 ///
-/// Mirrors the positional args of the bash `send-push-message`:
+/// Fields correspond to the `send-push-message` wrapper arguments:
 ///   * `title`, `message` — required.
 ///   * `type_hint` (`start` / `finish`) — for the live_activity branch
 ///     on mobile push.
@@ -543,12 +478,128 @@ pub async fn send_test_notification(State(_s): State<AppState>) -> (StatusCode, 
 pub struct SendNotificationRequest {
     pub title: String,
     pub message: String,
+    #[serde(default)]
+    pub summary: Option<String>,
     #[serde(default, rename = "type")]
     pub type_hint: Option<String>,
     #[serde(default)]
     pub notification_type: Option<String>,
     #[serde(default)]
     pub archive_total_count: Option<u32>,
+}
+
+#[cfg(test)]
+mod notification_summary_tests {
+    use super::*;
+
+    #[test]
+    fn notification_summary_is_external_only_and_optional_for_old_callers() {
+        let old: SendNotificationRequest = serde_json::from_value(serde_json::json!({
+            "title": "DashUSB", "message": "full diagnostic"
+        })).unwrap();
+        assert_eq!(outgoing_message(&old.message, old.summary.as_deref()), "full diagnostic");
+        let new: SendNotificationRequest = serde_json::from_value(serde_json::json!({
+            "title": "DashUSB", "message": "full diagnostic", "summary": "Short alert",
+            "type": "start", "notification_type": "archive_start", "archive_total_count": 13
+        })).unwrap();
+        assert_eq!(outgoing_message(&new.message, new.summary.as_deref()), "Short alert");
+        assert_eq!(new.message, "full diagnostic");
+        assert_eq!(new.archive_total_count, Some(13));
+        assert_eq!(new.type_hint.as_deref(), Some("start"));
+        assert_eq!(outgoing_message("full diagnostic", Some("  ")), "full diagnostic");
+    }
+
+    #[tokio::test]
+    async fn notification_webhook_receives_summary_but_history_keeps_details_and_failure() {
+        use std::io::{Read, Write};
+        for status in ["200 OK", "400 Bad Request"] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+                let mut raw = Vec::new();
+                let mut byte = [0u8; 1];
+                while !raw.ends_with(b"\r\n\r\n") {
+                    socket.read_exact(&mut byte).unwrap();
+                    raw.push(byte[0]);
+                }
+                let headers = String::from_utf8(raw).unwrap();
+                let size: usize = headers.lines().find_map(|line| {
+                    line.to_ascii_lowercase().strip_prefix("content-length:").map(|s| s.trim().parse().unwrap())
+                }).unwrap();
+                let mut body = vec![0; size];
+                socket.read_exact(&mut body).unwrap();
+                let response = "chat not found";
+                write!(socket, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap()
+            });
+            let config = sentryusb_notify::NotifyConfig {
+                webhook_enabled: true,
+                webhook_url: format!("http://{address}/private-capability"),
+                ..Default::default()
+            };
+            let request: SendNotificationRequest = serde_json::from_value(serde_json::json!({
+                "title":"DashUSB", "message":"archive-clips.sh exit code 23",
+                "summary":"Archive interrupted.", "notification_type":"archive_error", "type":"finish"
+            })).unwrap();
+            let (event, outcome) = dispatch_to_providers(&config, &request).await;
+            let payload = server.join().unwrap();
+            assert_eq!(payload["value1"], "DashUSB");
+            assert_eq!(payload["value2"], "Archive interrupted.");
+            assert_eq!(event.message, "archive-clips.sh exit code 23");
+            assert_eq!(event.summary.as_deref(), Some("Archive interrupted."));
+            assert_eq!(event.event_type, "archive_error");
+            assert_eq!(outcome.providers, ["webhook"]);
+            if status.starts_with("400") {
+                assert_eq!(event.results["webhook"], "error");
+                assert!(event.provider_errors["webhook"].contains("400"));
+                assert!(event.provider_errors["webhook"].contains("chat not found"));
+                assert_eq!(outcome.failures.len(), 1);
+            } else {
+                assert_eq!(event.results["webhook"], "ok");
+                assert!(event.provider_errors.is_empty());
+                assert!(outcome.failures.is_empty());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn notification_no_configured_provider_still_has_detailed_history() {
+        let request = serde_json::from_value(serde_json::json!({
+            "title": "DashUSB", "message": "full message"
+        })).unwrap();
+        let (event, outcome) = dispatch_to_providers(&Default::default(), &request).await;
+        assert!(outcome.providers.is_empty());
+        assert_eq!(event.message, "full message");
+        assert!(event.summary.is_none());
+    }
+
+    #[tokio::test]
+    async fn notification_transport_failure_is_returned_even_when_history_write_fails() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener); // A refused local connection; no external traffic.
+        let config = sentryusb_notify::NotifyConfig {
+            webhook_enabled: true, webhook_url: format!("http://{address}/private-token"),
+            ..Default::default()
+        };
+        let request = serde_json::from_value(serde_json::json!({
+            "title":"DashUSB", "message":"full archive exit code 23", "summary":"Archive interrupted."
+        })).unwrap();
+        let recorded = std::cell::Cell::new(false);
+        let outcome = dispatch_and_record_using(&config, &request, |event| {
+            assert_eq!(event.message, "full archive exit code 23");
+            assert!(event.provider_errors["webhook"].to_lowercase().contains("connect"));
+            assert!(!event.provider_errors["webhook"].contains("private-token"));
+            recorded.set(true);
+            Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "history is read-only"))
+        }).await;
+        assert!(recorded.get());
+        assert_eq!(outcome.providers, ["webhook"]);
+        assert_eq!(outcome.failures.len(), 1);
+        assert!(outcome.failures[0].to_lowercase().contains("connect"));
+    }
 }
 
 /// Per-provider outcome summary from a dispatch, pre-digested so callers
@@ -570,27 +621,61 @@ pub(crate) async fn dispatch_and_record(
     notification_type: Option<&str>,
     type_hint: Option<&str>,
     archive_total_count: Option<u32>,
+    summary: Option<&str>,
 ) -> Option<DispatchOutcome> {
     if !crate::notification_center::is_type_enabled(notification_type) {
         return None;
     }
 
     let config = sentryusb_notify::NotifyConfig::from_config();
-    let req = sentryusb_notify::NotifyRequest {
-        title,
-        message,
-        type_hint,
-        notification_type,
+    let request = SendNotificationRequest {
+        title: title.to_string(),
+        message: message.to_string(),
+        summary: summary.map(str::to_string),
+        notification_type: notification_type.map(str::to_string),
+        type_hint: type_hint.map(str::to_string),
         archive_total_count,
     };
-    let results = sentryusb_notify::send_to_all_with_context(&config, &req).await;
+    Some(dispatch_and_record_using(&config, &request, crate::notification_center::record_event).await)
+}
 
-    // Build the per-provider pass/fail maps the history event shape
-    // expects.
+async fn dispatch_and_record_using(
+    config: &sentryusb_notify::NotifyConfig,
+    request: &SendNotificationRequest,
+    record: impl FnOnce(crate::notification_center::NotificationEvent) -> std::io::Result<crate::notification_center::NotificationEvent>,
+) -> DispatchOutcome {
+    let (event, outcome) = dispatch_to_providers(config, request).await;
+    if let Err(e) = record(event) {
+        tracing::warn!("[notifications] Failed to record history event: {}", e);
+    }
+    outcome
+}
+
+/// Dispatch and describe the event separately from persistence, so a full or
+/// damaged history file cannot prevent a notification from being attempted.
+async fn dispatch_to_providers(
+    config: &sentryusb_notify::NotifyConfig,
+    request: &SendNotificationRequest,
+) -> (crate::notification_center::NotificationEvent, DispatchOutcome) {
+    let title = request.title.as_str();
+    let message = request.message.as_str();
+    let summary = request.summary.as_deref();
+    let notification_type = request.notification_type.as_deref();
+    let req = sentryusb_notify::NotifyRequest {
+        title,
+        message: outgoing_message(message, summary),
+        type_hint: request.type_hint.as_deref(),
+        notification_type,
+        archive_total_count: request.archive_total_count,
+    };
+    let results = sentryusb_notify::send_to_all_with_context(config, &req).await;
+
+    // Build per-provider history results.
     let mut providers: Vec<String> = Vec::with_capacity(results.len());
     let mut result_map: std::collections::HashMap<String, String> =
         std::collections::HashMap::with_capacity(results.len());
     let mut failures: Vec<String> = Vec::new();
+    let mut provider_errors = std::collections::HashMap::new();
     for (name, res) in &results {
         providers.push(name.clone());
         match res {
@@ -599,35 +684,32 @@ pub(crate) async fn dispatch_and_record(
             }
             Err(e) => {
                 result_map.insert(name.clone(), "error".to_string());
+                provider_errors.insert(name.clone(), e.to_string());
                 failures.push(format!("{}: {}", name, e));
             }
         }
     }
 
-    // Record history. Type falls back to "general" when unset — matches
-    // bash's `${notification_type:-general}`.
+    // Unspecified types are recorded as `general`.
     let event = crate::notification_center::NotificationEvent {
         id: String::new(),
         timestamp: 0,
         event_type: notification_type.unwrap_or("general").to_string(),
         title: title.to_string(),
         message: message.to_string(),
+        summary: summary.filter(|s| !s.trim().is_empty()).map(str::to_string),
+        provider_errors,
         providers: providers.clone(),
         results: result_map,
     };
-    if let Err(e) = crate::notification_center::record_event(event) {
-        tracing::warn!("[notifications] Failed to record history event: {}", e);
-    }
-
-    Some(DispatchOutcome { providers, failures })
+    (event, DispatchOutcome { providers, failures })
 }
 
 /// POST /api/notifications/send
 ///
 /// Single entry point used by the runtime scripts (archiveloop,
 /// temperature_monitor, post-archive-process.sh, …) via the
-/// `/root/bin/send-push-message` curl wrapper. Behaviourally mirrors
-/// the bash script it replaces:
+/// `/root/bin/send-push-message` curl wrapper:
 ///   1. Gate-check the notification_type against user settings. If
 ///      disabled, return `{"skipped": true, "reason": "type_disabled"}`
 ///      without touching any provider (no history event written).
@@ -644,6 +726,7 @@ pub async fn send_notification(
         notification_type,
         body.type_hint.as_deref(),
         body.archive_total_count,
+        body.summary.as_deref(),
     )
     .await
     else {
@@ -666,6 +749,10 @@ pub async fn send_notification(
             "failed": out.failures,
         })),
     )
+}
+
+fn outgoing_message<'a>(message: &'a str, summary: Option<&'a str>) -> &'a str {
+    summary.filter(|value| !value.trim().is_empty()).unwrap_or(message)
 }
 
 #[cfg(test)]

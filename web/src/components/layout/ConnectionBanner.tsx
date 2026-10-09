@@ -8,8 +8,8 @@ export function ConnectionBanner() {
   const [visible, setVisible] = useState(false)
   const [displayState, setDisplayState] = useState<ConnectionState | "connected-flash">(state)
   const [dismissed, setDismissed] = useState(false)
-  // Transition bookkeeping only (never rendered) — a ref, so the effect
-  // doesn't re-run on update and cancel the connected-flash timer.
+  // Transition bookkeeping only, never rendered. Must stay a ref: as state
+  // it would re-run the effect and cancel the connected-flash timer.
   const prevStateRef = useRef<ConnectionState>(state)
 
   useEffect(() => {
@@ -20,7 +20,6 @@ export function ConnectionBanner() {
     setDismissed(false)
 
     if (state === "connected" && wasDisconnected) {
-      // Show brief "Connected" flash
       setDisplayState("connected-flash")
       setVisible(true)
       const timer = setTimeout(() => setVisible(false), 3000)

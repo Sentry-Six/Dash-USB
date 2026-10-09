@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 import { Link } from "react-router-dom"
 import {
   Thermometer,
@@ -18,6 +18,8 @@ import {
 } from "lucide-react"
 import { api } from "@/lib/api"
 import { useUpdateAvailable } from "@/hooks/useUpdateAvailable"
+import { useWifiFirmware } from "@/hooks/useWifiFirmware"
+import { WifiFirmwareModal } from "@/components/dashboard/WifiFirmwareModal"
 import type { PiStatus, StorageBreakdown, ArchiveStatus } from "@/lib/api"
 import { formatUptime, formatBytes, formatTemp } from "@/lib/utils"
 import { useUnits } from "@/lib/units"
@@ -39,12 +41,6 @@ function getTempColor(milliC: number): string {
   return "#f87171"
 }
 
-function getStorageHalo(usedPct: number): Halo {
-  if (usedPct > 90) return "red"
-  if (usedPct > 75) return "amber"
-  return "accent"
-}
-
 function formatThroughput(bps: number): string {
   if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)} Mbps`
   if (bps >= 1_000) return `${Math.round(bps / 1_000)} Kbps`
@@ -62,8 +58,6 @@ function getWifiStrengthBars(strength: string): number {
   return 1
 }
 
-// Mini 4-bar signal indicator. Filled bars get the tile's accent colour;
-// the rest are a muted slate so the gauge reads at a glance.
 function WifiBars({ bars }: { bars: number }) {
   return (
     <span className="inline-flex items-end gap-[2px] align-middle" aria-label={`${bars}/4 bars`}>
@@ -78,48 +72,22 @@ function WifiBars({ bars }: { bars: number }) {
   )
 }
 
-interface ProcessProgress {
-  current: number
-  total: number
-}
-interface ProgressSample {
-  time: number
-  current: number
-}
-const RATE_WINDOW = 6
-
-function computeETA(
-  current: number,
-  total: number,
-  history: ProgressSample[]
-): string | null {
-  if (history.length < 2) return null
-  const oldest = history[0]
-  const newest = history[history.length - 1]
-  const elapsed = (newest.time - oldest.time) / 1000
-  const done = newest.current - oldest.current
-  if (done <= 0 || elapsed < 5) return null
-  const rate = done / elapsed
-  const remaining = (total - current) / rate
-  if (!isFinite(remaining) || remaining <= 0) return null
-  if (remaining < 60) return `~${Math.round(remaining)}s`
-  if (remaining < 3600) return `~${Math.round(remaining / 60)}m`
-  return `~${(remaining / 3600).toFixed(1)}h`
-}
-
 export default function Dashboard() {
   const [status, setStatus] = useState<PiStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [uptime, setUptime] = useState(0)
   const [storageBreakdown, setStorageBreakdown] =
     useState<StorageBreakdown | null>(null)
-  const [archiveProgress, setArchiveProgress] = useState<ProcessProgress | null>(null)
-  // Units come from the shared store — coherent defaults and live-synced with
-  // the Settings → Display & Units controls.
-  const { systemTempF: systemUseFahrenheit } = useUnits()
+  const [archiveStatus, setArchiveStatus] = useState<ArchiveStatus | null>(null)
+  const [archiveFresh, setArchiveFresh] = useState(false)
+  const [cancelPending, setCancelPending] = useState(false)
+  const [cancelError, setCancelError] = useState("")
+  const wifiFirmware = useWifiFirmware()
+  const [wifiFwOpen, setWifiFwOpen] = useState(false)
+  // Share live unit selection with Settings.
+  const { tempF: systemUseFahrenheit } = useUnits()
   const [rtcWarning, setRtcWarning] = useState<string | null>(null)
 
-  const archiveHistoryRef = useRef<ProgressSample[]>([])
   const updateInfo = useUpdateAvailable()
 
   useEffect(() => {
@@ -141,13 +109,10 @@ export default function Dashboard() {
       try {
         const d: ArchiveStatus = await api.getArchiveStatus()
         if (!mounted) return
-        if (d.phase === "archiving" && d.total != null && d.total > 0) {
-          setArchiveProgress({ current: d.current ?? 0, total: d.total })
-        } else {
-          setArchiveProgress(null)
-        }
+        setArchiveStatus(d)
+        setArchiveFresh(true)
       } catch {
-        /* non-critical */
+        if (mounted) setArchiveFresh(false)
       }
     }
 
@@ -173,9 +138,7 @@ export default function Dashboard() {
       })
       .catch(() => {})
 
-    // Pause every poller while the tab is hidden (phone in a pocket, a
-    // backgrounded tab) so the dashboard stops hitting the Pi and
-    // draining the phone battery for data nobody's looking at.
+    // Pause network polling while the page is hidden.
     const statusInterval = setInterval(() => {
       if (!document.hidden) fetchStatus()
     }, 2000)
@@ -185,14 +148,12 @@ export default function Dashboard() {
     const storageInterval = setInterval(() => {
       if (!document.hidden) fetchStorageBreakdown()
     }, 10000)
-    // Local-only counter, but still skip it while hidden so React isn't
-    // re-rendering the dashboard once a second for a backgrounded tab.
+    // Avoid background renders for the local uptime counter.
     const uptimeInterval = setInterval(() => {
       if (!document.hidden) setUptime((p) => p + 1)
     }, 1000)
 
-    // Snap the live tiles back to current the moment the tab is shown
-    // again, rather than waiting for the slower intervals.
+    // Refresh immediately when the tab becomes visible.
     const onVisible = () => {
       if (document.hidden) return
       fetchStatus()
@@ -211,17 +172,24 @@ export default function Dashboard() {
     }
   }, [])
 
-  useEffect(() => {
-    if (archiveProgress && archiveProgress.current > 0) {
-      const h = archiveHistoryRef.current
-      h.push({ time: Date.now(), current: archiveProgress.current })
-      if (h.length > RATE_WINDOW) h.shift()
-    } else {
-      archiveHistoryRef.current = []
+  async function cancelArchive() {
+    const cycle = archiveStatus?.cycle
+    if (!cycle || cycle.cancelling || cancelPending || !archiveFresh) return
+    setCancelPending(true)
+    setCancelError("")
+    try {
+      await api.cancelArchive(cycle.id)
+      setArchiveStatus(previous => previous?.cycle?.id === cycle.id
+        ? { ...previous, cycle: { ...previous.cycle, cancelling: true } }
+        : previous)
+    } catch (cause) {
+      setCancelError(cause instanceof Error ? cause.message : "Could not cancel this archive.")
+    } finally {
+      setCancelPending(false)
     }
-  }, [archiveProgress])
+  }
 
-  if (error) {
+  if (error && !status) {
     return (
       <div className="flex flex-col items-center justify-center py-20">
         <Activity className="mb-4 h-12 w-12 text-slate-600" />
@@ -246,7 +214,6 @@ export default function Dashboard() {
     )
   }
 
-  // Build banner stack — priority sorted (warn > update).
   const banners: BannerItem[] = []
   if (rtcWarning) {
     banners.push({
@@ -255,6 +222,34 @@ export default function Dashboard() {
       icon: <AlertTriangle className="h-4 w-4" />,
       title: "RTC Battery Warning",
       sub: rtcWarning,
+    })
+  }
+  if (wifiFirmware.installing || wifiFirmware.show || wifiFirmware.offerRevert || wifiFirmware.status?.reboot_pending) {
+    const fw = wifiFirmware.status
+    banners.push({
+      id: "wifi-firmware",
+      kind: wifiFirmware.show || fw?.reboot_pending ? "warn" : "update",
+      icon: <Wifi className="h-4 w-4" />,
+      title: wifiFirmware.installing
+        ? `Updating Wi-Fi firmware… ${fw?.install.progress ?? 0}%`
+        : fw?.reboot_pending ? "Wi-Fi firmware updated · restart pending"
+        : wifiFirmware.show ? (fw?.symptom_detected ? "Wi-Fi bus errors detected" : "Wi-Fi firmware update available")
+        : "Wi-Fi firmware updated",
+      sub: wifiFirmware.installing ? fw?.install.message
+        : fw?.reboot_pending ? "Restart to finish the update and restore normal Wi-Fi performance."
+        : wifiFirmware.show ? "Review the optional firmware update for this Pi."
+        : "You can restore the previous firmware if needed.",
+      action: (
+        <div className="flex shrink-0 gap-2">
+          <button onClick={() => setWifiFwOpen(true)} className="action-chip action-chip--accent">
+            {wifiFirmware.installing ? "View progress" : fw?.reboot_pending ? "Finish" : wifiFirmware.show ? "Review" : "Details"}
+            <ChevronRight className="h-3.5 w-3.5" />
+          </button>
+          {wifiFirmware.offerRevert && !fw?.reboot_pending && (
+            <button onClick={wifiFirmware.dismissRevert} className="action-chip">Dismiss</button>
+          )}
+        </div>
+      ),
     })
   }
   if (updateInfo.available) {
@@ -284,7 +279,11 @@ export default function Dashboard() {
         <p className="mt-0.5 text-sm text-slate-500">System overview and status</p>
       </div>
 
+      {error && <p role="status" className="text-xs text-amber-300">Reconnecting · showing the last update</p>}
       <BannerStack banners={banners} />
+      {wifiFwOpen && wifiFirmware.status && (
+        <WifiFirmwareModal status={wifiFirmware.status} onClose={() => setWifiFwOpen(false)} onRefresh={wifiFirmware.refresh} />
+      )}
 
       <div className="tile-grid">
         <SystemTile
@@ -298,16 +297,16 @@ export default function Dashboard() {
           breakdown={storageBreakdown}
         />
         <ActivityTile
-          archiveProgress={archiveProgress}
-          // eslint-disable-next-line react-hooks/refs -- ETA history is intentionally a ref (push-only, no re-render needed).
-          archiveEta={archiveProgress ? computeETA(archiveProgress.current, archiveProgress.total, archiveHistoryRef.current) : null}
+          status={archiveStatus}
+          fresh={archiveFresh}
+          cancelPending={cancelPending}
+          cancelError={cancelError}
+          onCancel={cancelArchive}
         />
       </div>
     </div>
   )
 }
-
-// ─── Tiles ──────────────────────────────────────────────────────────────────
 
 function SystemTile({
   status,
@@ -343,11 +342,10 @@ function SystemTile({
           value={`${status.fan_speed} RPM`}
         />
       )}
-      {/* Three-state: "Connected" needs the host link up ("configured"),
-          not just the gadget bound in configfs — a bound gadget with a
-          dead link is exactly how the car shows an error while the old
-          two-state pill stayed green. Label and color derive from ONE
-          state value so they can't drift. */}
+      {typeof status.supply_voltage === "number" && Number.isFinite(status.supply_voltage) && status.supply_voltage > 0 && (
+        <Row icon={<Zap className="h-3.5 w-3.5" />} label="5V supply" value={`${status.supply_voltage.toFixed(2)} V`} />
+      )}
+      {/* Host connectivity requires UDC configured, not merely configfs binding. */}
       <Row
         icon={<HardDrive className="h-3.5 w-3.5" />}
         label="USB Drives"
@@ -448,9 +446,7 @@ function NetworkTile({ status }: { status: PiStatus }) {
           )}
         </>
       ) : (
-        // Always render an Ethernet row — keeps tile balanced when WiFi is
-        // present but ethernet isn't (or vice versa). Muted styling signals
-        // disconnected state without taking the tile's halo over.
+        // Preserve the tile row while showing disconnected Ethernet as muted.
         <div className="tile-row">
           <span className="inline-flex text-slate-600">
             <EthernetPort className="h-3.5 w-3.5" />
@@ -470,9 +466,11 @@ function StorageTile({
   status: PiStatus
   breakdown: StorageBreakdown | null
 }) {
-  const totalSpace = parseInt(status.total_space)
-  const freeSpace = parseInt(status.free_space)
+  const totalSpace = Math.max(0, parseInt(status.total_space) || 0)
+  const freeSpace = Math.max(0, Math.min(totalSpace, parseInt(status.free_space) || 0))
   const usedSpace = totalSpace - freeSpace
+  const health = status.storage_health
+  const storageHalo: Halo = health?.state === "fail" ? "red" : health?.state === "warn" ? "amber" : health?.state === "recovering" ? "blue" : "accent"
   const usedPct = totalSpace > 0 ? (usedSpace / totalSpace) * 100 : 0
   const usedPctStr = totalSpace > 0 ? `${Math.round(usedPct)}%` : "0%"
   const snaps = parseInt(status.num_snapshots)
@@ -480,7 +478,6 @@ function StorageTile({
   const segments = breakdown
     ? [
         { label: "Dashcam", size: breakdown.cam_size, color: "#3b82f6" },
-        { label: "Music", size: breakdown.music_size, color: "#a855f7" },
         { label: "Snapshots", size: breakdown.snapshots_size, color: "#6366f1" },
       ].filter((s) => s.size > 0)
     : []
@@ -488,20 +485,18 @@ function StorageTile({
   return (
     <StatusTile
       icon={<HardDrive className="h-4 w-4" />}
-      halo={getStorageHalo(usedPct)}
+      halo={storageHalo}
       title="Storage"
     >
+      {health && <p className={`text-[11px] ${health.state === "fail" ? "text-red-400" : health.state === "warn" ? "text-amber-300" : "text-slate-400"}`} role="status">{health.message}</p>}
       <div className="flex items-baseline gap-1.5">
         <span className="text-sm font-semibold text-slate-100">
-          {formatBytes(usedSpace)}
+          {totalSpace > 0 ? formatBytes(usedSpace) : "Capacity unavailable"}
         </span>
-        <span className="text-[11px] text-slate-500">
+        {totalSpace > 0 && <span className="text-[11px] text-slate-500">
           / {formatBytes(totalSpace)} · {usedPctStr} used
-        </span>
-        {/* Reassurance tooltip — high storage usage triggers panic
-            for new users ("96% used!"), but Dash USB rotates
-            snapshots automatically as space gets tight. CSS-only
-            group-hover so we don't need React state for it. */}
+        </span>}
+        {/* Explain high usage because snapshots rotate as space tightens. */}
         <span className="group relative inline-flex items-center self-center">
           <Info
             aria-label="About storage management"
@@ -510,14 +505,13 @@ function StorageTile({
           <span className="pointer-events-none absolute right-0 top-full z-50 mt-2 w-64 rounded-xl border border-white/10 bg-slate-900 p-3 text-[11px] leading-relaxed text-slate-400 opacity-0 shadow-xl transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
             <span className="absolute bottom-full right-3 block border-4 border-transparent border-b-slate-900" />
             Dash USB automatically manages your storage. Old
-            snapshots are deleted when space is needed — you don't
-            need to manually free up space. Low remaining space is
-            normal and expected, especially with dashcam footage
-            being continuously saved.
+            snapshots are deleted when space is needed. High usage can be normal
+            while recording. The storage health message reports whether cleanup
+            needs attention.
           </span>
         </span>
       </div>
-      {breakdown && segments.length > 0 ? (
+      {breakdown && breakdown.total_space > 0 && segments.length > 0 ? (
         <>
           <div className="seg-bar">
             {segments.map((s) => (
@@ -553,14 +547,14 @@ function StorageTile({
             </div>
           </div>
         </>
-      ) : (
+      ) : totalSpace > 0 ? (
         <div className="bar">
           <div
             className="bg-gradient-to-r from-blue-500 to-blue-400"
             style={{ width: `${usedPct}%` }}
           />
         </div>
-      )}
+      ) : null}
       <TileDivider />
       <Row
         icon={<Camera className="h-3.5 w-3.5" />}
@@ -580,90 +574,69 @@ function StorageTile({
 }
 
 function ActivityTile({
-  archiveProgress,
-  archiveEta,
+  status,
+  fresh,
+  cancelPending,
+  cancelError,
+  onCancel,
 }: {
-  archiveProgress: ProcessProgress | null
-  archiveEta: string | null
+  status: ArchiveStatus | null
+  fresh: boolean
+  cancelPending: boolean
+  cancelError: string
+  onCancel: () => void
 }) {
-  const archiving = archiveProgress != null
+  const archiving = status?.phase === "archiving" || !!status?.cycle
+  const cancelling = cancelPending || !!status?.cycle?.cancelling
+  const total = status?.total ?? 0
+  const current = Math.max(0, status?.current ?? 0)
+  const pct = total > 0 ? Math.min(100, Math.max(0, current / total * 100)) : 0
+  const estimate = status?.eta_seconds
+  const seconds = typeof estimate === "number" && Number.isFinite(estimate) && estimate >= 0 ? estimate : null
+  const eta = !fresh ? "Waiting for connection…"
+    : status?.eta_state === "stalled" ? "Waiting for transfer progress…"
+    : status?.eta_state === "estimating" ? "Estimating…"
+    : status?.eta_state === "unavailable" ? "Estimate unavailable"
+    : seconds == null ? "Estimate unavailable"
+    : seconds < 60 ? "Less than a minute remaining"
+    : seconds < 3600 ? `About ${Math.ceil(seconds / 60)} min remaining`
+    : `About ${(seconds / 3600).toFixed(1)} h remaining`
 
   return (
     <div className="relative flex flex-col">
-      {/* Phase pill — pinned to the card's top-right corner; only
-          renders during an actual archive run. */}
       {archiving && (
         <div className="pointer-events-none absolute right-2 top-2 z-10">
-          <Pill kind="accent">
-            <LiveDot /> archiving
-          </Pill>
+          <Pill kind="accent"><LiveDot /> {cancelling ? "cancelling" : "archiving"}</Pill>
         </div>
       )}
-      <StatusTile
-        icon={<Zap className="h-4 w-4" />}
-        halo="violet"
-        title="Activity"
-        className="flex-1"
-      >
-        {archiveProgress && archiveProgress.total > 0 ? (
+      <StatusTile icon={<Zap className="h-4 w-4" />} halo="violet" title="Activity" className="flex-1">
+        {archiving ? (
           <>
-            <p className="t-xs">
-              Archiving recordings to your configured destination.
+            <p className="t-xs">{cancelling ? "Stopping this archive safely…" : "Archiving recordings to your configured destination."}</p>
+            {total > 0 && (
+              <>
+                <div className="flex items-center justify-between text-[10px] text-slate-500 t-num">
+                  <span>{current.toLocaleString()} / {total.toLocaleString()} files</span><span>{Math.round(pct)}%</span>
+                </div>
+                <div className="bar" role="progressbar" aria-label="Archive progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(pct)}>
+                  <div className="bg-gradient-to-r from-emerald-500 to-emerald-400" style={{ width: `${pct}%` }} />
+                </div>
+              </>
+            )}
+            {!cancelling && <p className="text-[11px] text-slate-400">{eta}</p>}
+            <button className="action-chip self-start disabled:cursor-not-allowed disabled:opacity-50" disabled={cancelling || !fresh || !status?.cycle?.id} onClick={onCancel}>
+              {cancelling ? "Cancelling…" : "Cancel archive"}
+            </button>
+            <p className="text-[10px] text-slate-500">
+              {!status?.cycle?.id ? "Cancellation becomes available when this cycle is ready."
+                : "Cancels this cycle. Remaining footage is kept, and future archives still run automatically."}
             </p>
-            <ProgressBlock
-              current={archiveProgress.current}
-              total={archiveProgress.total}
-              eta={archiveEta}
-              color="emerald"
-            />
+            {cancelError && <p role="alert" className="text-xs text-red-400">{cancelError}</p>}
           </>
         ) : (
-          <p className="t-xs">
-            Idle. Snapshots are captured continuously; archiving starts
-            automatically when the archive destination is reachable.
-          </p>
+          <p className="t-xs">{!status ? "Checking archive status…" : status.phase === "cancelled" ? "Archive cancelled. The next cycle starts automatically when ready." : "Idle. Snapshots are captured continuously; archiving starts automatically when the archive destination is reachable."}</p>
         )}
       </StatusTile>
     </div>
-  )
-}
-
-function ProgressBlock({
-  current,
-  total,
-  eta,
-  color,
-}: {
-  current: number
-  total: number
-  eta: string | null
-  color: "emerald" | "blue"
-}) {
-  const pct = (current / total) * 100
-  const grad =
-    color === "emerald"
-      ? "bg-gradient-to-r from-emerald-500 to-emerald-400"
-      : "bg-gradient-to-r from-blue-500 to-blue-400"
-  return (
-    <>
-      <div className="flex items-center justify-between text-[10px] text-slate-500 t-num">
-        <span>
-          {current.toLocaleString()} / {total.toLocaleString()}
-          {eta && (
-            <span
-              className={`ml-1.5 ${
-                color === "emerald" ? "text-emerald-400/70" : "text-blue-400/70"
-              }`}
-            >
-              {eta}
-            </span>
-          )}
-        </span>
-        <span>{Math.round(pct)}%</span>
-      </div>
-      <div className="bar">
-        <div className={grad} style={{ width: `${pct}%` }} />
-      </div>
-    </>
   )
 }

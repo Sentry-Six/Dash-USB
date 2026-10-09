@@ -12,7 +12,7 @@ import { SecurityStep } from "./steps/SecurityStep"
 import { AdvancedStep } from "./steps/AdvancedStep"
 import { ReviewStep } from "./steps/ReviewStep"
 
-export interface SetupFormData {
+interface SetupFormData {
   [key: string]: string
 }
 
@@ -29,21 +29,15 @@ export interface StepProps {
   setupAlreadyFinished: boolean
 }
 
-function networkError(data: SetupFormData): string | null {
-  if (data.AP_SSID && (data.AP_PASS ?? "").length < 8)
-    return "WiFi Access Point password must be at least 8 characters."
-  return null
-}
-
 function storageError(data: SetupFormData): string | null {
-  // CAM_SIZE = 0 silently disables the dashcam drive — which is the entire
-  // point of this device — and downstream phases happily proceed against
-  // an empty cam disk image, leaving the user with a "complete" install
-  // that does nothing. Treat it as a hard error so the user sees the
-  // mistake before kicking off setup.
+  // Zero disables the image, which is invalid for this setup flow.
   const cam = parseFloat(data.CAM_SIZE ?? "0")
   if (!Number.isFinite(cam) || cam <= 0) {
     return "Dashcam drive size must be greater than 0 GB."
+  }
+  // GM refuses drives under 64 GB (needs 64 GB total / 32 GB available).
+  if (cam < 64) {
+    return "GM requires a dashcam drive of at least 64 GB."
   }
   return null
 }
@@ -63,11 +57,7 @@ function archiveError(data: SetupFormData): string | null {
   } else if (system === "rclone") {
     if (!data.RCLONE_DRIVE?.trim()) return "Remote Name is required."
     if (!data.RCLONE_PATH?.trim()) return "Remote Path is required."
-    // archiveloop's connectivity probe pings $ARCHIVE_SERVER. For rclone
-    // the remote name (RCLONE_DRIVE) isn't a hostname, so the wizard
-    // collects an explicit IP/hostname here. Without it the loop sits
-    // forever on "Waiting for archive to be reachable..." — same trap
-    // rsync hit before ARCHIVE_SERVER was backfilled server-side.
+    // Rclone remote names cannot serve as archiveloop's connectivity host.
     if (!data.ARCHIVE_SERVER?.trim()) return "Archive Server (for connectivity check) is required for rclone."
   } else if (system === "nfs") {
     if (!data.ARCHIVE_SERVER?.trim()) return "NFS Server is required."
@@ -77,10 +67,7 @@ function archiveError(data: SetupFormData): string | null {
 }
 
 function notificationsError(data: SetupFormData): string | null {
-  // Notifications no longer use a per-provider checkbox — a provider is
-  // considered "enabled" when any of its required fields has content.
-  // Flag partial fills so a Telegram chat ID without a bot token still
-  // surfaces as an error.
+  // Reject partially configured providers.
   const requiredPerProvider: [string, string[]][] = [
     ["Pushover", ["PUSHOVER_USER_KEY", "PUSHOVER_APP_KEY"]],
     ["Gotify", ["GOTIFY_DOMAIN", "GOTIFY_APP_TOKEN"]],
@@ -102,12 +89,7 @@ function notificationsError(data: SetupFormData): string | null {
 }
 
 function securityError(data: SetupFormData): string | null {
-  // Both fields must be set together, or both must be empty (auth disabled).
-  // Filling only one silently breaks login — username-only enables the auth
-  // gate but leaves the user unable to authenticate; password-only is
-  // ignored entirely because the backend keys auth on having a username.
-  // Validate both directions so the user can't escape the Security step
-  // in a half-configured state that locks them out post-setup.
+  // Authentication requires both credentials or neither.
   const u = data.WEB_USERNAME?.trim() ?? ""
   const p = data.WEB_PASSWORD?.trim() ?? ""
   if (u && !p) return "Web Password is required when a Web Username is set."
@@ -116,11 +98,7 @@ function securityError(data: SetupFormData): string | null {
 }
 
 function getStepError(stepIdx: number, data: SetupFormData): string | null {
-  // Order: welcome, privacy, network, storage, archive, notifications,
-  // security, advanced, review.
   switch (stepIdx) {
-    // case 1 is the Privacy step — no validation (opt-in is independent of wizard apply)
-    case 2: return networkError(data)
     case 3: return storageError(data)
     case 4: return archiveError(data)
     case 5: return notificationsError(data)
@@ -129,17 +107,9 @@ function getStepError(stepIdx: number, data: SetupFormData): string | null {
   }
 }
 
-// ── Destructive change detection ──
-// These settings cause data loss when changed because the underlying disk
-// images must be deleted and recreated with the new size/filesystem. The
-// backingfiles partition itself is preserved across config-only re-runs
-// (the partition wipe used to fire on missing fstab entries — fixed in
-// crates/setup/src/partition.rs setup_data_drive). Snapshots also
-// survive size changes (fixed in disk_images.rs — was being wiped on
-// every CAM_SIZE change).
+// These changes recreate the camera image but preserve backingfiles snapshots.
 const DESTRUCTIVE_SIZE_KEYS: Record<string, string> = {
   CAM_SIZE: "Dashcam drive (live clips inside)",
-  MUSIC_SIZE: "Music drive",
 }
 
 interface DestructiveChange {
@@ -157,17 +127,11 @@ function detectDestructiveChanges(
   current: SetupFormData,
   original: SetupFormData | undefined,
 ): DestructiveChange[] {
-  // No original config = first-time setup, nothing to lose
   if (!original) return []
 
   const changes: DestructiveChange[] = []
 
-  // Check if DATA_DRIVE changed — this points setup at a different external
-  // disk, formatting the new one. The OLD drive is left untouched (the Rust
-  // setup_data_drive refuses to proceed if the old drive is still attached
-  // with the DashUSB labels, prompting the user to disconnect it first
-  // so we never overwrite their old data). Treat as the loudest possible
-  // warning since the user is asking to format a different physical disk.
+  // A new DATA_DRIVE selects a physical disk that setup will format.
   const oldDataDrive = (original.DATA_DRIVE ?? "").trim()
   const newDataDrive = (current.DATA_DRIVE ?? "").trim()
   if (oldDataDrive && newDataDrive && oldDataDrive !== newDataDrive) {
@@ -182,15 +146,11 @@ function detectDestructiveChanges(
     })
   }
 
-  // Check individual size changes
   for (const [key, label] of Object.entries(DESTRUCTIVE_SIZE_KEYS)) {
     const newVal = normalizeSizeValue(current[key])
     const oldVal = normalizeSizeValue(original[key])
     if (newVal !== oldVal) {
-      // Size-change recreates that drive's image only. Sibling drives
-      // and the snapshots directory are preserved (FAT32/exFAT have no
-      // reliable Linux-side resize tool, so the affected image itself
-      // gets a fresh mkfs — same as teslausb has always done).
+      // Image files are recreated because their filesystems are not resized.
       const reason =
         key === "CAM_SIZE"
           ? `CAM_SIZE changed from ${oldVal || "0"}G to ${newVal}G. Live clips currently inside the dashcam drive will be lost. Snapshots (in /backingfiles/snapshots) and other drives are not affected.`
@@ -204,8 +164,7 @@ function detectDestructiveChanges(
 
 const steps: StepDef[] = [
   { id: "welcome", title: "Welcome", component: WelcomeStep },
-  // Privacy disclosure runs right after Welcome so the user sees what's
-  // sent before anything outbound happens during setup (Art. 13 timing).
+  // Show the data-flow disclosure before setup can send outbound traffic.
   { id: "privacy", title: "Privacy", component: PrivacyStep },
   { id: "network", title: "Network", component: NetworkStep },
   { id: "storage", title: "Storage", component: StorageStep },
@@ -225,10 +184,9 @@ type SetupPhase = "wizard" | "applying" | "running" | "rebooting" | "finalizing"
 
 export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
   const [currentStep, setCurrentStep] = useState(0)
-  // Defaults for fields that appear pre-selected in the UI but may not exist
-  // in the config file yet. Without this, untouched defaults never get saved.
+  // Persist UI defaults even when the config does not yet contain them.
   const defaults: SetupFormData = {
-    // GM requires a >=64 GB FAT32 drive with 32 GB available.
+    // GM requires a FAT32 drive of at least 64 GB.
     CAM_SIZE: "64",
     ARCHIVE_SYSTEM: "cifs",
     TEMPERATURE_UNIT: "C",
@@ -238,39 +196,21 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
     RTC_TRICKLE_CHARGE: "false",
   }
   const [formData, setFormData] = useState<SetupFormData>({ ...defaults, ...(initialData ?? {}) })
-  // Mirror formData into a ref so handleApply can read the latest value
-  // after forcing a blur on the active input — the blur-triggered
-  // onChange schedules a setState, and the ref is updated post-render
-  // so we can read the committed value before kicking off doApply.
+  // Lets Apply read a value committed by blur in the same click.
   const formDataRef = useRef<SetupFormData>(formData)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [phase, setPhase] = useState<SetupPhase>("wizard")
   const [setupMessage, setSetupMessage] = useState("")
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  // Snapshot of the config as it was when the wizard opened (for detecting destructive changes)
   const originalDataRef = useRef<SetupFormData | undefined>(initialData)
   const [destructiveWarning, setDestructiveWarning] = useState<DestructiveChange[] | null>(null)
-  // Tracks whether the user restored from a backup (affects warning dialog wording)
   const [isRestoreFlow, setIsRestoreFlow] = useState(false)
-  // True when DASHUSB_SETUP_FINISHED exists on disk — i.e. the user is
-  // re-running the wizard against an already-set-up system. Used to
-  // (a) show a green "data preserved" banner when no destructive change
-  // is staged, and (b) phrase apply-time copy as a re-configuration
-  // rather than a fresh install.
+  // Distinguish reconfiguration from first-time setup messaging.
   const [setupAlreadyFinished, setSetupAlreadyFinished] = useState(false)
-  // Pre-flight space check: when the user proposes drive sizes that
-  // exceed available backingfiles space, the server returns the gap
-  // and we surface it inline (with a deep-link to the snapshot UI)
-  // instead of letting the apply call wedge mid-setup with the same
-  // bail!. Null means "no current rejection".
   const [spaceRejection, setSpaceRejection] = useState<string | null>(null)
 
-  // Keep formDataRef in sync with formData on every render. Load-bearing:
-  // handleApply blurs the active input, waits a frame for the onChange
-  // setState to commit, then reads this ref — so "edit size field, click
-  // Apply without tabbing out" still applies the typed value. Do not move
-  // this into an effect without testing that flow.
+  // Must update during render; an effect runs too late after Apply's blur.
   // eslint-disable-next-line react-hooks/refs
   formDataRef.current = formData
 
@@ -280,9 +220,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
 
   const handleBatchChange = useCallback((updates: Record<string, string>) => {
     setFormData((prev) => ({ ...prev, ...updates }))
-    // When restoring from a backup, update the baseline so destructive change
-    // detection compares against the backup values (not the fresh SD card defaults).
-    // The WelcomeStep sets _restore_baseline when a backup restore completes.
+    // Compare post-restore edits against restored values, not fresh defaults.
     if (updates._restore_baseline === "true") {
       const baseline = { ...updates }
       delete baseline._restore_baseline
@@ -291,13 +229,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
     }
   }, [])
 
-  // Detect whether the user is re-running the wizard against an already-
-  // completed setup. The Rust backend writes DASHUSB_SETUP_FINISHED at
-  // the end of a successful run; /api/setup/status surfaces the marker.
-  // Knowing this lets us show a clear "data preserved" banner so a user
-  // who's just changing ARCHIVE_SERVER doesn't worry that hitting Apply
-  // will format anything (it won't, after the partition.rs idempotency
-  // fix and the runner's already_finished guard).
+  // Detect completed installations for non-destructive reconfiguration copy.
   useEffect(() => {
     let cancelled = false
     fetch("/api/setup/status")
@@ -306,12 +238,11 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
         if (cancelled) return
         setSetupAlreadyFinished(Boolean(data?.setup_finished))
       })
-      .catch(() => { /* status endpoint flake → assume fresh install */ })
+      .catch(() => { /* Assume a fresh install when status is unavailable. */ })
     return () => { cancelled = true }
   }, [])
 
 
-  // Poll setup status while running
   useEffect(() => {
     if (phase !== "running" && phase !== "rebooting") return
     pollRef.current = setInterval(async () => {
@@ -319,23 +250,17 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
         const res = await fetch("/api/setup/status")
         const data = await res.json()
         if (data.error) {
-          // Setup stopped on an error (e.g. a config validation bail).
-          // Surface it from the polled status — don't mistake the
-          // stopped-not-running state for a mid-flow reboot.
+          // Do not mistake a stopped setup for a reboot disconnect.
           setPhase("error")
           setSetupMessage(data.error.message || "Setup failed. Check the log below.")
           if (pollRef.current) clearInterval(pollRef.current)
         } else if (data.setup_finished) {
-          // Setup scripts are done — the Pi will do a final reboot.
-          // Transition to "finalizing" which keeps the spinner and
-          // waits for the server to come back before showing dashboard.
+          // Keep finalizing until the last reboot returns.
           setPhase("finalizing")
           setSetupMessage("Dash USB has finished setting up. The device is now rebooting one last time...")
           if (pollRef.current) clearInterval(pollRef.current)
         } else if (data.setup_running && phase === "rebooting") {
-          // Server is back and setup is still going — restore the live
-          // progress view. Recovers from transient blips (service restart,
-          // heavy I/O) that would otherwise leave the UI stuck in "rebooting".
+          // Recover from service/I/O disconnects that were not reboots.
           setPhase("running")
           setSetupMessage("Setup is running. The device will reboot several times during this process — this is normal.")
         } else if (!data.setup_running && phase === "running") {
@@ -343,7 +268,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
           setSetupMessage("System is rebooting to continue setup. This page will reconnect automatically.")
         }
       } catch {
-        // Server unreachable — likely rebooting, which is expected
+        // Unreachability is expected during setup reboots.
         if (phase !== "rebooting") {
           setPhase("rebooting")
           setSetupMessage("Waiting for device to come back online after reboot...")
@@ -353,10 +278,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [phase])
 
-  // Poll during finalizing — wait for server to go DOWN then come back UP.
-  // Without the wentDown gate, the first poll can succeed while the Pi is
-  // still shutting down (exec reboot takes a few seconds to kill the server),
-  // causing a premature "Setup Complete!" before the Pi has actually rebooted.
+  // Require a confirmed outage before treating a response as post-reboot.
   useEffect(() => {
     if (phase !== "finalizing") return
     let wentDown = false
@@ -364,13 +286,11 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
       try {
         const res = await fetch("/api/setup/status")
         if (res.ok && wentDown) {
-          // Server is back up after confirmed reboot
           setPhase("complete")
           setSetupMessage("Setup completed successfully! Your device is ready.")
           clearInterval(poll)
         }
       } catch {
-        // Server unreachable — Pi is rebooting
         wentDown = true
         setSetupMessage("Waiting for Dash USB to come back online after final reboot...")
       }
@@ -378,7 +298,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
     return () => clearInterval(poll)
   }, [phase])
 
-  // Also listen to WebSocket for real-time updates (auto-reconnect on drop)
+  // Stream progress with reconnects while polling remains the fallback.
   useEffect(() => {
     if (phase !== "running" && phase !== "applying" && phase !== "rebooting") return
     let ws: WebSocket | null = null
@@ -434,22 +354,18 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
   const StepComponent = steps[currentStep].component
   const currentStepError = getStepError(currentStep, formData)
 
-  // Core apply logic — sends the given data to the server and triggers setup.
   async function doApply(dataToSave: SetupFormData) {
     setSaving(true)
     setSaveError(null)
     setSpaceRejection(null)
     try {
-      const sizeFields = new Set(["CAM_SIZE", "MUSIC_SIZE", "INCREASE_ROOT_SIZE"])
+      const sizeFields = new Set(["CAM_SIZE", "INCREASE_ROOT_SIZE"])
       const configData: Record<string, string> = Object.fromEntries(
         Object.entries(dataToSave)
           .filter(([k, v]) => !k.startsWith("_") && v !== "")
           .map(([k, v]) => {
             if (sizeFields.has(k) && /^\d+$/.test(v)) {
-              // Safety net: if the user clicks Apply before SizeInput's
-              // onBlur committed a unit suffix, fall back to G — matches
-              // the dehumanize() behavior in disk_images.rs and the
-              // dashusb.conf.sample default neighborhood.
+              // Match backend size parsing when blur has not added a unit.
               return [k, v + "G"]
             }
             if ((k === "TEMPERATURE_WARNING" || k === "TEMPERATURE_CAUTION") && v && !v.includes("000")) {
@@ -460,9 +376,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
           })
       )
 
-      // Project notification field content → *_ENABLED at apply time so
-      // checkboxes don't drift from the actual filled-in fields. Dropping
-      // this in *_ENABLED form keeps the backend contract unchanged.
+      // Derive enable flags from provider fields at apply time.
       const notificationEnableMap: Record<string, string[]> = {
         PUSHOVER_ENABLED: ["PUSHOVER_USER_KEY", "PUSHOVER_APP_KEY"],
         GOTIFY_ENABLED: ["GOTIFY_DOMAIN", "GOTIFY_APP_TOKEN"],
@@ -480,13 +394,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
         configData[enableField] = fields.some((k) => (dataToSave[k] ?? "").trim() !== "") ? "true" : "false"
       }
 
-      // Pre-flight: ask the backend whether the proposed drive sizes
-      // fit on the backingfiles partition (after a 10% safety reserve
-      // capped at 2-10 GB, matching disk_images::available_space_kb).
-      // If we're rejected, surface the message inline with a link to
-      // the snapshot management UI — never let the apply silently
-      // wedge mid-setup. On a fresh install where /backingfiles isn't
-      // mounted yet the server returns checked=false and we proceed.
+      // Preflight mounted storage; fresh installs return checked=false.
       try {
         const pfRes = await fetch("/api/setup/preflight", {
           method: "POST",
@@ -502,7 +410,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
             return
           }
         }
-      } catch { /* network blip — let the real apply path surface any error */ }
+      } catch { /* network blip: the real apply path will surface any error */ }
 
       const res = await fetch("/api/setup/config", {
         method: "PUT",
@@ -511,7 +419,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
       })
       if (!res.ok) throw new Error("Failed to save configuration")
 
-      // Save backup location preference (stored separately from config)
+      // Backup location is a preference, not shell configuration.
       if (dataToSave._BACKUP_LOCATION) {
         await fetch("/api/config/preference", {
           method: "PUT",
@@ -539,12 +447,8 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
     }
   }
 
-  // Called when user clicks "Apply & Run Setup" — checks for destructive changes first.
   async function handleApply() {
-    // SizeInput commits its value on blur. If the user clicks Apply while
-    // still typing in a size field, the typed value (with unit) hasn't
-    // flushed yet. Force the active element to blur, then wait one frame
-    // for the resulting setState to commit before reading formDataRef.
+    // Flush SizeInput's blur commit before reading formDataRef.
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur()
     }
@@ -567,13 +471,11 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
     doApply(data)
   }
 
-  // User confirmed: apply everything including destructive changes.
   function handleApplyAll() {
     setDestructiveWarning(null)
     doApply(formData)
   }
 
-  // User chose to skip destructive changes: revert those fields to original values.
   function handleSkipDestructive() {
     if (!destructiveWarning || !originalDataRef.current) return
     const safeData = { ...formData }
@@ -587,7 +489,6 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
   const isLast = currentStep === steps.length - 1
   const isFirst = currentStep === 0
 
-  // ── Destructive change warning dialog ──
   if (destructiveWarning) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -644,7 +545,6 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
     )
   }
 
-  // ── Progress screen (shown after Apply) ──
   if (phase !== "wizard") {
     const isInProgress = phase === "applying" || phase === "running" || phase === "rebooting" || phase === "finalizing"
     return (
@@ -719,11 +619,9 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
     )
   }
 
-  // ── Wizard steps ──
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div className="glass-card setup-wizard-glass relative flex h-[90vh] w-full max-w-3xl flex-col overflow-hidden">
-        {/* Header with step indicator */}
         <div className="shrink-0 border-b border-white/5 px-6 py-4">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-lg font-semibold text-slate-100">
@@ -737,7 +635,6 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
             </button>
           </div>
 
-          {/* Step progress bar */}
           <div className="flex gap-1">
             {steps.map((step, i) => (
               <button
@@ -781,7 +678,6 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
           </div>
         </div>
 
-        {/* Step content */}
         <div className="flex-1 overflow-y-auto px-6 py-5">
           <StepComponent
             data={formData}
@@ -791,23 +687,11 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
           />
         </div>
 
-        {/* Footer navigation */}
         <div className="shrink-0 border-t border-white/5 px-6 py-4">
-          {/*
-            Re-run-aware "data preserved" banner. Only shown on the
-            final step of an already-completed setup, when no
-            destructive change is staged. Communicates clearly that
-            hitting Apply will not touch the partition or drive
-            images — the user is just updating a config value. This
-            removes the surprise factor that drove the original
-            "I changed my archive server and lost everything"
-            complaint.
-          */}
+          {/* Reconfiguration without image-recreating changes preserves data. */}
           {isLast
             && setupAlreadyFinished
-            // originalDataRef must stay a ref (apply handlers read it at event
-            // time); every write is paired with a setFormData, so this render
-            // read is never stale.
+            // Apply handlers need the event-time baseline held in this ref.
             // eslint-disable-next-line react-hooks/refs
             && detectDestructiveChanges(formData, originalDataRef.current).length === 0
             && !saveError

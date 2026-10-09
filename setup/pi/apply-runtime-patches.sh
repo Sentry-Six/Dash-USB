@@ -1,28 +1,5 @@
 #!/bin/bash
-# dashusb-apply-runtime-patches.sh
-#
-# Idempotent re-application of all install-time patches that must survive
-# a binary OTA update. Called by:
-#   - install-pi.sh        — initial install / re-install via curl
-#   - crates/api/src/update.rs — after every in-app binary swap
-#
-# Why this exists: the in-app updater (Settings → System → Check for
-# Updates) only swaps the Rust binary. It does NOT re-run install-pi.sh.
-# So install-time fixes (BLE non-fatal-adv on BCM4345C0, etc.) that are
-# applied to shipped scripts on disk silently rot the moment a release
-# replaces those scripts — leaving every existing 4C+ user with a
-# crash-looped Bluetooth stack after their first update.
-#
-# This script is the bridge: it re-applies the patches every time the
-# updater runs, so existing installs heal automatically on update without
-# needing a re-install.
-#
-# Detection-gated: each patch's apply-block self-checks for the board /
-# precondition it cares about, so running on a Pi 4 or Pi 5 (or amd64
-# dev box) is a no-op.
-#
-# Safe to re-run anytime: every patch first checks if the marker is
-# already present in the target file.
+# Reapply idempotent, hardware-gated install patches after binary-only updates.
 
 set -u
 
@@ -42,33 +19,21 @@ is_rock_4cplus() {
         /proc/device-tree/model /proc/device-tree/compatible 2>/dev/null
 }
 
-# Known-affected Broadcom chips where BlueZ's extended advertising fails OR
-# defaults to non-connectable parameters — i.e., where SC's BLE pair fails
-# without our raw-HCI ADV_IND helper. Detected by parsing the chip family ID
-# kernel logs on first BT probe (e.g. "Bluetooth: hci0: BCM43430B0 (002.001.012)").
+# Broadcom chips requiring raw-HCI ADV_IND because BlueZ extended advertising
+# fails or becomes non-connectable.
 #
-# Currently:
-#   BCM4345C0 — Rock 4C+ (confirmed broken via field evidence)
-#   BCM43430B0 — Pi Zero 2 W (confirmed broken via btmon trace 2026-06-20)
-#   BCM43438 — Pi 3B/3B+, Pi Zero W (same chip family / same firmware tree)
+# Affected: BCM4345C0 (Rock 4C+), BCM43430B0 (Pi Zero 2 W), and BCM43438
+# (Pi 3B/3B+ and Pi Zero W).
 #
-# DELIBERATELY EXCLUDED until tested:
-#   BCM43455 / CYW43455 — Pi 4 / Pi 5; their modern bluetoothd path is
-#   reported to work fine, and running our raw-HCI helper there would
-#   override their working ext-adv with legacy adv (regression). If a Pi
-#   4/5 user does hit "GATT 147 bond=BOND_NONE" they can opt in with:
+# Excluded: BCM43455/CYW43455 (Pi 4/5), where modern advertising works. An
+# operator can force the helper with:
 #       sudo touch /mutable/force-ble-adv-helper
-#   That sentinel forces install regardless of chip detection. The next OTA
-#   (or `sudo /usr/local/bin/dashusb-apply-runtime-patches`) lands it.
 is_known_broken_ble_chip() {
-    # Operator override — for chips we haven't detection-listed yet but
-    # field-confirmed need the helper.
+    # Operator override for an unlisted affected chip.
     [ -f /mutable/force-ble-adv-helper ] && { log "BLE adv: /mutable/force-ble-adv-helper present — forcing install"; return 0; }
     local chips="BCM4345C0\|BCM43430B0\|BCM43438"
     dmesg 2>/dev/null | grep -qE "hci0: ($chips)" && return 0
-    # dmesg may not retain that line on a long-running box; also check the
-    # board model as a backstop (4C+'s 4345C0 + Zero 2 W's 43430B0 are
-    # board-specific so model match is unambiguous).
+    # Fall back to models whose Bluetooth chips are unambiguous.
     grep -qai 'rock-4c-plus\|rockpi4c-plus\|ROCK 4C+\|Raspberry Pi Zero 2 W\|Raspberry Pi 3 Model B\|Raspberry Pi Zero W' \
         /proc/device-tree/model 2>/dev/null && return 0
     return 1
@@ -76,17 +41,8 @@ is_known_broken_ble_chip() {
 
 # ── BLE non-fatal-adv patch (all Broadcom Pi-family chips) ──────────────
 #
-# Broadcom Pi-family chips (BCM4345C0 on Rock 4C+, BCM43430B0 on Pi Zero 2 W,
-# the BCM43455 sibling on Pi 4/Compute Module, etc.) all reject BlueZ's
-# extended advertising with "Invalid Parameters 0x0d". The shipped
-# dashusb-ble.py calls sys.exit(1) on that error, which tears down GATT
-# and lets systemd re-spawn the daemon in a fast crash loop. The Pi's actual
-# advertising is handled out-of-band by dashusb-ble-adv.service via raw
-# HCI (ADV_IND programmed directly), so the BlueZ failure is legitimately
-# non-fatal — we just need the GATT server to stay up. Patch swallows the
-# BlueZ adv error and logs it instead.
-#
-# Was 4C+-gated through v3.11.7; widened to all Pi families in v3.11.8.
+# Keep GATT alive when Broadcom rejects BlueZ extended advertising; the raw-HCI
+# helper handles advertising separately.
 apply_ble_nonfatal_adv() {
     local f=/root/bin/dashusb-ble.py
     [ -f "$f" ] || { warn "BLE: $f missing — skipping non-fatal-adv patch"; return 0; }
@@ -96,11 +52,9 @@ apply_ble_nonfatal_adv() {
         return 0
     fi
 
-    # Make root RW for the write (no-op if already RW). Shipped by
-    # install-pi.sh; safe to call here.
     [ -x /root/bin/remountfs_rw ] && /root/bin/remountfs_rw >/dev/null 2>&1 || true
 
-    # AST-aware Python patcher: surgically replaces register_ad_error_cb.
+    # Replace the callback body between function definitions.
     local result
     result="$(python3 - "$f" 2>&1 <<'PYEOF'
 import sys
@@ -124,7 +78,7 @@ PYEOF
         log "BLE non-fatal-adv: applied via Python patcher"
     else
         warn "BLE non-fatal-adv: Python path failed ($result), trying sed fallback"
-        # sed fallback rewrites register_ad_error_cb body line by line
+        # Fallback rewrites the callback body line by line.
         sed -i '/^def register_ad_error_cb(error):$/,/^def register_app_cb/{
             /^def register_ad_error_cb(error):$/!{
                 /^def register_app_cb/!d
@@ -139,9 +93,7 @@ PYEOF
         fi
     fi
 
-    # Restart the daemon so the patched version takes effect immediately
-    # rather than waiting for the next reboot. reset-failed clears any
-    # crash-loop backoff from the broken pre-patch state.
+    # Clear any pre-patch crash-loop backoff before restarting.
     systemctl reset-failed dashusb-ble.service 2>/dev/null || true
     systemctl restart dashusb-ble.service 2>/dev/null || true
     return 0
@@ -149,16 +101,9 @@ PYEOF
 
 # ── EATT disable (all Pi boards) ────────────────────────────────────────
 #
-# Our BLE GATT is app-PIN over plain (unencrypted) ATT. Android (esp. 14+)
-# opens EATT (PSM 0x0027) on connect, which bluetoothd refuses without an
-# encrypted link and answers with an SMP Security Request — popping an OS
-# pair prompt on every connect (or, on some phones, a silent GATT 147 /
-# "Connection lost" tear-down loop with bond=BOND_NONE).
-#
-# Channels=1 keeps plain ATT (same GATT, same PIN), no prompt, no tear-down.
-# Safe on every Pi board — no security change vs. our existing model.
-# Universal patch (no board gate): pre-v3.11.x installs (e.g. v3.9.0 Zero 2W)
-# never ran the install-time version of this, so OTA must heal it for them.
+# Android may open encrypted EATT (PSM 0x0027), but this service authenticates
+# over plain ATT with an app PIN. Channels=1 prevents OS pairing prompts and
+# GATT teardown loops.
 apply_eatt_disable() {
     local conf=/etc/bluetooth/main.conf
     [ -f "$conf" ] || { warn "EATT: $conf missing — skipping"; return 0; }
@@ -188,12 +133,7 @@ apply_eatt_disable() {
     return 0
 }
 
-# ── BLE legacy-advertising helper install (all Broadcom Pi-family chips) ──
-#
-# Fresh installs get these files from install-pi.sh; this function brings
-# existing v3.11.7-and-earlier installs up to parity. Idempotent — each file
-# is only written when missing OR when the on-disk contents differ from the
-# current upstream version.
+# ── BLE legacy-advertising helper install (known-broken Broadcom chips) ──
 #
 # Files installed:
 #   /usr/local/bin/dashusb-ble-adv.sh
@@ -201,16 +141,15 @@ apply_eatt_disable() {
 #   /etc/udev/rules.d/99-dashusb-ble-hci.rules
 #   /etc/systemd/system/dashusb-ble.service.d/wants-bluetooth.conf
 apply_ble_adv_helper() {
-    # Gate to known-affected chips so Pi 4/5 (where bluetoothd's modern
-    # ext-adv works) don't get the raw-HCI helper overriding their good
-    # advertising. See is_known_broken_ble_chip above for the full list.
+    # Do not replace working Pi 4/5 extended advertising.
     is_known_broken_ble_chip || { log "BLE adv: chip not in known-broken list — skipping helper install"; return 0; }
-    local repo="${REPO:-Sentry-Six/Dash-USB}"
-    local base="https://raw.githubusercontent.com/${repo}/main/setup/pi"
+    # Rust callers provide validated source coordinates; manual runs use defaults.
+    local repo="${DASHUSB_REPO_SLUG:-Sentry-Six/Dash-USB}"
+    local ref="${DASHUSB_REF:-main}"
+    local base="https://raw.githubusercontent.com/${repo}/${ref}/setup/pi"
     local changed=0
 
     install_one() {
-        # $1 = source filename, $2 = destination path, $3 = mode
         local src="$1" dst="$2" mode="$3"
         local tmp; tmp="$(mktemp)" || { warn "BLE adv: mktemp failed"; return 1; }
         if ! curl -fsSL --max-time 15 "$base/$src" -o "$tmp" 2>/dev/null; then
@@ -250,15 +189,13 @@ apply_ble_adv_helper() {
 
 # ── bfq scheduler on the backingfiles disk (all boards) ─────────────────
 #
-# The archive pipeline (rsync reads, snapshot cp) now runs under
-# `ionice -c2 -n7` so the car's dashcam writes through the USB gadget
-# always win disk access — but ionice only has effect under the bfq I/O
-# scheduler (mq-deadline, the Pi OS default, ignores I/O priorities).
-# Ship a udev rule so every sd disk gets bfq at hotplug/boot, and apply
-# it to the live backingfiles disk immediately when that is safe.
+# Archive I/O runs under `ionice -c2 -n7`, which requires BFQ to prioritize car
+# writes. Install a boot/hotplug rule and switch the live backing disk only when
+# the gadget is unbound.
 apply_backingfiles_bfq() {
+    local rc=0
     local rule=/etc/udev/rules.d/60-dashusb-bfq.rules
-    local want='ACTION=="add|change", KERNEL=="sd[a-z]", SUBSYSTEM=="block", ATTR{queue/scheduler}="bfq"'
+    local want='ACTION=="add|change", KERNEL=="sd[a-z]|mmcblk[0-9]", SUBSYSTEM=="block", ATTR{queue/scheduler}="bfq"'
 
     modprobe bfq 2>/dev/null || true
 
@@ -269,28 +206,41 @@ apply_backingfiles_bfq() {
             log "bfq: installed $rule"
         else
             err "bfq: failed to write $rule (read-only fs? check remountfs_rw)"
+            # A missing rule would silently revert the policy at next boot.
+            rc=1
         fi
     else
         log "bfq: udev rule already current"
     fi
 
-    # Apply to the running system now — but only while the USB gadget is
-    # NOT bound. Switching the elevator drains the disk's request queue,
-    # which can briefly stall the car's in-flight dashcam writes — the very
-    # SCSI-timeout drive-drop this patch exists to prevent. This script runs
-    # mid-OTA while the car may be recording; when the gadget is bound, the
-    # udev rule simply takes effect at the next boot instead.
+    # Switching the scheduler drains the request queue. Defer while the gadget
+    # is bound so in-flight dashcam writes are not stalled.
     if [ -n "$(cat /sys/kernel/config/usb_gadget/dashusb/UDC 2>/dev/null)" ]; then
         log "bfq: gadget is presented to the car — deferring live scheduler switch to next boot (udev rule covers it)"
-        return 0
+        return $rc
     fi
-    # Resolve the disk backing /backingfiles (e.g. /dev/sda2 -> sda)
-    # rather than assuming sda.
+    # Resolve the disk backing /backingfiles (e.g. /dev/sda2 -> sda) rather
+    # than assuming sda.
     local src disk sched
     src="$(findmnt -n -o SOURCE /backingfiles 2>/dev/null)" || true
-    [ -n "${src:-}" ] || { log "bfq: /backingfiles not mounted — udev rule will cover next boot"; return 0; }
+    [ -n "${src:-}" ] || { log "bfq: /backingfiles not mounted — udev rule will cover next boot"; return $rc; }
     disk="$(lsblk -n -o PKNAME "$src" 2>/dev/null | head -1)"
-    [ -n "$disk" ] || disk="$(basename "$src" | sed 's/[0-9]*$//')"
+    # mmcblk/nvme partition names use <disk>p<N>; other disks use <disk><N>.
+    if [ -z "$disk" ]; then
+        disk="$(basename "$src")"
+        case "$disk" in
+            mmcblk*|nvme*) disk="$(echo "$disk" | sed 's/p[0-9]*$//')" ;;
+            *)             disk="$(echo "$disk" | sed 's/[0-9]*$//')" ;;
+        esac
+    fi
+    # Match the udev rule's device-class gate so live and boot policy agree.
+    case "$disk" in
+        sd[a-z]|mmcblk[0-9]) ;;
+        *)
+            log "bfq: $disk is not sd*/mmcblk* (NVMe?) — excluded by design, leaving its scheduler alone"
+            return $rc
+            ;;
+    esac
     sched="/sys/block/$disk/queue/scheduler"
     if [ -w "$sched" ]; then
         if grep -q '\[bfq\]' "$sched"; then
@@ -301,18 +251,14 @@ apply_backingfiles_bfq() {
             warn "bfq: could not activate on $disk (kernel without bfq?) — ionice will be a no-op"
         fi
     fi
-    return 0
+    # Live-switch failure is advisory because the udev rule applies at boot.
+    return $rc
 }
 
 # ── systemd hardware watchdog (all boards) ──────────────────────────────
 #
-# journald on these installs is volatile, so a full kernel hang leaves the
-# car with a dead drive indefinitely AND destroys the evidence. With the
-# hardware watchdog armed, a hung kernel becomes a ~15s reboot and the
-# gadget re-presents ~90s later. 15s is within the BCM283x/BCM2712
-# watchdog hardware maximum (~15.9s). Userspace-only wedges don't trip
-# this (systemd itself pets the watchdog) — it is strictly kernel-hang
-# protection.
+# The 15-second hardware watchdog recovers kernel hangs; systemd services must
+# keep running to pet it. The timeout is within BCM283x/BCM2712 limits.
 apply_hardware_watchdog() {
     local dropin_dir=/etc/systemd/system.conf.d
     local dropin=$dropin_dir/10-dashusb-watchdog.conf
@@ -326,11 +272,7 @@ RuntimeWatchdogSec=15'
     [ -x /root/bin/remountfs_rw ] && /root/bin/remountfs_rw >/dev/null 2>&1 || true
     mkdir -p "$dropin_dir" 2>/dev/null || true
     if printf '%s\n' "$want" > "$dropin" 2>/dev/null; then
-        # Deliberately no `systemctl daemon-reexec` here: this script runs
-        # mid-OTA, and re-executing PID 1 (and arming a 15s hardware
-        # watchdog) at that moment adds risk for zero benefit — these boxes
-        # reboot at least daily (car power), so the watchdog arms at the
-        # next boot.
+        # Do not re-exec PID 1 during OTA; the watchdog arms at next boot.
         log "watchdog: RuntimeWatchdogSec=15 installed (arms at next boot)"
     else
         err "watchdog: failed to write $dropin (read-only fs? check remountfs_rw)"
@@ -340,20 +282,15 @@ RuntimeWatchdogSec=15'
 
 # ── Archive mount lock (CIFS/NFS connect/disconnect scripts) ────────────
 #
-# The API's backup path and archiveloop now coordinate /mnt/archive
-# ownership via a shared flock (/tmp/sentryusb_archive_mount.lock — see
-# crates/api/src/archive_mount_lock.rs). The lock-aware connect/
-# disconnect-archive.sh only land on disk at setup-wizard time
-# (crates/setup/src/archive.rs bakes them into the binary), so existing
-# CIFS/NFS installs need this refresh or archiveloop keeps running the
-# lock-free scripts and the coordination is one-sided.
+# Refresh existing CIFS/NFS installs with the shared archive-mount flock used
+# by API backups and archiveloop.
 #
 # The heredocs below MUST stay byte-identical to
-# run/cifs_archive/{connect,disconnect}-archive.sh (the nfs copies are
-# the same files).
+# run/cifs_archive/{connect,disconnect}-archive.sh (the nfs copies are the
+# same files).
 apply_archive_mount_lock_scripts() {
-    # Only CIFS/NFS archives mount /mnt/archive from fstab; rsync/rclone
-    # (and archiveless) installs have nothing to lock.
+    # Only CIFS/NFS archives mount /mnt/archive from fstab. rsync, rclone, and
+    # archiveless installs have nothing to lock.
     if ! grep -qE '[[:space:]]/mnt/archive[[:space:]]+(cifs|nfs)[[:space:]]' /etc/fstab 2>/dev/null; then
         log "archive-mount-lock: no CIFS/NFS /mnt/archive fstab entry — not applicable"
         return 0
@@ -365,21 +302,13 @@ apply_archive_mount_lock_scripts() {
     fi
     [ -x /root/bin/remountfs_rw ] && /root/bin/remountfs_rw >/dev/null 2>&1 || true
 
-    # Staged + atomic rename: a power loss or disk-full mid-write must
-    # never leave a truncated live script (archiveloop may invoke these
-    # at any moment, and a half-written file containing the marker would
-    # make the next patch run report "already patched").
+    # Stage before renaming so a failed write cannot truncate a live script.
     cat > /root/bin/connect-archive.sh.new <<'CONNECT_EOF'
 #!/bin/bash -eu
 
 # Must match ARCHIVE_MOUNT_LOCK_PATH in crates/api/src/archive_mount_lock.rs
 # and disconnect-archive.sh.
 ARCHIVE_MOUNT_LOCK=/tmp/sentryusb_archive_mount.lock
-
-function mount_if_set() {
-  local mount_point=$1
-  [ -z "$mount_point" ] || ensure_mountpoint_is_mounted_with_retry "$mount_point"
-}
 
 # The archive mount is shared with the API's backup path, which may
 # mount /mnt/archive itself for a Backup Now and unmount it when done.
@@ -403,7 +332,6 @@ function mount_archive_locked() {
 }
 
 mount_archive_locked "${ARCHIVE_MOUNT:-}"
-mount_if_set "${MUSIC_ARCHIVE_MOUNT:-}"
 CONNECT_EOF
 
     cat > /root/bin/disconnect-archive.sh.new <<'DISCONNECT_EOF'
@@ -443,8 +371,7 @@ unmount_if_set() {
 # can't wedge the return to archiveloop the way an uncapped unmount
 # once could. Fail-closed on lock timeout: unmounting without the lock
 # is exactly the mid-write teardown the lock exists to prevent — skip,
-# and the next cycle's disconnect gets another chance. Music has no
-# API writer, so it keeps the old backgrounded, lock-free path.
+# and the next cycle's disconnect gets another chance.
 (
   if ! flock -w 300 210
   then
@@ -453,30 +380,107 @@ unmount_if_set() {
   fi
   unmount_if_set "${ARCHIVE_MOUNT:-}"
 ) 210>"$ARCHIVE_MOUNT_LOCK"
-unmount_if_set "${MUSIC_ARCHIVE_MOUNT:-}" &
 DISCONNECT_EOF
 
-    chmod 755 /root/bin/connect-archive.sh.new /root/bin/disconnect-archive.sh.new
+    if ! chmod 755 /root/bin/connect-archive.sh.new /root/bin/disconnect-archive.sh.new; then
+        err "archive-mount-lock: chmod on staged scripts failed — keeping existing scripts"
+        rm -f /root/bin/connect-archive.sh.new /root/bin/disconnect-archive.sh.new
+        return 1
+    fi
     if ! bash -n /root/bin/connect-archive.sh.new || ! bash -n /root/bin/disconnect-archive.sh.new; then
         err "archive-mount-lock: staged scripts failed bash -n — keeping existing scripts"
         rm -f /root/bin/connect-archive.sh.new /root/bin/disconnect-archive.sh.new
         return 1
     fi
-    # The && marker check above heals a power loss between the renames.
-    mv /root/bin/connect-archive.sh.new /root/bin/connect-archive.sh
-    mv /root/bin/disconnect-archive.sh.new /root/bin/disconnect-archive.sh
+    # The marker check requires both scripts, so a partial install is retried.
+    if ! mv /root/bin/connect-archive.sh.new /root/bin/connect-archive.sh; then
+        err "archive-mount-lock: installing connect-archive.sh failed — keeping existing scripts"
+        rm -f /root/bin/connect-archive.sh.new /root/bin/disconnect-archive.sh.new
+        return 1
+    fi
+    if ! mv /root/bin/disconnect-archive.sh.new /root/bin/disconnect-archive.sh; then
+        err "archive-mount-lock: connect-archive.sh was replaced but disconnect-archive.sh was NOT — one-sided install, re-run this script"
+        rm -f /root/bin/disconnect-archive.sh.new
+        return 1
+    fi
     log "archive-mount-lock: lock-aware connect/disconnect-archive.sh installed"
+    return 0
+}
+
+# ── Rock 4C+ WiFi NVRAM: remove the TX-collapsing AP6256 relink ─────────
+# The AP6256 NVRAM relink collapses TX throughput on Rock 4C+. Remove only that
+# exact link so the driver uses generic brcmfmac43455-sdio.txt after reboot.
+apply_4cplus_wifi_nvram_fix() {
+    is_rock_4cplus || return 0
+    local brcm=/lib/firmware/brcm
+    local link="$brcm/brcmfmac43455-sdio.radxa,rock-4c-plus.txt"
+    # Preserve any board link that does not target nvram_ap6256.txt.
+    [ -L "$link" ] || { log "4c+ wifi nvram: no board relink — generic in use"; return 0; }
+    if [ "$(basename "$(readlink "$link")")" != "nvram_ap6256.txt" ]; then
+        log "4c+ wifi nvram: board .txt not the AP6256 relink — leaving as-is"
+        return 0
+    fi
+    # Restore the root mount state after removing the link.
+    local ro_before=no rc=0
+    findmnt -no OPTIONS / 2>/dev/null | grep -qE '(^|,)ro(,|$)' && ro_before=yes
+    [ -x /root/bin/remountfs_rw ] && /root/bin/remountfs_rw >/dev/null 2>&1 || true
+    if rm -f "$link" 2>/dev/null; then
+        log "4c+ wifi nvram: removed AP6256 relink → generic fallback (REBOOT to apply)"
+    else
+        err "4c+ wifi nvram: could not remove $link (read-only fs? check remountfs_rw)"
+        rc=1
+    fi
+    if [ "$ro_before" = yes ]; then
+        sync
+        mount -o remount,ro / 2>/dev/null || true
+    fi
+    # Preserve the removal result across the remount.
+    return $rc
 }
 
 # ── Run all patches ─────────────────────────────────────────────────────
 
-apply_ble_nonfatal_adv
-apply_ble_adv_helper
-apply_eatt_disable
-apply_backingfiles_bfq
-apply_hardware_watchdog
-apply_archive_mount_lock_scripts
+# The updater from an older Dash release already invokes this helper before
+# reboot. Let the newly installed binary provide its matching runtime offline.
+apply_bundled_archive_runtime() {
+    local binary help
+    for binary in /opt/dashusb/dashusb-current /opt/dashusb/dashusb; do
+        [ -x "$binary" ] || continue
+        help=$("$binary" --help 2>/dev/null) || continue
+        if [[ "$help" == *refresh-archive-runtime* ]]; then
+            /root/bin/remountfs_rw >/dev/null 2>&1 || true
+            "$binary" refresh-archive-runtime || return 1
+            log "Installed archive helpers bundled with the running release"
+            return 0
+        fi
+    done
+    # Downgrades and older installers retain their existing compatibility path.
+    return 0
+}
 
-# Future patches that must survive an OTA update get appended here. Each
-# one self-checks board / precondition / marker so the whole script stays
-# a safe no-op on non-applicable systems.
+# Run every patch, then report failure if any patch failed.
+PATCH_FAILURES=0
+run_patch() {
+    local fn="$1"
+    if ! "$fn"; then
+        PATCH_FAILURES=$((PATCH_FAILURES + 1))
+        err "$fn: FAILED"
+    fi
+}
+
+run_patch apply_ble_nonfatal_adv
+run_patch apply_ble_adv_helper
+run_patch apply_eatt_disable
+run_patch apply_backingfiles_bfq
+run_patch apply_hardware_watchdog
+run_patch apply_archive_mount_lock_scripts
+run_patch apply_4cplus_wifi_nvram_fix
+run_patch apply_bundled_archive_runtime
+
+# Every patch must check its board, preconditions, and idempotence marker.
+
+if [ "$PATCH_FAILURES" -gt 0 ]; then
+    err "$PATCH_FAILURES patch(es) failed to apply — see messages above"
+    exit 1
+fi
+exit 0

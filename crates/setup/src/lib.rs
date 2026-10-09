@@ -1,9 +1,4 @@
-//! DashUSB setup orchestrator.
-//!
-//! Replaces the entire rc.local + setup-dashusb shell script chain with
-//! native Rust.  Each phase is a module that performs one logical step of the
-//! setup process, reporting progress via a callback so the web UI can stream
-//! live updates over WebSocket.
+//! Setup phases report progress for WebSocket delivery to the web UI.
 
 pub mod apt;
 pub mod emitter;
@@ -13,6 +8,7 @@ pub mod partition;
 pub mod disk_images;
 pub mod system;
 pub mod archive;
+pub mod archive_runtime;
 pub mod network;
 pub mod readonly;
 pub mod scripts;

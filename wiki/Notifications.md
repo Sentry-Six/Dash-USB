@@ -1,21 +1,24 @@
 # Notifications
 
-Sentry USB can send you push notifications when:
+Dash USB can send you push notifications when:
 
-- An archive succeeds or fails
-- A drive fills up
-- Sentry events fire
-- The BLE keep-awake loses pairing
-- The Pi reboots or loses WiFi
+- An archive run starts
+- An archive completes or fails (with file counts and duration)
+- The Pi's temperature crosses your Warning / Caution thresholds
+- A post-archive temperature report, when enabled
+- Storage repair completes or requires manual action
 
-Configure providers in the [Setup Wizard](Setup-Wizard-Guide#8-notifications), or anytime later under **Settings** → **Notifications**.
+Configure providers under **Notifications → Delivery** or in the
+[Setup Wizard](Setup-Wizard-Guide#6-notifications). Choose which events send
+alerts under **Notifications → Events**.
 
-You can enable as many providers as you want at once.
+You can enable multiple providers. Fill a provider's required fields to enable
+it, or clear them to disable it. Dash USB has no companion mobile app.
 
 ## Providers
 
 ### Pushover
-Paid one-time-fee iOS / Android app. Most reliable for personal alerts.
+iOS and Android notification service.
 
 | Field | Where to get it |
 |-------|-----------------|
@@ -104,13 +107,13 @@ Generic — POSTs a JSON payload to any URL. Useful for Home Assistant, n8n, Nod
 
 | Field | Example |
 |-------|---------|
-| Webhook URL | `http://homeassistant.local:8123/api/webhook/sentryusb` |
-
-### Mobile App (beta)
-Push notifications to the Sentry USB iOS companion app. Currently in beta. Toggle it on in the wizard if you've installed the app and paired it.
+| Webhook URL | `http://homeassistant.local:8123/api/webhook/dashusb` |
 
 ---
 
 ## Testing notifications
 
-After the wizard finishes, **Settings** → **Notifications** → **Send Test** fires a test message to every enabled provider so you can confirm setup.
+To check configured providers, trigger an archive run: click **Archive Sync**
+at the top of **Settings** and watch for the archive-start message on each
+enabled provider. **Notifications → History** shows delivery results and
+expandable error details.

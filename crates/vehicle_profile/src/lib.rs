@@ -1,18 +1,5 @@
-//! Vehicle profiles — the data-driven description of how a car brand
-//! records dashcam footage onto the USB drive.
-//!
-//! Everything brand-specific (recording path, filename format, camera
-//! set, segment length, rolling-delete window, virtual-drive geometry)
-//! lives in a TOML profile under `profiles/`, embedded into the binary
-//! at compile time so an OTA update can never skew the binary and its
-//! profile. Adding a brand means adding a profile file and listing it
-//! in [`EMBEDDED`].
-//!
-//! Selection: the `VEHICLE_PROFILE` key in dashusb.conf picks an
-//! embedded profile by id; the `DASHUSB_PROFILE_PATH` env var overrides
-//! with an on-disk TOML (dev/bench use). Anything invalid falls back to
-//! the default profile with a logged warning — the recorder must never
-//! fail to boot over a bad profile reference.
+//! Embedded vehicle-specific recording formats and virtual-drive geometry.
+//! Invalid selections fall back to the default profile so recording can boot.
 
 use std::sync::OnceLock;
 
@@ -77,8 +64,10 @@ pub struct Viewer {
 pub struct VirtualDrive {
     pub default_size: String,
     pub min_size: String,
-    /// Only "fat32" is supported today; the field exists so a future
-    /// brand that formats its own drive differently stays data-only.
+    /// Free-space floor (bytes) the post-archive cleaner leaves so the
+    /// car's available-space check keeps passing.
+    pub min_free_bytes: u64,
+    /// On-drive filesystem; currently only `fat32` is implemented.
     pub filesystem: String,
     pub label: String,
 }
@@ -95,7 +84,6 @@ pub struct Features {
     pub nofua: bool,
 }
 
-/// A parsed clip filename.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipInfo {
     /// Camera id exactly as captured (e.g. "FRONT").
@@ -107,11 +95,6 @@ impl ClipInfo {
     /// Date bucket for the recordings tree ("2026-07-17").
     pub fn date_str(&self) -> String {
         self.timestamp.format("%Y-%m-%d").to_string()
-    }
-
-    /// Cross-camera grouping key: all cameras of one segment share it.
-    pub fn group_key(&self) -> String {
-        self.timestamp.format("%Y-%m-%d_%H-%M-%S").to_string()
     }
 }
 
@@ -146,7 +129,6 @@ impl Profile {
         Ok(())
     }
 
-    /// Load an embedded profile by id.
     pub fn embedded(id: &str) -> Option<Result<Self>> {
         EMBEDDED
             .iter()
@@ -154,12 +136,8 @@ impl Profile {
             .map(|(_, s)| Self::from_toml(s))
     }
 
-    /// The process-wide active profile.
-    ///
-    /// Resolution order: `DASHUSB_PROFILE_PATH` env (dev/bench override)
-    /// → `VEHICLE_PROFILE` conf key → default. Every failure path logs
-    /// and falls back to the embedded default, which is compile-time
-    /// guaranteed to parse (see tests).
+    /// Process-wide profile resolved from the development override, config,
+    /// then the embedded default.
     pub fn active() -> &'static Profile {
         static ACTIVE: OnceLock<Profile> = OnceLock::new();
         ACTIVE.get_or_init(|| {
@@ -201,12 +179,12 @@ impl Profile {
 
     pub fn clip_regex(&self) -> &regex::Regex {
         self.compiled_regex.get_or_init(|| {
-            // validate() already proved this compiles.
+            // validate() already compiled the same expression.
             regex::Regex::new(&self.recording.filename_regex).expect("validated regex")
         })
     }
 
-    /// Parse one clip filename (no path components) into camera + timestamp.
+    /// Parse a bare clip filename (no path components) into camera + timestamp.
     pub fn parse_clip_filename(&self, name: &str) -> Option<ClipInfo> {
         let caps = self.clip_regex().captures(name)?;
         let num = |k: &str| caps.name(k).and_then(|m| m.as_str().parse::<u32>().ok());
@@ -218,12 +196,8 @@ impl Profile {
         })
     }
 
-    /// Render `/root/bin/profile_env.sh` — the bridge that hands the
-    /// bash side (archiveloop and the per-method archive scripts) the
-    /// profile values it needs. All values are `*_DEFAULT`-suffixed
-    /// where a dashusb.conf key may override, and archiveloop reads
-    /// them as `${SNAPSHOT_INTERVAL:-$SNAPSHOT_INTERVAL_DEFAULT}` so
-    /// user config always wins.
+    /// Render the profile environment consumed by archiveloop. Configurable
+    /// values use `*_DEFAULT` names so user configuration takes precedence.
     pub fn render_profile_env(&self) -> String {
         format!(
             "#!/bin/bash\n\
@@ -232,21 +206,20 @@ impl Profile {
              export VEHICLE_PROFILE_ID={id}\n\
              export RECORDINGS_TREE=/mutable/Recordings\n\
              export RECORDING_ROOT={root}\n\
+             export CAM_MIN_FREE_BYTES={min_free}\n\
              export RECORDINGS_ARCHIVE_DEFAULT={archive}\n\
              export SNAPSHOT_INTERVAL_DEFAULT={interval}\n\
              export CLIP_MIN_BYTES=100000\n",
             id = self.profile.id,
             root = self.recording.root,
+            min_free = self.virtual_drive.min_free_bytes,
             archive = self.features.archive_everything_default,
             interval = self.snapshots.default_interval_secs,
         )
     }
 }
 
-/// Write `/root/bin/profile_env.sh` if its content differs (self-healing
-/// on every daemon start, so OTA updates propagate profile changes
-/// without a setup re-run). Silently skips when /root/bin doesn't exist
-/// (dev machines).
+/// Refresh `/root/bin/profile_env.sh` when profile output changes.
 pub fn write_profile_env() {
     let dir = std::path::Path::new("/root/bin");
     if !dir.is_dir() {
@@ -292,7 +265,10 @@ mod tests {
         let info = p.parse_clip_filename("FRONT_2026_07_17_T_19_34_53.mp4").unwrap();
         assert_eq!(info.camera, "FRONT");
         assert_eq!(info.date_str(), "2026-07-17");
-        assert_eq!(info.group_key(), "2026-07-17_19-34-53");
+        assert_eq!(
+            info.timestamp.format("%Y-%m-%d_%H-%M-%S").to_string(),
+            "2026-07-17_19-34-53"
+        );
 
         for name in [
             "LEFT_2026_07_17_T_19_04_53.mp4",
@@ -326,6 +302,7 @@ mod tests {
         assert!(env.contains(
             "export RECORDING_ROOT=Android/media/com.gm.ultifi.gmconnectedcameraservice/Recordings/SurroundVisionRecorder"
         ));
+        assert!(env.contains("export CAM_MIN_FREE_BYTES=34359738368"));
         assert!(env.contains("export SNAPSHOT_INTERVAL_DEFAULT=900"));
         assert!(env.contains("export RECORDINGS_ARCHIVE_DEFAULT=true"));
     }

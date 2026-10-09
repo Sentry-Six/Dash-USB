@@ -1,26 +1,17 @@
 #!/bin/bash
-# Build script for DashUSB Rust binary
-# Usage: ./build.sh [target]
-#   target: arm64 (default), armv7, native
+# Usage: ./build.sh [arm64|armv7|native]   (default: arm64)
+# Builds the web UI into crates/sentryusb/static, then compiles dashusb.
 
 set -e
 
-# Build frontend. Prefer this repo's own web/ (current layout); fall back
-# to the legacy ../Sentry-USB/web sibling for old checkouts. static/ is
-# gitignored (never committed — a stale committed copy once silently
-# shipped an old UI), so this step is what populates it; without it a
-# bare cargo build embeds the "frontend not built" placeholder that
-# crates/sentryusb/build.rs writes.
+# A bare cargo build embeds the placeholder from build.rs because static/ is
+# gitignored; populate it before compiling.
 WEB_DIR="$(dirname "$0")/web"
-if [ ! -f "$WEB_DIR/package.json" ]; then
-    WEB_DIR="$(dirname "$0")/../Sentry-USB/web"
-fi
 if [ -d "$WEB_DIR" ] && [ -f "$WEB_DIR/package.json" ]; then
     echo "Building frontend from $WEB_DIR..."
     (cd "$WEB_DIR" && npm run build)
     echo "Copying frontend to static/"
-    # Full wipe (not /*) so a stale placeholder index.html and old
-    # pre-compressed .br/.gz siblings can't survive into the embed.
+    # Remove dotfiles and stale pre-compressed siblings too.
     rm -rf crates/sentryusb/static
     mkdir -p crates/sentryusb/static
     cp -r "$WEB_DIR/dist/"* crates/sentryusb/static/
@@ -28,11 +19,8 @@ else
     echo "WARNING: no web/ found — binary will embed the 'frontend not built' placeholder."
 fi
 
-# Pre-compress static assets so embed.rs can serve raw .br / .gz bytes
-# without burning per-request CPU on the Pi Zero 2W. Skips already-
-# compressed formats (woff2, png, jpg, ico). Brotli is optional —
-# without it the server falls back to gzip, and without gzip it falls
-# back to identity + the tower-http CompressionLayer.
+# Pre-compress assets to avoid per-request work on a Pi Zero 2 W. Brotli is
+# optional; the server falls back to gzip, then tower-http compression.
 if [ -d crates/sentryusb/static ]; then
     HAS_BROTLI=0
     if command -v brotli >/dev/null 2>&1; then
@@ -45,14 +33,11 @@ if [ -d crates/sentryusb/static ]; then
     echo "Pre-compressing static assets..."
     COUNT=0
     while IFS= read -r -d '' f; do
-        # Skip if the file is already a compressed sibling or already-
-        # compressed binary format. Anything passing this filter is
-        # text/SVG/JSON/JS/CSS/HTML.
+        # Skip compressed siblings and binary formats.
         case "$f" in
             *.br|*.gz|*.woff2|*.png|*.jpg|*.jpeg|*.webp|*.ico|*.gif|*.mp4|*.mp3|*.zip) continue ;;
         esac
-        # Only worth compressing files above ~1 KB. Smaller files have
-        # no compression win and just clutter the binary.
+        # Compression below ~1 KB usually increases total size.
         SIZE=$(wc -c < "$f")
         if [ "$SIZE" -lt 1024 ]; then continue; fi
 

@@ -6,18 +6,9 @@ then
   return 1 # shouldn't use exit when sourced
 fi
 
-# Unload the module that was loaded by cmdline.txt
-modprobe -r g_ether
-
 export LOG_FILE=/mutable/archiveloop.log
 
-# If /mutable is full or the log file isn't openable, truncate it so
-# archiveloop can start instead of crash-looping. The no-op redirect
-# (`: >>`) opens the file in append mode without writing anything —
-# we deliberately don't add a startup marker here because users saw
-# the old "test" / "archiveloop starting" probe line as log noise.
-# log() itself uses `|| true`, so a transient write failure later
-# (e.g. disk-full mid-run) can't crash the script on its own.
+# Recover an unappendable log without crash-looping the archive service.
 if ! : >> "$LOG_FILE" 2>/dev/null; then
   : > "$LOG_FILE" 2>/dev/null || true
 fi
@@ -35,9 +26,7 @@ function log () {
 
 function log_errors_on_exit {
   log "archiveloop exited with code $1. Recent errors follow"
-  # The unit is dashusb-archive (see crates/setup install_archive_service);
-  # this used to read the old teslausb unit, so on a crash the supplementary
-  # journal dump was always empty.
+  # Query the installed archive unit, not this script's filename.
   journalctl -n 15 -u dashusb-archive >> "$LOG_FILE" 2>/dev/null || true
   log "end of errors."
   exit "$1"
@@ -53,25 +42,23 @@ then
       ;;
   esac
   then
-    # success
     log_errors_on_exit 0
   fi
 fi
 
 export CAM_MOUNT=/mnt/cam
-export MUSIC_MOUNT=/mnt/music
 
-# read the setup variables and define other environment variables and functions
 source /root/bin/envsetup.sh
+source /root/bin/archive-control.sh
+source /root/bin/cam-disk-supervisor.sh
+export CAM_CLEANUP_DEFERRED=/mutable/dashusb_cam_cleanup_deferred
 
-# Vehicle-profile defaults (RECORDINGS_TREE, RECORDING_ROOT,
-# SNAPSHOT_INTERVAL_DEFAULT, RECORDINGS_ARCHIVE_DEFAULT, CLIP_MIN_BYTES).
-# Written by the daemon at startup; user conf still wins everywhere via
-# ${VAR:-$VAR_DEFAULT}.
+# Shared with GADGET_CYCLE_LOCK_PATH in crates/usb_gadget/src/cycle_lock.rs.
+GADGET_CYCLE_LOCK=/tmp/sentryusb_gadget_cycle.lock
+
+# Daemon-generated profile defaults; explicit user configuration wins.
 source /root/bin/profile_env.sh 2>/dev/null || true
 
-# led triggers may have been built as modules, so try
-# to load them
 if ! grep -q timer "$STATUSLED/trigger"
 then
   modprobe ledtrig-timer || log "timer LED trigger unavailable"
@@ -100,9 +87,7 @@ then
   esac
 elif [ "${ARCHIVE_SYSTEM:-none}" = "cifs" ] || [ "${ARCHIVE_SYSTEM:-none}" = "nfs" ]
 then
-  # For CIFS and NFS
   [[ -n "${SHARE_NAME:-}" && -f /backingfiles/cam_disk.bin ]] && export ARCHIVE_MOUNT=/mnt/archive
-  [[ -n "${MUSIC_SHARE_NAME:-}" && -f /backingfiles/music_disk.bin ]] && export MUSIC_ARCHIVE_MOUNT=/mnt/musicarchive
 fi
 
 function timestamp () {
@@ -120,7 +105,7 @@ function fix_errors_in_image () {
     log "ERROR: losetup failed for $image"
     return 1
   fi
-  # Use -p repair arg. It works with vfat and exfat.
+  # -p (auto-repair) is accepted by both the vfat and exfat fsck helpers.
   /sbin/fsck "${loopback}p1" -- -p |& timestamp '| ' >> "$LOG_FILE" || echo ""
   if ! losetup -d "$loopback"; then
     log "WARNING: failed to detach loopback $loopback for $image"
@@ -128,10 +113,72 @@ function fix_errors_in_image () {
   log "Finished fsck on $image."
 }
 
+# Travel Mode supports always-reachable networks. Read config directly so the
+# Settings toggle applies without restarting; first existing path wins.
+function travel_mode_active () {
+  # Cache to avoid sourcing configuration in every one-second reachability poll.
+  local now=$SECONDS
+  if [ -n "${_TM_CACHE_AT:-}" ] && \
+     [ $((now - _TM_CACHE_AT)) -lt "${TRAVEL_MODE_CACHE_TTL:-5}" ] && \
+     [ "$now" -ge "${_TM_CACHE_AT}" ]; then
+    return "${_TM_CACHE_VAL:-1}"
+  fi
+
+  local conf val rc=1
+  for conf in /root/dashusb.conf /boot/firmware/dashusb.conf /boot/dashusb.conf
+  do
+    [ -f "$conf" ] || continue
+    # Source in a subshell so quoting is parsed without side effects or set -e exit.
+    # This path is selected from the installed Dash configuration locations.
+    # shellcheck disable=SC1090
+    val=$( set +eu; . "$conf" >/dev/null 2>&1; printf '%s' "${TRAVEL_MODE_ENABLED:-}" ) || true
+    case "${val,,}" in
+      yes|true|1|on) rc=0 ;;
+    esac
+    break
+  done
+  _TM_CACHE_AT=$now
+  _TM_CACHE_VAL=$rc
+  return "$rc"
+}
+
+# Optional Travel Mode interval; otherwise use the snapshot interval.
+function travel_mode_interval () {
+  local v="${TRAVEL_MODE_INTERVAL:-${SNAPSHOT_INTERVAL:-${SNAPSHOT_INTERVAL_DEFAULT:-900}}}"
+  case "$v" in
+    ''|*[!0-9]*) v=900 ;;
+  esac
+  # Force base 10 so zero-padded values are not parsed as octal.
+  v=$((10#$v))
+  if [ "$v" -lt 60 ] || [ "$v" -gt 86400 ]; then v=900; fi
+  echo "$v"
+}
+
+# Delay before retrying a failed Travel Mode cycle. Clamped so a bad override
+# cannot turn the loop into a hot spin.
+function travel_mode_retry_interval () {
+  local v="${TRAVEL_MODE_RETRY_INTERVAL:-60}"
+  case "$v" in
+    ''|*[!0-9]*) v=60 ;;
+  esac
+  v=$((10#$v))
+  if [ "$v" -lt 15 ] || [ "$v" -gt 3600 ]; then v=60; fi
+  echo "$v"
+}
+
 function archive_is_reachable () {
   local reachable=true
 
-  /root/bin/archive-is-reachable.sh "$ARCHIVE_SERVER" || reachable=false
+  # A 1 s ping deadline misreads a slow cellular link as offline, which in
+  # Travel Mode would stall archiving on a working connection. Give the
+  # probe more room when Travel Mode is on; normal mode keeps the snappy
+  # default so drive-away detection stays fast.
+  if travel_mode_active; then
+    ARCHIVE_PING_TIMEOUT="${ARCHIVE_PING_TIMEOUT:-4}" \
+      /root/bin/archive-is-reachable.sh "$ARCHIVE_SERVER" || reachable=false
+  else
+    /root/bin/archive-is-reachable.sh "$ARCHIVE_SERVER" || reachable=false
+  fi
 
   if [ "$reachable" = false ]
   then
@@ -141,11 +188,35 @@ function archive_is_reachable () {
   true
 }
 
-function sync_disk_media_to_host () {
-  # Clear stale autofs mount-option cache files for media disks.
-  # These are regenerated on next access. Stale files can cause mount
-  # failures after disk images are recreated (wizard re-run / disk wipe).
-  rm -f /backingfiles/music_disk.bin.opts
+# Pace always-on links instead of waiting forever for unreachability. Failed
+# cycles retry sooner than a full interval.
+function travel_mode_pace () {
+  local interval
+  if [ "${ARCHIVE_CYCLE_FAILED:-0}" = "1" ]; then
+    interval=$(travel_mode_retry_interval)
+    log "Travel Mode: last cycle failed, retrying in ${interval}s"
+  else
+    interval=$(travel_mode_interval)
+    log "Travel Mode: next snapshot and archive in ${interval}s"
+  fi
+
+  # Sleep in slices so the manual-sync canary interrupts Travel Mode pacing.
+  local deadline=$((SECONDS + interval))
+  local remaining slice
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if [ -e /tmp/archive_is_reachable ]; then
+      if rm -f -- /tmp/archive_is_reachable; then
+        log "Travel Mode: manual sync requested, starting next cycle early"
+        return 0
+      fi
+      log "Travel Mode: could not consume manual sync request"
+    fi
+    remaining=$((deadline - SECONDS))
+    slice=5
+    if [ "$remaining" -lt "$slice" ]; then slice=$remaining; fi
+    [ "$slice" -gt 0 ] && sleep "$slice"
+  done
+  return 0
 }
 
 function with_gadget_lock () {
@@ -162,21 +233,11 @@ function connect_usb_drives_to_host() {
 function connect_usb_drives_to_host_locked() {
   clear_archive_status
   log "Connecting usb to host..."
-  # Always ensure the USB gadget is fully torn down before touching the cam
-  # disk image.  If clean_cam_mount was skipped (e.g. archive became
-  # unreachable while the car drove away), the gadget is still active and
-  # mounting cam_disk.bin for the sync below would give the Pi and the car
-  # simultaneous access to the same block device, corrupting the filesystem
-  # and causing the car to stop writing dashcam footage.
+  # Never mount cam_disk.bin while the car can access the gadget.
   if /root/bin/disable_gadget.sh 2>/dev/null; then
     log "Disabled stale USB gadget before sync"
     fix_errors_in_images
   fi
-  sync_disk_media_to_host
-  # Pre-trigger the autofs mount for the music directory while the disk
-  # image is free (before the gadget takes over), so the web UI can
-  # display Music files immediately after boot.
-  ls "/var/www/html/fs/Music" > /dev/null 2>&1 || true
   if ! /root/bin/enable_gadget.sh; then
     log "ERROR: enable_gadget.sh failed (exit $?)"
   fi
@@ -185,16 +246,36 @@ function connect_usb_drives_to_host_locked() {
 }
 
 function run_archive_cycle () {
-  # Wrapper around archive_clips that owns the loop-level failure state.
+  # Give Travel Mode child probes enough time for slow cellular links.
+  if travel_mode_active; then
+    export ARCHIVE_PING_TIMEOUT="${ARCHIVE_PING_TIMEOUT:-4}"
+  fi
+
+  # Record failure without allowing set -e to terminate the loop.
   ARCHIVE_CYCLE_FAILED=0
-  archive_clips || ARCHIVE_CYCLE_FAILED=1
+  ARCHIVE_CYCLE_CANCELLED=0
+  ARCHIVE_CANCEL_CLEANED=0
+  if ! archive_cycle_begin; then
+    log "Could not publish archive cycle; skipping archive"
+    ARCHIVE_CYCLE_FAILED=1
+    return 0
+  fi
+  local result=0
+  archive_clips || result=$?
+  if [ "$result" = 125 ]; then
+    ARCHIVE_CYCLE_CANCELLED=1
+  elif [ "$result" != 0 ]; then
+    ARCHIVE_CYCLE_FAILED=1
+  fi
+  archive_cycle_end || log "Could not close archive cycle"
+  # Requests accepted during teardown still require restoration and deferral.
+  if [ "$ARCHIVE_CYCLE_CANCELLED" = 1 ] && [ "$ARCHIVE_CANCEL_CLEANED" != 1 ]; then
+    cancel_archive_cleanup
+  fi
 }
 
 function wifi_cycle () {
-  # This fix is only needed when ap0 exists.  ap0 shares the same physical
-  # radio as wlan0 and locks it to the AP channel, preventing wlan0 from
-  # scanning other channels to find the home network.  Without ap0,
-  # NetworkManager handles reconnection on its own.
+  # ap0 pins the shared radio channel; otherwise NetworkManager reconnects wlan0.
   if ! iw dev ap0 info &>/dev/null; then
     return
   fi
@@ -204,12 +285,10 @@ function wifi_cycle () {
   iw dev ap0 del 2>/dev/null || true
   sleep 2
 
-  # Disconnect and reconnect wlan0
   nmcli device disconnect wlan0 2>/dev/null || true
   sleep 2
   nmcli device connect wlan0 2>/dev/null || true
 
-  # Wait up to 30 seconds for wlan0 to connect
   local i
   for i in $(seq 1 30); do
     local state
@@ -239,22 +318,13 @@ function wait_for_archive_to_be_reachable () {
       rm /tmp/archive_is_reachable
       break
     fi
-    # WiFi recovery while waiting for home network.
     scan_counter=$((scan_counter + 1))
-    if true; then
-      if (( scan_counter % 30 == 0 )); then
-        nmcli device wifi rescan 2>/dev/null || true
-      fi
-      # wifi_cycle only needed if ap0 somehow still exists
-      if (( scan_counter % 300 == 0 )) && iw dev ap0 info &>/dev/null; then
-        log "Archive still unreachable after ${scan_counter}s, cycling WiFi..."
-        wifi_cycle
-      fi
-    else
-      # Away Mode: skip all scanning, AP has exclusive radio access
-      if (( scan_counter % 300 == 0 )); then
-        log "Away Mode active, skipping WiFi scan/cycle"
-      fi
+    if (( scan_counter % 30 == 0 )); then
+      nmcli device wifi rescan 2>/dev/null || true
+    fi
+    if (( scan_counter % 300 == 0 )) && iw dev ap0 info &>/dev/null; then
+      log "Archive still unreachable after ${scan_counter}s, cycling WiFi..."
+      wifi_cycle
     fi
     sleep 1
   done
@@ -312,13 +382,6 @@ function ensure_cam_file_is_mounted () {
   log "Ensured cam file is mounted."
 }
 
-function ensure_music_file_is_mounted () {
-  log "Ensuring music backing file is mounted..."
-  disconnect_usb_drives_from_host
-  ensure_mountpoint_is_mounted_with_retry "$MUSIC_MOUNT"
-  log "Ensured music drive is mounted."
-}
-
 function unmount_mount_point () {
   local mount_point="$1"
   log "Unmounting $mount_point..."
@@ -340,14 +403,16 @@ function unmount_cam_file () {
   unmount_mount_point "$CAM_MOUNT"
 }
 
-function unmount_music_file () {
-  unmount_mount_point "$MUSIC_MOUNT"
-}
-
 function wait_for_archive_to_be_unreachable () {
   log "Waiting for archive to be unreachable..."
   while true
     do
+      # Apply Travel Mode while an always-on link remains reachable.
+      if [ "${ARCHIVE_CYCLE_CANCELLED:-0}" != 1 ] && travel_mode_active
+      then
+        log "Travel Mode enabled while waiting; resuming paced cycles."
+        break
+      fi
       if ! retry archive_is_reachable
       then
         log "Archive is unreachable."
@@ -381,10 +446,25 @@ function check_if_usb_gadget_is_mounted () {
   connect_usb_drives_to_host
 }
 
+# Avoid needless USB re-enumeration. Check state inside the cycle lock to close
+# the concurrent-cycler race.
+function ensure_usb_drives_connected () {
+  with_gadget_lock ensure_usb_drives_connected_locked
+}
+
+function ensure_usb_drives_connected_locked () {
+  if usb_gadget_is_active
+  then
+    log "USB gadget already active; skipping redundant reconnect"
+  else
+    log "USB gadget inactive; synchronising and re-presenting once"
+    connect_usb_drives_to_host_locked
+  fi
+}
+
 function trim_free_space() {
   local mount_point="$1"
 
-  # Make sure the partition is mounted.
   if found=$(findmnt -n --mountpoint "$mount_point")
   then
     loop=$(echo "$found" | awk '{print $2}')
@@ -402,7 +482,9 @@ function trim_free_space() {
 }
 
 function fix_errors_in_images () {
-  for i in cam music
+  # Dash has one vehicle-facing disk; retain the shared per-disk loop body.
+  # shellcheck disable=SC2043
+  for i in cam
   do
     img="/backingfiles/${i}_disk.bin"
     if [ -e "$img" ]
@@ -470,6 +552,74 @@ function intersect {
   mv /tmp/prune_tmp.$$ "$1"
 }
 
+function archive_start_summary {
+  local total=$1 completed=${2:-0} original_total=${3:-$1} noun=recordings
+  if [[ "$completed" -gt 0 ]]; then
+    printf 'Resuming archive: %d of %d recordings archived.' "$completed" "$original_total"
+  else
+    if [[ "$total" -eq 1 ]]; then noun=recording; fi
+    printf 'Archiving %d %s.' "$total" "$noun"
+  fi
+}
+
+function archive_finish_summary {
+  local success=$1 total=$2 completed=$3 remaining=$4 noun=recordings
+  if [[ "$completed" -eq 1 ]]; then noun=recording; fi
+  if [[ "$success" == true ]]; then
+    printf '%d %s archived.' "$completed" "$noun"
+  else
+    printf 'Archive interrupted: %d of %d recordings archived; %d remaining.' "$completed" "$total" "$remaining"
+  fi
+}
+
+function archive_resume_context () {
+  python3 - "$1" "$2" "${3:-/mutable/archive_in_progress.json}" <<'PYRESUME'
+import hashlib, json, sys
+from pathlib import Path
+
+entries = Path(sys.argv[1]).read_bytes().splitlines()
+fingerprint = hashlib.sha256(b"\n".join(sorted(entries))).hexdigest()
+total = int(sys.argv[2])
+if not 0 <= total <= 2**63 - 1 or total != len(entries):
+    raise SystemExit("Candidate list does not match its file count")
+completed, offset, original_total = 0, 0, total
+try:
+    saved = json.loads(Path(sys.argv[3]).read_text())
+    current, previous, original = saved["current"], saved["resume_offset"], saved["resume_total"]
+    if (saved["candidate_hash"] == fingerprint and saved["total"] == total == len(entries)
+            and all(type(n) is int for n in (saved["total"], current, previous, original))
+            and 0 <= current <= total and 0 <= previous <= original <= 2**63 - 1
+            and original == previous + total):
+        completed, offset, original_total = previous + current, previous, original
+except (OSError, ValueError, KeyError, TypeError):
+    pass
+print(fingerprint, completed, offset, original_total)
+PYRESUME
+}
+
+function write_archive_checkpoint () {
+  local progress="$1" fingerprint="$2" offset="$3" total="$4"
+  local checkpoint="${5:-/mutable/archive_in_progress.json}"
+  printf '%s,"candidate_hash":"%s","resume_offset":%s,"resume_total":%s}\n' \
+    "${progress%\}}" "$fingerprint" "$offset" "$total" > "$checkpoint.tmp" && mv "$checkpoint.tmp" "$checkpoint"
+}
+
+function finish_archive_checkpoint () {
+  local success="$1" cancelled="$2" remaining_list="$3" remaining="$4" offset="$5" total="$6"
+  local checkpoint="${7:-/mutable/archive_in_progress.json}" fingerprint
+  if [[ "$success" == true || "$cancelled" == true || "$remaining" -eq 0 ]]; then
+    rm -f "$checkpoint" "$checkpoint.tmp"
+    return
+  fi
+  if ! read -r fingerprint _ < <(archive_resume_context "$remaining_list" "$remaining" /dev/null); then
+    rm -f "$checkpoint" "$checkpoint.tmp"
+    return 1
+  fi
+  [[ -n "$fingerprint" ]] || return 1
+  write_archive_checkpoint "{\"phase\":\"archiving\",\"current\":0,\"total\":$remaining}" \
+    "$fingerprint" "$offset" "$total" "$checkpoint"
+}
+
 function write_archive_status () {
   echo "$1" > /tmp/archive_status.json.tmp
   mv /tmp/archive_status.json.tmp /tmp/archive_status.json
@@ -483,9 +633,11 @@ function archive_progress_monitor () {
   local total="$1"
   local listfile="$2"
   local overlay="$3"
+  local resume_hash="${4:-}" resume_offset="${5:-0}" resume_total="${6:-$1}"
   local push_counter=0
   local start_time
   start_time=$(date +%s)
+  local last_done=0 last_progress=$start_time
 
   while true; do
     sleep 5
@@ -493,12 +645,23 @@ function archive_progress_monitor () {
     while IFS= read -r line; do
       [ -L "$overlay/$line" ] || done=$((done + 1))
     done < "$listfile"
-    write_archive_status "{\"phase\":\"archiving\",\"current\":$done,\"total\":$total}"
+    local now elapsed eta=null eta_state=estimating
+    now=$(date +%s)
+    elapsed=$((now - start_time))
+    if [ "$done" -gt "$last_done" ]; then last_progress=$now; last_done=$done; fi
+    if [ "$done" -ge "$total" ]; then
+      eta=0 eta_state=running
+    elif [ $((now - last_progress)) -ge 60 ]; then
+      eta_state=stalled
+    elif [ "$done" -gt 0 ] && [ "$elapsed" -gt 5 ]; then
+      eta=$(( (total - done) * elapsed / done )) eta_state=running
+    fi
+    write_archive_status "{\"phase\":\"archiving\",\"current\":$done,\"total\":$total,\"eta_seconds\":$eta,\"eta_state\":\"$eta_state\"}"
 
-    # Mirror progress to /mutable so a mid-batch reboot leaves a record the next
-    # archiveloop run can surface in its start notification. Atomic write.
-    echo "{\"phase\":\"archiving\",\"current\":$done,\"total\":$total}" > /mutable/archive_in_progress.json.tmp \
-      && mv /mutable/archive_in_progress.json.tmp /mutable/archive_in_progress.json
+    # Attribute progress only to this exact candidate set. The offset records
+    # earlier transfers already removed from this attempt's candidate list.
+    write_archive_checkpoint "{\"phase\":\"archiving\",\"current\":$done,\"total\":$total}" \
+      "$resume_hash" "$resume_offset" "$resume_total" || true
 
     # Send APNs Live Activity update every ~30s (6 × 5s)
     push_counter=$((push_counter + 1))
@@ -514,6 +677,19 @@ function archive_progress_monitor () {
 }
 
 function clean_cam_mount {
+  # Share the lock with cancellation acceptance: no accepted cancellation can
+  # race an already-running destructive cleanup.
+  (
+    flock -x 207 || exit 1
+    clean_cam_mount_locked "$@"
+  ) 207>"$ARCHIVE_CONTROL_DIR/archive-cycle.lock"
+}
+
+function clean_cam_mount_locked {
+  if archive_cancel_requested || [ -e "$CAM_CLEANUP_DEFERRED" ]; then
+    log "Preserving footage: cleanup deferred until a successful archive"
+    return 0
+  fi
 
   local mode="${1:-}"
 
@@ -535,8 +711,7 @@ function clean_cam_mount {
   log "cleaning cam mount"
   ensure_cam_file_is_mounted
 
-  # Delete the files that fsck "recovered". These are generally files
-  # that were deleted previously by the car or teslausb
+  # Remove filesystem-recovered remnants.
   find "${CAM_MOUNT}" \( \( -type f -name FSCK\*.REC \) -o \( -type f -name "*~[0-9].MP4" \) \) -print0 | xargs -0 rm -rf
 
   # Delete short recordings
@@ -544,7 +719,7 @@ function clean_cam_mount {
 
   if [ "$mode" = "freespace" ]
   then
-    # Remove files, oldest first, until there is at least 20GB of free space
+  # Remove oldest files until the profile's vehicle free-space floor is met.
  
     (cd "${CAM_MOUNT}"; find . -type f -a -path "./${RECORDING_ROOT:-}*" -printf '%P\0') > /tmp/rmcandidates.txt
     if [ -s /tmp/rmcandidates.txt ]
@@ -558,17 +733,16 @@ function clean_cam_mount {
     while read -r line
     do
       freespace=$(eval "$(stat --file-system --format="echo \$((%f*%S))" "${CAM_MOUNT}/.")")
-      if ((freespace > 20000000000))
+      if ((freespace > ${CAM_MIN_FREE_BYTES:-34359738368}))
       then
         break;
       fi
       rm "${CAM_MOUNT}/$line"
     done < /tmp/rmcandidatesbytime.txt
-    # Clean up temp files from RAM-backed /tmp
     rm -f /tmp/rmcandidates.txt /tmp/rmcandidatesbytime.txt
   fi
 
-  # delete directories that are now empty (never the recording root itself)
+  # Delete empty descendants, never the recording root.
   if [ -n "${RECORDING_ROOT:-}" ] && [ -d "$CAM_MOUNT/$RECORDING_ROOT" ]; then
     find "$CAM_MOUNT/$RECORDING_ROOT" -mindepth 1 -type d -empty -delete || true
   fi
@@ -581,25 +755,18 @@ function clean_cam_mount {
   log "done cleaning cam mount"
 }
 
-# On-drive directory structure (GM Surround Vision profile):
-#   <RECORDING_ROOT>/            # Android/media/…/SurroundVisionRecorder
-#     FRONT_YYYY_MM_DD_T_HH_MM_SS.mp4
-#     LEFT_…  RIGHT_…  REAR_…    # one file per camera per 5-min segment
-# The car rolling-deletes files older than its firmware window (2 h).
-# Read the SoC temperature directly from the thermal zone, formatted to match the
-# temperature_monitor output. Echoes nothing on devices with no thermal sensor.
-# Called inline at the moment of an archive failure so the value reflects the
-# temperature *before* the chip cools: overheating (WiFi drop / throttling) is a
-# common cause of archive failures, and the periodic monitor only samples once a
-# minute, so by the time it logs the chip has already cooled.
-# Respects TEMPERATURE_UNIT (from dashusb.conf): "F" → Fahrenheit, else Celsius.
+# Sample SoC temperature at failure time and re-read only TEMPERATURE_UNIT;
+# periodic monitoring may miss a short heat-related failure.
 function soc_temperature () {
   local zone=/sys/class/thermal/thermal_zone0/temp
   [ -e "$zone" ] || return 0
   local raw
   raw=$(cat "$zone" 2>/dev/null) || return 0
   [ -n "$raw" ] || return 0
-  if [ "${TEMPERATURE_UNIT:-C}" = "F" ]; then
+  local unit
+  unit=$(sed -n "s/^export TEMPERATURE_UNIT=[\"']\?\([CFcf]\).*/\1/p" /root/dashusb.conf 2>/dev/null | tail -1)
+  unit=${unit:-${TEMPERATURE_UNIT:-C}}
+  if [ "${unit^^}" = "F" ]; then
     awk -v r="$raw" 'BEGIN { printf "%.1f°F", r/1000 * 9/5 + 32 }'
   else
     awk -v r="$raw" 'BEGIN { printf "%.1f°C", r/1000 }'
@@ -622,18 +789,13 @@ function archive_recordings () {
     return 1
   fi
 
-  # Build list of the files to be archived.
   local -r reclist=/tmp/recording_files
   local -r reclist_archived=/tmp/recording_files_archived
   local -r reclist_previously_archived=/mutable/recordings_archived
   local -r ignorelist=/tmp/ignore_files
 
-  # Everything the snapshot link farm captured is a candidate — the car
-  # rolling-deletes the source, so "archive everything" IS the product.
-  # ARCHIVE_RECORDINGS=false in the conf opts out (local snapshots only);
-  # the default comes from the vehicle profile via profile_env.sh.
-  # Find files by name only. Don't follow the symlinks yet, since that
-  # would cause all snapshots to be mounted.
+  # Archive all snapshot-linked recordings unless explicitly disabled. Match
+  # names without following links, which would mount every snapshot.
   if [ "${ARCHIVE_RECORDINGS:-${RECORDINGS_ARCHIVE_DEFAULT:-true}}" = "true" ]
   then
     (cd "$overlaylower"; find . -path "./Continuous/*" -type l -fprintf "$reclist" '%P\n')
@@ -641,25 +803,18 @@ function archive_recordings () {
     true > "$reclist"
   fi
 
-  # Copy lists of previously-archived files from /mutable
   if [ -r "${reclist_previously_archived}" ]
   then
     cp "${reclist_previously_archived}" "${reclist_archived}"
   fi
 
-  # Remove files that no longer exist in snapshots from the
-  # "previously archived" list, so the list doesn't keep growing.
+  # Bound the dedup ledger to files still present in snapshots.
   intersect "${reclist_archived}" "${reclist}"
 
-  # Remove previously-archived files from the archive candidate list
+  # Remove previously-archived files from the candidate list.
   prunefile "${reclist}" "${reclist_archived}"
 
-  # ${reclist} is now a list of files that haven't been archived yet.
-  # Remove short recordings (.mp4 under CLIP_MIN_BYTES — truncated tails
-  # from a power cut) from this list. This requires following the links
-  # and looking at the files themselves. One batched `stat -L` does the
-  # whole list; `-d '\n'` keeps each line one path; broken symlinks just
-  # drop out (stat errors to /dev/null).
+  # Drop unarchived clips below CLIP_MIN_BYTES using one batched link-following stat.
   if [ -s "${reclist}" ]
   then
     (cd "$overlaymerged"; xargs -a "${reclist}" -d '\n' stat -L --format='%s %n' 2>/dev/null) \
@@ -668,10 +823,9 @@ function archive_recordings () {
     true > "${ignorelist}"
   fi
 
-  # remove the short files from the list of files to be archived
   prunefile "${reclist}" "${ignorelist}"
 
-  # apply custom removals/additions
+  # Let the user's archive-filter hook add or remove entries.
   filterfile "${reclist}"
 
   local -r total_count=$(wc -l < "$reclist")
@@ -688,22 +842,19 @@ function archive_recordings () {
     local message="Archiving $total_count file(s)"
     local fail_temp=""
 
-    # If a prior archive run was interrupted (e.g. reboot), surface how many
-    # files it completed before dying. The monitor persists this every 5s.
-    local prior_done=0
-    if [ -r /mutable/archive_in_progress.json ]; then
-      prior_done=$(sed -n 's/.*"current":\([0-9]\+\).*/\1/p' /mutable/archive_in_progress.json)
-      prior_done=${prior_done:-0}
-    fi
-    if [[ $prior_done -gt 0 ]]; then
-      message+=" ($prior_done already completed from prior run)"
+    # A checkpoint's count is useful only when its exact candidate set and
+    # count/offset arithmetic match this attempt. Never subtract it again.
+    local resume_hash prior_done resume_offset resume_total
+    read -r resume_hash prior_done resume_offset resume_total <<< \
+      "$(archive_resume_context "$reclist" "$total_count" || printf 'unknown 0 0 %s' "$total_count")"
+    if [[ "$prior_done" -gt 0 ]]; then
+      message+=" ($prior_done/$resume_total archived, resuming archive after reconnect)"
     fi
 
     message+=" starting at $(date)"
-    ARCHIVE_TOTAL_COUNT=$total_count /root/bin/send-push-message "$NOTIFICATION_TITLE:" "$message" start archive_start || log "failed to send mobile app notification"
+    ARCHIVE_TOTAL_COUNT=$total_count /root/bin/send-push-message "$NOTIFICATION_TITLE:" "$message" start archive_start "$(archive_start_summary "$total_count" "$prior_done" "$resume_total")" || log "failed to send archive notification"
     /root/bin/send-live-activity start "$total_count" || true
 
-    # setup trigger files
     local -r triggerdir=/tmp/triggers
     local -r triggerlist=/tmp/triggers.txt
     rm -rf "${triggerdir}"
@@ -716,19 +867,21 @@ function archive_recordings () {
     fi
 
     write_archive_status "{\"phase\":\"archiving\",\"current\":0,\"total\":$total_count}"
-    archive_progress_monitor "$total_count" "${reclist}" "$overlaymerged" &
+    archive_progress_monitor "$total_count" "${reclist}" "$overlaymerged" "$resume_hash" "$resume_offset" "$resume_total" &
     local progress_pid=$!
 
-    if /root/bin/archive-clips.sh "$overlaymerged" "${reclist}" "${triggerdir}" "${triggerlist}"
+    if archive_run_command /root/bin/archive-clips.sh "$overlaymerged" "${reclist}" "${triggerdir}" "${triggerlist}"
     then
       message="Archiving completed successfully. "
     else
       local arc_exit=$?
-      message="Error during archiving. "
+      if [ "$arc_exit" = 125 ]; then
+        message="Archive cancelled. Remaining footage kept. "
+      else
+        message="Error during archiving. "
+      fi
       archive_success=false
       log "ERROR: archive-clips.sh failed with exit code $arc_exit"
-      # Capture SoC temperature immediately, before the chip cools, to help
-      # diagnose overheating-related archive failures.
       fail_temp=$(soc_temperature)
       if [ -n "$fail_temp" ]; then
         log "SoC temperature at archive failure: $fail_temp"
@@ -749,38 +902,64 @@ function archive_recordings () {
     wait "$progress_pid" 2>/dev/null || true
 
     local -i files_archived=0
+    local -r remaining_list=/tmp/recording_files_remaining
+    local remaining_list_valid=true
+    if ! true > "$remaining_list"; then remaining_list_valid=false; fi
 
-    while read -r line
+    while IFS= read -r line
     do
       if [[ ! -L "$overlaymerged/$line" ]]
       then
         files_archived=$((files_archived + 1))
-        echo "$line" >> "${reclist_archived}"
+        printf '%s\n' "$line" >> "${reclist_archived}"
+      elif [[ "$remaining_list_valid" == true ]] && ! printf '%s\n' "$line" >> "$remaining_list"; then
+        remaining_list_valid=false
       fi
-    done < ${reclist}
+    done < "${reclist}"
 
-    # copy the list of archived files back to /mutable if it has changed
+    # Persist a changed archive ledger.
     if ! diff -q -N "${reclist_archived}" "${reclist_previously_archived}" > /dev/null
     then
         cp "${reclist_archived}" "${reclist_previously_archived}.new"
         mv "${reclist_previously_archived}.new" "${reclist_previously_archived}"
     fi
 
-    # Batch reached its end (success or failure) — clear the in-progress marker
-    # so the next run's start notification doesn't claim a stale "prior run" count.
-    rm -f /mutable/archive_in_progress.json
+    # The durable ledger already excludes completed files from the next run.
+    # Key a failed checkpoint to the exact remainder and carry only its offset.
+    local cancelled=false
+    if archive_cancel_requested; then cancelled=true; fi
+    if [[ "$remaining_list_valid" == true ]]; then
+      finish_archive_checkpoint "$archive_success" "$cancelled" "$remaining_list" \
+        "$((total_count - files_archived))" "$((resume_offset + files_archived))" "$resume_total" \
+        || log "Unable to save verified archive resume checkpoint"
+    else
+      rm -f /mutable/archive_in_progress.json /mutable/archive_in_progress.json.tmp || true
+      log "Unable to save verified archive resume checkpoint"
+    fi
 
     message+="Archived ${files_archived} files"
+    if [[ "$resume_offset" -gt 0 ]]; then
+      message+=" ($((resume_offset + files_archived))/$resume_total across the resumed batch)"
+    fi
     local -r end_ts=$(date --utc --date "now" +%s)
     local -r delta=$((end_ts - start_ts))
     message+=" in $(convert_seconds_to_nice_time $delta)"
     if [ "$archive_success" = "false" ] && [ -n "$fail_temp" ]; then
       message+=". SoC temp at failure: $fail_temp"
     fi
-    /root/bin/send-push-message "$NOTIFICATION_TITLE:" "${message}" finish archive_complete
-    /root/bin/send-live-activity end complete || true
+    if archive_cancel_requested; then
+      /root/bin/send-push-message "$NOTIFICATION_TITLE:" "${message}" finish archive_cancelled "Archive stopped. Remaining footage kept." || true
+      /root/bin/send-live-activity end cancelled || true
+    elif [ "$archive_success" = "true" ]; then
+      /root/bin/send-push-message "$NOTIFICATION_TITLE:" "${message}" finish archive_complete "$(archive_finish_summary true "$resume_total" "$((resume_offset + files_archived))" 0)" || true
+      /root/bin/send-live-activity end complete || true
+    else
+      /root/bin/send-push-message "$NOTIFICATION_TITLE:" "${message}" error archive_error "$(archive_finish_summary false "$resume_total" "$((resume_offset + files_archived))" "$((total_count - files_archived))")" || true
+      /root/bin/send-live-activity end failed || true
+    fi
 
-    # Check RTC battery health (Pi 5 only) — warn on every archive if dead/missing
+    # RTC battery health (Pi 5 only). Warns on every archive while it reads dead
+    # or missing.
     if [ "${RTC_BATTERY_ENABLED:-false}" = "true" ] && isPi5; then
       rtc_year=$(cut -d- -f1 < /sys/class/rtc/rtc0/date 2>/dev/null)
       if [ -n "$rtc_year" ] && [ "$rtc_year" -lt 2024 ]; then
@@ -795,16 +974,30 @@ function archive_recordings () {
       cat /tmp/archive-error.log >> ${LOG_FILE}
       rm /tmp/archive-error.log
     fi
+  else
+    rm -f /mutable/archive_in_progress.json /mutable/archive_in_progress.json.tmp || true
   fi
 
-  # overlayfs behavior is undefined if the lower is changed while the overlay is active, so umount first
+  # Unmount overlayfs before changing its lower layer.
   umount "$overlaymerged"
+
+  archive_cancel_requested && return 125
 
   if archive_is_reachable
   then
     if [ "$archive_success" = "true" ]
     then
-      clean_cam_mount freespace
+      # Travel Mode defers cam-disk cleanup to avoid interrupting recording;
+      # snapshot free-space management remains independent.
+      if travel_mode_active; then
+        log "Travel Mode: deferring freespace cleanup to keep the drive connected to the car"
+      else
+        if archive_allow_cleanup_after_success; then
+          clean_cam_mount freespace
+        else
+          log "Cleanup remains deferred after archive"
+        fi
+      fi
     else
       log "Skipping cleaning step after archive error"
     fi
@@ -812,38 +1005,44 @@ function archive_recordings () {
     log "Archive not reachable, assuming user drove away, skipping cleaning step"
   fi
 
-  # Report the real outcome so archive_clips can propagate failure to the
-  # loop's retry pacing.
+  # Report the real outcome so archive_clips can propagate the failure.
   [ "$archive_success" = "true" ]
-}
-
-function copy_music_files () {
-  log "Starting music sync..."
-
-  ensure_music_file_is_mounted
-
-  /root/bin/copy-music.sh
-
-  # Trim the empty space from the music archive.
-  trim_free_space "$MUSIC_MOUNT"
-
-  unmount_music_file
 }
 
 function has_cam_disk () {
   [ -f /backingfiles/cam_disk.bin ]
 }
 
+function cancel_archive_cleanup () {
+  # Rust persisted this before acknowledging the request. Keep shell callers
+  # and recovery paths conservative too.
+  if ! touch "$CAM_CLEANUP_DEFERRED"; then
+    log "ERROR: could not persist cleanup deferral after cancellation"
+  fi
+  sync -f "${CAM_CLEANUP_DEFERRED%/*}" >> "$LOG_FILE" 2>&1 || true
+  rm -f /mutable/archive_in_progress.json /mutable/archive_in_progress.json.tmp
+  clear_archive_status
+  # Repair an inactive gadget even in Travel Mode. The ensure helper leaves an
+  # already-active gadget alone and runs before a potentially slow NAS unmount.
+  ensure_usb_drives_connected || log "ERROR: could not restore USB after cancellation"
+  /root/bin/disconnect-archive.sh 2>> "$LOG_FILE" || true
+  /root/bin/send-live-activity end cancelled || true
+  ARCHIVE_CANCEL_CLEANED=1
+  log "Archive cancelled; remaining footage kept for a later archive"
+}
+
 function archive_clips () {
   log "Archiving..."
 
-  # Track whether the clip-archiving part of this cycle succeeded.
-  # Failures in the post-archive extras (music sync) don't count.
   local clips_ok=true
 
-  if ! /root/bin/connect-archive.sh
-  then
-    log "ERROR: connect-archive.sh failed (exit $?), skipping archive step."
+  local connect_result=0
+  archive_run_command /root/bin/connect-archive.sh || connect_result=$?
+  if [ "$connect_result" = 125 ]; then
+    cancel_archive_cleanup
+    return 125
+  elif [ "$connect_result" != 0 ]; then
+    log "ERROR: connect-archive.sh failed (exit $connect_result), skipping archive step."
     log "  ARCHIVE_SYSTEM=${ARCHIVE_SYSTEM:-unset} ARCHIVE_SERVER=${ARCHIVE_SERVER:-unset}"
     if [ "${ARCHIVE_SYSTEM:-}" = "cifs" ]; then
       log "  ARCHIVE_MOUNT=${ARCHIVE_MOUNT:-unset} SHARE_NAME=${SHARE_NAME:-unset}"
@@ -862,38 +1061,28 @@ function archive_clips () {
     clips_ok=false
   fi
 
-  # If the user drove away during archive, the gadget is still presented to
-  # the car (clean_cam_mount was skipped inside archive_recordings). Skip
-  # all post-archive cleanup — every step below cycles the USB gadget,
-  # which would interrupt the car's recording. The skipped music sync runs
-  # on the next archive cycle when the car is parked at home again.
+  if archive_cancel_requested; then
+    cancel_archive_cleanup
+    return 125
+  fi
+
+  # Skip gadget-cycling cleanup if the archive became unreachable while driving.
   if ! archive_is_reachable; then
-    log "Archive became unreachable during clip archiving (user likely drove away); skipping music sync to keep USB drive stable for the car"
+    log "Archive became unreachable during clip archiving (user likely drove away); skipping post-archive cleanup to keep USB drive stable for the car"
     touch /tmp/flag_post_archive
     clear_archive_status
     /root/bin/disconnect-archive.sh 2>> "$LOG_FILE" || true
     return 1
   fi
 
-  if { timeout 5 [ -d "${MUSIC_ARCHIVE_MOUNT:-}" -a -d "$MUSIC_MOUNT" ]; } || \
-     { [ "${ARCHIVE_SYSTEM:-none}" = "rsync" ] && [ -n "${MUSIC_SHARE_NAME:-}" ] && [ -f /backingfiles/music_disk.bin ]; }
-  then
-    log "Copying music..."
-    if copy_music_files
-    then
-      log "Finished copying music."
-    else
-      log "ERROR: copy_music_files failed (exit $?)"
-    fi
-  else
-    log "Music archive not configured or unreachable (MUSIC_ARCHIVE_MOUNT=${MUSIC_ARCHIVE_MOUNT:-unset})"
-  fi
-
-  touch /tmp/flag_post_archive  #Set post-archive flag for optional temperature logging
+  # Enable the optional post-archive temperature notification.
+  touch /tmp/flag_post_archive
   clear_archive_status
-  # Reconnect cam drive right away — the car can resume recording
-  # immediately; nothing below touches the cam disk.
-  connect_usb_drives_to_host
+  # Restore recording before later cleanup; ensure avoids re-enumerating an
+  # already-present gadget. Travel Mode never disconnected it.
+  if ! travel_mode_active; then
+    ensure_usb_drives_connected
+  fi
   /root/bin/send-live-activity end complete || true
   /root/bin/disconnect-archive.sh 2>> "$LOG_FILE" || true
 
@@ -936,8 +1125,8 @@ function set_time () {
   local -r clocktime_start=$(date +%s.%N)
   for _ in {1..5}
   do
+    # The IP fallback avoids DNS failure while system time is invalid.
     if ntpdig -S time.google.com || sntp -S 129.6.15.28
-    # Fall back to NIST time server if DNS resolution fails (DNS over TLS & Cert is invalid because of wrong time)
     then
       local -r uptime_end=$(awk '{print $1}' /proc/uptime)
       local -r clocktime_end=$(date +%s.%N)
@@ -983,9 +1172,7 @@ function kmsgmirror {
     echo "===== boot $(date) ====="
     dmesg --time-format iso 2>/dev/null || dmesg 2>/dev/null || true
   } >> "$out" 2>/dev/null || true
-  # Trim right after the boot dump too — on a reboot-heavy box with a
-  # quiet kernel the follow loop below may not see enough lines to ever
-  # hit its size check, and repeated boot dumps would grow unbounded.
+  # Trim immediately because a quiet follow stream may never trigger the limit.
   if [[ "$(stat --format=%s "$out" 2>/dev/null)" -gt 2000000 ]] 2>/dev/null
   then
     tail -n 8000 "$out" > "${out}.2" 2>/dev/null && mv "${out}.2" "$out" 2>/dev/null || true
@@ -1003,20 +1190,10 @@ function kmsgmirror {
 
 function freespacemanager {
   echo -n freespacemanager > /proc/self/comm
-  # 10G
-  local reserve=10737418240
-  local threepctoftotalspace
-  threepctoftotalspace=$(eval "$(stat --file-system --format="echo \$((%b*%S/33))" /backingfiles/cam_disk.bin)")
-  reserve=$((reserve+threepctoftotalspace))
-
-  while true
-  do
-    local freespace
-    freespace=$(eval "$(stat --file-system --format="echo \$((%f*%S))" /backingfiles/cam_disk.bin)")
-    if [ "$freespace" -lt "$reserve" ]
-    then
-      /root/bin/manage_free_space.sh "$reserve" || sleep 30
-    fi
+  while true; do
+    # The native manager checks both byte and inode pressure, fails closed on
+    # invalid readings, and calculates its reserve from the current mount.
+    /root/bin/manage_free_space.sh || log "Free-space manager will retry"
     sleep 30
   done
 }
@@ -1041,39 +1218,7 @@ function logrotator {
   done
 }
 
-function wifichecker {
-  echo -n wifichecker > /proc/self/comm
-  dmesg -w | {
-    while TMOUT=1 read -r line
-    do
-      true
-    done
-    wifi=working
-    while read -r line
-    do
-      case $line in
-        *"failed to enable fw supplicant")
-          if [ "$wifi" = "working" ]
-          then
-            wifi="notworking"
-          else
-            log "restarting wifi because of: $line"
-            modprobe -r brcmfmac cfg80211 brcmutil || true
-            modprobe brcmfmac || true
-            while TMOUT=1 read -r line
-            do
-              true
-            done
-            wifi="working"
-          fi
-          ;;
-        *)
-          wifi=working
-          ;;
-      esac
-    done
-  }
-}
+source /root/bin/wifi-watchdog.sh
 
 function set_sys_param() {
   local -r parampath="$1"
@@ -1097,10 +1242,7 @@ export -f log
 echo "==============================================" >> "$LOG_FILE"
 log "Starting archiveloop at $(awk '{print $1}' /proc/uptime) seconds uptime..."
 
-# One-line boot forensics: distinguishes a car power-cut from a PMIC
-# brownout or watchdog reset when reconstructing an incident later.
-# power_reset is a Pi 5 PMIC flag (all zeros = clean power-on); throttled
-# bit 0 = undervoltage since boot.
+# Capture Pi 5 reset and undervoltage flags for boot diagnostics.
 log "Boot reason: power_reset=$(od -An -tx1 /proc/device-tree/chosen/power/power_reset 2>/dev/null | tr -d ' \n' || true) throttled=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2 || true)"
 
 set_sys_param /proc/sys/vm/dirty_background_bytes DIRTY_BACKGROUND_BYTES 65536
@@ -1109,11 +1251,7 @@ set_sys_param /sys/devices/system/cpu/cpufreq/policy0/scaling_governor CPU_GOVER
 
 /root/bin/temperature_monitor &
 
-if has_cam_disk
-then
-  snapshotloop &
-  freespacemanager &
-fi
+camdiskworkers &
 logrotator &
 wifichecker &
 timesyncloop &
@@ -1123,24 +1261,17 @@ fix_errors_in_images
 
 if has_cam_disk
 then
-  # always remove files that fsck recoverd
+  # Always remove the files fsck recovered.
   clean_cam_mount boot
 fi
 
-# Present the drive to the car BEFORE the boot snapshot. The snapshot is
-# a reflink copy of the live image — safe while the car writes, exactly
-# like every mid-loop snapshot — and taking it here used to cost the car
-# ~50 extra seconds without a drive on every power-on.
+# Present before the reflink boot snapshot to avoid delaying recording.
 connect_usb_drives_to_host
 
 if has_cam_disk
 then
-  # Snapshot immediately — no waitforidle. While recording the car never
-  # idles for the 5s gap, so waitforidle would burn its full 90s cap on
-  # every boot AND widen the window in which the car can rotate away
-  # clips before this snapshot captures them. A mid-write copy is fine:
-  # make_snapshot fscks the copy (default mode), and a partial in-flight
-  # clip was always possible across the power-loss boundary anyway.
+  # Do not wait for idle at boot: active recording exhausts the 90-second cap
+  # and can rotate clips away. Snapshot fsck handles an in-flight copy.
   /root/bin/make_snapshot.sh || log "ERROR: boot make_snapshot.sh failed (exit $?)"
 fi
 
@@ -1166,10 +1297,22 @@ then
 
   doubleblink
 
-  # Skip the gadget cycle if the user drove away during archive — the gadget
-  # is still presented to the car and re-cycling it would interrupt recording.
-  if archive_is_reachable; then
-    connect_usb_drives_to_host
+  # Reuse one probe so transient disagreement cannot skip the debounced wait.
+  reachable_now=0
+  archive_is_reachable && reachable_now=1
+
+  # Avoid cycling a gadget already restored by the archive or retained while driving.
+  if [ "$reachable_now" = 1 ] && ! travel_mode_active; then
+    ensure_usb_drives_connected
+  fi
+
+  if [ "$ARCHIVE_CYCLE_CANCELLED" = 1 ]; then
+    wait_for_archive_to_be_unreachable
+  elif travel_mode_active; then
+    # Repair the gadget before pacing.
+    check_if_usb_gadget_is_mounted
+    travel_mode_pace
+  elif [ "$reachable_now" = 1 ]; then
     wait_for_archive_to_be_unreachable
   fi
 fi
@@ -1210,10 +1353,22 @@ do
 
   doubleblink
 
-  # Skip the gadget cycle if the user drove away during archive — the gadget
-  # is still presented to the car and re-cycling it would interrupt recording.
-  if archive_is_reachable; then
-    connect_usb_drives_to_host
+  # Reuse one reachability result for reconnect and wait decisions.
+  reachable_now=0
+  archive_is_reachable && reachable_now=1
+
+  # Avoid cycling a gadget already restored by the archive or retained while driving.
+  if [ "$reachable_now" = 1 ] && ! travel_mode_active; then
+    ensure_usb_drives_connected
+  fi
+
+  if [ "$ARCHIVE_CYCLE_CANCELLED" = 1 ]; then
+    wait_for_archive_to_be_unreachable
+  elif travel_mode_active; then
+    # Repair the gadget before pacing.
+    check_if_usb_gadget_is_mounted
+    travel_mode_pace
+  elif [ "$reachable_now" = 1 ]; then
     wait_for_archive_to_be_unreachable
   fi
 

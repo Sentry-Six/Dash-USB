@@ -1,35 +1,18 @@
 import { useEffect, useState } from "react"
 import { ShieldCheck, Check, X, Loader2 } from "lucide-react"
-import type { StepProps } from "../SetupWizard"
 import { cn } from "@/lib/utils"
 
 /**
- * Privacy disclosure + analytics opt-in.
- *
- * This step covers two GDPR requirements:
- *
- * 1. Article 13 transparency at the point of collection. The "What we send
- *    and when" table below enumerates every outbound data flow before the
- *    user clicks past this screen, so the user knows what's coming before
- *    it leaves the device.
- *
- * 2. Article 21 right to object, exercisable by automated means. The
- *    analytics opt-in is the toggle — explicit affirmative action required
- *    (no pre-ticked default, per CJEU Planet49 / Art. 4(11)). Both buttons
- *    have equal visual weight to avoid the dark-pattern asymmetry EDPB
- *    Guidelines 03/2022 flags.
- *
- * The opt-in writes the `analytics_opt_in` preference immediately on click
- * (independent of the wizard's Apply flow) — that way the choice sticks
- * even if the user backs out of the wizard, and the next update-check
- * telemetry already honors it.
+ * Shows outbound data flows before recording an explicit analytics choice.
+ * The preference is saved immediately, independently of the wizard's Apply
+ * flow, so it survives leaving setup.
  */
-export function PrivacyStep(_props: StepProps) {
+export function PrivacyStep() {
   const [choice, setChoice] = useState<boolean | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Load existing value on mount so re-running setup shows the current state.
+  // Re-running setup shows the saved choice.
   useEffect(() => {
     fetch("/api/config/preference?key=analytics_opt_in")
       .then((r) => r.json())
@@ -37,8 +20,7 @@ export function PrivacyStep(_props: StepProps) {
         if (typeof data?.value === "boolean") setChoice(data.value)
       })
       .catch(() => {
-        // Pref hasn't been set yet — leave as null so neither button is
-        // highlighted, forcing an explicit choice.
+        // Leave an unset choice neutral.
       })
   }, [])
 
@@ -70,12 +52,12 @@ export function PrivacyStep(_props: StepProps) {
         Privacy
       </h2>
       <p className="mt-3 max-w-xl text-center text-sm leading-relaxed text-slate-400">
-        Before going further, here's everything Sentry-USB sends from your
+        Before going further, here's everything Dash USB sends from your
         device and when — so you know what's leaving your network before it
         does.
       </p>
 
-      {/* Disclosure table — Article 13 transparency at point of collection */}
+      {/* Show outbound data flows before the choice. */}
       <div className="mt-8 w-full max-w-2xl rounded-xl border border-white/10 bg-white/[0.02] p-5">
         <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">
           What we send, when, and why
@@ -92,18 +74,6 @@ export function PrivacyStep(_props: StepProps) {
             what="Empty ping (no body, no identifier)"
             why="Count gross install volume on the server"
             note="Anonymous. There's nothing to opt out of."
-          />
-          <FlowRow
-            when="When you use Sentry Cloud"
-            what="Your account login + the files you sync"
-            why="Sync requires it — the feature can't work otherwise"
-            note="Don't sign in to Cloud if you don't want this."
-          />
-          <FlowRow
-            when="If you enable iOS push notifications"
-            what="A randomly-generated device pairing ID"
-            why="Routing push notifications to your phone"
-            note="Not tied to your hardware. Cleared when you unpair."
           />
         </div>
         <p className="mt-4 text-[11px] leading-relaxed text-slate-500">
@@ -129,7 +99,7 @@ export function PrivacyStep(_props: StepProps) {
         </p>
       </div>
 
-      {/* Opt-in — explicit affirmative action, no pre-tick */}
+      {/* Keep the unset state neutral. */}
       <div className="mt-6 w-full max-w-2xl rounded-xl border border-white/10 bg-white/[0.02] p-5">
         <p className="text-sm font-semibold text-slate-200">
           Help us count new installs?

@@ -1,10 +1,4 @@
-//! Setup runner — the main orchestrator that replaces `setup-dashusb`.
-//!
-//! Every phase function owns its own idempotency check and only announces
-//! itself via `emitter.begin_phase(..)` when it actually has work to do,
-//! so the wizard's live phase list shows only the phases that are being
-//! executed this run. Re-runs after a mid-setup reboot silently skip the
-//! already-completed phases instead of re-lighting every step.
+//! Idempotent setup orchestration across mid-setup reboots.
 
 use std::path::Path;
 use std::time::Duration;
@@ -19,16 +13,10 @@ const SETUP_LOG: &str = "/dashusb/dashusb-setup.log";
 const SETUP_PHASES_FILE: &str = "/dashusb/setup-phases.jsonl";
 const SETUP_FINISHED_MARKER: &str = "/dashusb/DASHUSB_SETUP_FINISHED";
 const SETUP_STARTED_MARKER: &str = "/dashusb/DASHUSB_SETUP_STARTED";
-/// Records the DATA_DRIVE that successfully completed setup, so a
-/// subsequent re-run can detect a swap to a different external disk
-/// and only format the new one (Change 7). Empty file for SD-card
-/// installs where no DATA_DRIVE was used.
+/// Last successfully configured DATA_DRIVE; empty for SD-card installs.
 const LAST_DATA_DRIVE_MARKER: &str = "/dashusb/last-data-drive";
 
-/// Build a `SetupEmitter` whose progress callback writes to the setup log
-/// file and whose phase callback appends to `setup-phases.jsonl`. The two
-/// extra closures are invoked after the file I/O so callers can forward
-/// events over WebSocket (etc).
+/// Build an emitter that persists progress/phases before forwarding events.
 pub fn make_emitter(
     progress_extra: impl Fn(&str) + Send + Sync + 'static,
     phase_extra: impl Fn(&str, &str) + Send + Sync + 'static,
@@ -42,11 +30,7 @@ pub fn make_emitter(
             let _ = writeln!(f, "{}", stamped);
         }
         info!("[setup] {}", msg);
-        // Forward the *stamped* line so the WebSocket-delivered log
-        // matches the on-disk format byte-for-byte. Without this the
-        // frontend would see a raw message land via WS and then the
-        // 2s HTTP poll would replace it with the stamped version,
-        // causing a visible flicker on every new line.
+        // Keep WebSocket and polled log lines byte-identical.
         progress_extra(&stamped);
     };
     let phase = move |id: &str, label: &str| {
@@ -76,33 +60,20 @@ pub async fn run_full_setup(emitter: SetupEmitter) -> Result<()> {
         bail!("Setup must run as root");
     }
 
-    // The STARTED/FINISHED markers (and several early phases) live on the
-    // boot partition (/dashusb). On a re-run of an already-read-only
-    // system the boot partition is mounted read-only, so these writes
-    // silently fail. The critical casualty is the FINISHED marker at the
-    // end: without it, `auto_resume_setup` re-runs setup on every boot —
-    // an endless "Setup Complete → reboot" loop. Force boot writable up
-    // front (no-op when it already is); the final reboot re-applies `ro`
-    // from fstab. This is NOT covered by make_readonly's own ensure_boot_rw
-    // because that phase early-returns when the system is already read-only.
+    // Markers live on /dashusb. Make it writable before early returns, or a
+    // missing FINISHED marker makes auto-resume loop after setup.
     crate::readonly::ensure_boot_rw().await;
 
     let resuming = Path::new(SETUP_STARTED_MARKER).exists();
-    // Capture this BEFORE we delete the finished marker — the partition
-    // phase uses it to skip wipefs/parted entirely on a re-run when the
-    // current DATA_DRIVE matches what last completed setup. Defense in
-    // depth: even if a future bug reintroduces destructive behavior in
-    // setup_data_drive, this prevents it from running on a system the
-    // user already finished setting up.
+    // Capture before deleting FINISHED; it guards completed disks from
+    // partitioning on re-runs.
     let already_finished = Path::new(SETUP_FINISHED_MARKER).exists();
 
     let _ = std::fs::remove_file(SETUP_FINISHED_MARKER);
     let _ = std::fs::create_dir_all("/dashusb");
     let _ = std::fs::write(SETUP_STARTED_MARKER, "");
 
-    // Clear the phases ledger on a fresh start so the UI list starts empty.
-    // Only truncate on the very first run (no STARTED marker yet, no
-    // partitions). Resumes after a mid-flow reboot must preserve the ledger.
+    // Preserve the phase ledger across mid-flow reboots.
     if !resuming && !crate::partition::partitions_exist().await {
         let _ = std::fs::remove_file(SETUP_PHASES_FILE);
     }
@@ -115,91 +86,59 @@ pub async fn run_full_setup(emitter: SetupEmitter) -> Result<()> {
 
     let _ = sentryusb_shell::run("mount", &["/", "-o", "remount,rw"]).await;
 
-    // Phase: detect environment (no UI phase — always fast)
     let env = SetupEnv::detect().await?;
     if !resuming {
         emitter.progress(&format!("Detected: {}", env.pi_model.display_name()));
     }
 
-    // Pre-setup sanity checks — hardware model, XFS + reflink support,
-    // required config vars, disk space. Deliberately does NOT include
-    // the UDC check yet: on a fresh Pi OS image (install-pi.sh path)
-    // `dtoverlay=dwc2` isn't in config.txt yet, so `/sys/class/udc/` is
-    // empty and a UDC check here would always fail before we got a
-    // chance to add the overlay. See verify.rs for the rationale.
-    //
-    // On a resume we skip these — the first pass already passed, and
-    // the XFS loopback check is expensive to redo.
+    // Skip expensive sanity checks on resume. UDC validation waits until the
+    // dwc2 overlay has had a chance to load.
     if !resuming {
         crate::verify::early_verify(&env, &emitter).await?;
     }
 
-    // WiFi regulatory (silent no-op when already set)
     configure_wifi_regulatory(&env, &emitter).await?;
 
-    // dwc2 USB gadget overlay — reboots if added.
     if configure_dwc2_overlay(&env, &emitter).await? {
         emitter.progress("Rebooting to apply dwc2 overlay change...");
         reboot().await;
         return Ok(());
     }
 
-    // dwc2 is now either already-loaded (the normal resume path) or
-    // already in config.txt from a previous run. Either way the kernel
-    // should have the DWC2 UDC exposed under /sys/class/udc/. Bail
-    // loudly if not — proceeding into partitioning / gadget setup with
-    // a missing UDC gives confusing downstream errors.
+    // Fail before partitioning if the configured overlay exposes no UDC.
     crate::verify::verify_udc()?;
 
-    // Root partition shrink (reboots twice in its own flow)
     if check_root_shrink(&env, &emitter).await? {
         return Ok(());
     }
 
-    // Disk-space verification. Runs here (AFTER root shrink) rather
-    // than in early_verify because on a fresh Pi OS install the root
-    // partition fills the entire SD/SSD and `sfdisk -F` reports 0
-    // bytes unpartitioned — the shrink above is what creates the
-    // 8 GB we need for backingfiles+mutable. Fast path via the
-    // `/dev/disk/by-label/backingfiles` check short-circuits on
-    // repeat runs.
+    // Verify space only after root shrinking creates the unpartitioned reserve.
     crate::verify::verify_disk_space(&env, &emitter).await?;
 
-    // Hostname + timezone (grouped under "System configuration")
+    // Group hostname and timezone into one UI phase.
     let hostname_changed = crate::system::configure_hostname(&env, &emitter).await?;
     let tz_changed = crate::system::configure_timezone(&env, &emitter).await?;
     if hostname_changed || tz_changed {
-        // Progress already written; emit the phase retroactively so the UI
-        // records this grouping exactly once, without double-announcing.
+        // Announce once after either operation reports work.
         emitter.begin_phase("system_basics", "System configuration");
     }
 
-    // Package index refresh.
     update_package_index(&emitter).await?;
 
-    // cmdline.txt modules — reboots if changed.
     if fix_cmdline_modules(&env, &emitter).await? {
         emitter.progress("Rebooting to apply cmdline.txt change...");
         reboot().await;
         return Ok(());
     }
 
-    // Required packages (announces its own phase on work).
     crate::system::install_required_packages(&emitter).await?;
 
-    // Runtime helper scripts.
+    // configure_automount depends on /root/bin/auto.dashusb.
     crate::scripts::install_runtime_scripts(&emitter).await?;
 
-    // UAS quirks (silent unless it added an entry).
     fix_uas_quirks(&env, &emitter).await?;
 
-    // Partitioning.
-    //
-    // Guard: if setup previously completed AND the current DATA_DRIVE
-    // matches what was last set up AND the partitions are still
-    // present, skip the partition phase entirely. The user is here to
-    // change a config value (archive server, hostname, samba etc.) —
-    // we have no business calling wipefs/parted on a working install.
+    // Partition only incomplete installs or a newly selected DATA_DRIVE.
     let last_drive = std::fs::read_to_string(LAST_DATA_DRIVE_MARKER)
         .unwrap_or_default()
         .trim()
@@ -221,58 +160,43 @@ pub async fn run_full_setup(emitter: SetupEmitter) -> Result<()> {
         crate::partition::setup_sd_card(&env, &emitter).await?;
     }
 
-    // Mount partitions (helper phase with its own idempotency).
     mount_partitions(&emitter).await?;
 
-    // Disk images.
     crate::disk_images::create_disk_images(&env, &emitter).await?;
 
     update_image_fstab_entries().await?;
     initialize_drive_directories().await?;
 
-    // Archive configuration.
     if env.get_bool("CONFIGURE_ARCHIVING", true) {
         crate::archive::configure_archive(&env, &emitter).await?;
     }
 
-    // Samba.
     crate::system::configure_samba(&env, &emitter).await?;
 
-    // WiFi AP — only when both SSID and a valid password are set. When the
-    // wizard box is unchecked (no SSID), remove any previously configured AP
-    // so deactivation actually takes effect.
+    // Configure the AP with usable credentials. With no SSID, remove prior AP
+    // state; an invalid password leaves that state unchanged.
     let has_ap_ssid = env.config.get("AP_SSID").is_some_and(|v| !v.is_empty());
     let has_ap_pass = env.config.get("AP_PASS").is_some_and(|v| v.len() >= 8);
     if has_ap_ssid && has_ap_pass {
         crate::network::configure_ap(&env, &emitter).await?;
     } else if !has_ap_ssid {
-        // No SSID at all = explicit uncheck. (SSID with a bad password is
-        // left alone, as before — configure_ap would reject it anyway.)
         crate::network::deconfigure_ap(&emitter).await?;
     }
 
-    // SSH hardening.
     crate::system::configure_ssh(&emitter).await?;
 
-    // Avahi mDNS.
     crate::system::configure_avahi(&env, &emitter).await?;
 
-    // Snapshot automount (autofs → /tmp/snapshots). Needed before the
-    // readonly phase so /etc/auto.master.d is writable.
+    // Configure autofs before making /etc read-only.
     crate::automount::configure_automount(&emitter).await?;
 
-    // Recordings bind-mount wiring. Writes /etc/fstab bind entry and
-    // activates var-www-html-Recordings.mount. Must run before readonly
-    // so /etc/fstab is still writable.
+    // Configure the recordings bind mount before making /etc read-only.
     crate::teslacam_mount::configure_web_mount(&emitter).await?;
 
-    // RTC.
     crate::system::configure_rtc(&env, &emitter).await?;
 
-    // Read-only filesystem.
     crate::readonly::make_readonly(&env, &emitter).await?;
 
-    // Optional package upgrade.
     if env.get_bool("UPGRADE_PACKAGES", false) {
         emitter.begin_phase("upgrade_packages", "Upgrading packages");
         emitter.progress("Upgrading installed packages...");
@@ -283,18 +207,13 @@ pub async fn run_full_setup(emitter: SetupEmitter) -> Result<()> {
         let _ = sentryusb_shell::run("apt-get", &["clean"]).await;
     }
 
-    // Record the active DATA_DRIVE so the next setup re-run can detect
-    // a swap (Change 7) and skip partitioning when nothing changed.
+    // Persist DATA_DRIVE for the next partitioning guard.
     let _ = std::fs::write(
         LAST_DATA_DRIVE_MARKER,
         env.data_drive.clone().unwrap_or_default(),
     );
 
-    // The make_readonly phase above may have left the boot partition
-    // read-only on this run (it early-returns without remounting when the
-    // system was already read-only). Re-assert writability so the FINISHED
-    // marker — the one thing that stops setup from re-running every boot —
-    // actually lands, and don't swallow its error.
+    // Reassert boot writability so FINISHED reliably stops auto-resume.
     crate::readonly::ensure_boot_rw().await;
     let _ = std::fs::remove_file(SETUP_STARTED_MARKER);
     if let Err(e) = std::fs::write(SETUP_FINISHED_MARKER, "") {
@@ -308,9 +227,7 @@ pub async fn run_full_setup(emitter: SetupEmitter) -> Result<()> {
     emitter.progress("=== DashUSB Setup Complete ===");
     emitter.progress("Rebooting in 5 seconds to apply changes...");
 
-    // Auto-reboot so read-only root, cmdline.txt changes, and partition table
-    // updates take effect without a manual step. Small delay lets SSE clients
-    // flush the completion message.
+    // Delay reboot long enough to flush the completion event.
     tokio::spawn(async {
         tokio::time::sleep(Duration::from_secs(5)).await;
         let _ = sentryusb_shell::run("systemctl", &["reboot"]).await;
@@ -331,9 +248,7 @@ fn am_root() -> bool {
 }
 
 async fn reboot() {
-    // Don't go through logind — it may be broken on minimal images and
-    // stall for 25s+ per dbus-activation timeout. Talk to systemd directly
-    // and fall back to kernel reboot.
+    // Avoid logind stalls on minimal images; fall back to a kernel reboot.
     if tokio::process::Command::new("systemctl")
         .args(["--force", "reboot"])
         .spawn()
@@ -344,8 +259,8 @@ async fn reboot() {
     let _ = tokio::process::Command::new("reboot").arg("-f").spawn();
 }
 
-/// Persist US regulatory domain via module param and /etc/default/crda if not
-/// already set. Silent no-op otherwise.
+/// Persist the US regulatory domain via module param and /etc/default/crda
+/// when unset. Silent no-op otherwise.
 async fn configure_wifi_regulatory(_env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> {
     if sentryusb_shell::run("systemctl", &["-q", "is-enabled", "NetworkManager.service"]).await.is_err() {
         return Ok(());
@@ -438,7 +353,8 @@ async fn configure_dwc2_overlay(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
             writeln!(f, "\n{}\n{}", section_header, overlay_line)?;
         }
 
-        // Remove stale global dtoverlay=dwc2
+        // A global dtoverlay=dwc2 would override the per-model section, so
+        // drop any stale one.
         let content = std::fs::read_to_string(&config_path)?;
         let mut lines: Vec<String> = Vec::new();
         let mut in_section_any = false;
@@ -458,11 +374,10 @@ async fn configure_dwc2_overlay(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
     Ok(true)
 }
 
-/// Check whether the root partition needs shrinking (Pi Imager auto-expand case).
-/// Shrink the partition-table entry of the (already filesystem-shrunk) root
-/// partition down to match its filesystem, freeing the tail of the disk for
-/// setup's backingfiles/mutable partitions. Only call this once the root
-/// filesystem itself has been shrunk (by resize2fs in initramfs).
+/// Shrink the partition-table entry of the root partition down to match its
+/// filesystem, freeing the tail of the disk for the backingfiles and mutable
+/// partitions. MUST only be called once the root filesystem itself has been
+/// shrunk by resize2fs in initramfs.
 async fn shrink_root_partition_table(
     root_dev: &str,
     boot_disk: &str,
@@ -550,11 +465,8 @@ async fn root_partition_sectors(root_dev: &str) -> Option<u64> {
 }
 
 async fn check_root_shrink(env: &SetupEnv, emitter: &SetupEmitter) -> Result<bool> {
-    // Mirror the verify_disk_space branch: the shrink exists solely to free
-    // 8 GB on the SD for backingfiles+mutable. When DATA_DRIVE is set those
-    // partitions live on the external drive and the SD doesn't need any
-    // unpartitioned space — install-pi.sh's user-facing note advertises
-    // exactly this behavior.
+    // DATA_DRIVE moves backingfiles and mutable off the SD, so the SD needs no
+    // unpartitioned reserve.
     if env.data_drive.is_some() {
         return Ok(false);
     }
@@ -622,17 +534,11 @@ async fn check_root_shrink(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
     }
 
     if Path::new(resize_marker).exists() {
-        // The initramfs resize records success by writing /root/RESIZE_RESULT,
-        // but some non-Raspberry-Pi initramfs environments (e.g. DietPi on
-        // RK3399 / Radxa 4C+) can't persist that marker even when resize2fs
-        // succeeded — which previously stranded setup on a permanent FATAL.
-        // Trust the disk, not the marker: if the filesystem is already smaller
-        // than its partition, the resize did happen, so finish the partition-
-        // table shrink instead of bailing.
+        // Some DietPi/RK3399 initramfs environments lose RESIZE_RESULT after a
+        // successful resize. Trust a filesystem smaller than its partition.
         let fs_sectors = root_fs_sectors(&root_dev).await.unwrap_or(0);
         let part_sectors = root_partition_sectors(&root_dev).await.unwrap_or(0);
-        // 64 MiB of slack so a partition already matching its filesystem isn't
-        // needlessly reshrunk.
+        // Ignore differences within 64 MiB.
         let slack = 64 * 1024 * 1024 / 512;
         if fs_sectors > 0 && part_sectors > 0 && fs_sectors + slack < part_sectors {
             emitter.begin_phase("root_shrink", "Shrinking root partition table");
@@ -670,12 +576,7 @@ async fn check_root_shrink(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
     ).await?;
     let used_kb: u64 = used_output.trim().parse().unwrap_or(0);
 
-    // Honor INCREASE_ROOT_SIZE from dashusb.conf / wizard advanced step.
-    // The wizard exposed this field but the shrink path was ignoring it,
-    // so users who asked for headroom (e.g. for extra apt packages) ended
-    // up with a root partition trimmed to the bare minimum. Round the
-    // requested bytes up to whole GB so we never give them less than they
-    // asked for.
+    // Add requested package headroom, rounded up to whole GiB.
     let extra_gb: u64 = env
         .config
         .get("INCREASE_ROOT_SIZE")
@@ -821,7 +722,7 @@ fi
     Ok(())
 }
 
-/// Ensure cmdline.txt has `modules-load=dwc2,g_ether`. Returns true if a change
+/// Ensure cmdline.txt loads the dwc2 UDC at boot. Returns true if a change
 /// was made (caller should reboot).
 async fn fix_cmdline_modules(env: &SetupEnv, emitter: &SetupEmitter) -> Result<bool> {
     let cmdline_path = match &env.cmdline_path {
@@ -830,7 +731,7 @@ async fn fix_cmdline_modules(env: &SetupEnv, emitter: &SetupEmitter) -> Result<b
     };
 
     let content = std::fs::read_to_string(&cmdline_path)?;
-    if content.contains("dwc2") && content.contains("g_ether") {
+    if content.contains("modules-load=dwc2") || content.contains("dwc2") {
         return Ok(false);
     }
 
@@ -844,9 +745,12 @@ async fn fix_cmdline_modules(env: &SetupEnv, emitter: &SetupEmitter) -> Result<b
         new_content
     };
 
-    let final_content = format!("{} modules-load=dwc2,g_ether\n", new_content.trim());
+    // dwc2 ONLY. Loading a competing gadget function at boot (g_ether, the
+    // legacy USB-ethernet debug gadget) fights the configfs mass-storage
+    // gadget the daemon manages.
+    let final_content = format!("{} modules-load=dwc2\n", new_content.trim());
     std::fs::write(&cmdline_path, final_content)?;
-    emitter.progress("Updated cmdline.txt with modules-load=dwc2,g_ether");
+    emitter.progress("Updated cmdline.txt with modules-load=dwc2");
     Ok(true)
 }
 
@@ -893,10 +797,8 @@ async fn fix_uas_quirks(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> {
     Ok(())
 }
 
-/// Update the package index. Only announces if we actually need to run apt-get update.
+/// Refresh package metadata when older than six hours.
 async fn update_package_index(emitter: &SetupEmitter) -> Result<()> {
-    // Quick heuristic: if /var/lib/apt/lists has been touched in the last
-    // 6 hours, skip. Otherwise we always run it (safe to re-run, but slow).
     let lists_dir = Path::new("/var/lib/apt/lists");
     if let Ok(meta) = std::fs::metadata(lists_dir) {
         if let Ok(modified) = meta.modified() {
@@ -947,21 +849,12 @@ async fn mount_partitions(emitter: &SetupEmitter) -> Result<()> {
         emitter.progress("Mounting backingfiles partition...");
         if let Ok(dev) = sentryusb_shell::run("findfs", &["LABEL=backingfiles"]).await {
             let dev = dev.trim().to_string();
-            // Drop any stale auto-mount so the mount below isn't
-            // racing the kernel's auto-mount of the same partition
-            // at /media/<user>/<label>.
+            // Remove desktop automounts before mounting at the managed path.
             let _ = sentryusb_shell::run("umount", &[dev.as_str()]).await;
             let _ = sentryusb_shell::run("umount", &["/backingfiles"]).await;
             let _ = sentryusb_shell::run("udevadm", &["settle", "--timeout=10"]).await;
         }
-        // Mount handles XFS log replay safely on its own. We used to
-        // pre-run xfs_repair here, but that is unnecessary work on a
-        // healthy filesystem and could legitimately run for several
-        // minutes on TB drives, blocking the wizard. If the log is
-        // genuinely broken, mount returns a clear error here and
-        // setup bails — much better than silently destroying data
-        // via a runaway repair fallback (the bug that wiped the
-        // user's drive on the bash legacy path).
+        // Let mount replay the XFS log; preemptive repair is slow and risky.
         sentryusb_shell::run("mount", &["/backingfiles"]).await?;
     }
 
@@ -977,18 +870,12 @@ async fn mount_partitions(emitter: &SetupEmitter) -> Result<()> {
 async fn update_image_fstab_entries() -> Result<()> {
     let images = [
         ("/backingfiles/cam_disk.bin", "/mnt/cam"),
-        ("/backingfiles/music_disk.bin", "/mnt/music"),
-        ("/backingfiles/lightshow_disk.bin", "/mnt/lightshow"),
-        ("/backingfiles/boombox_disk.bin", "/mnt/boombox"),
     ];
 
     let mut fstab = std::fs::read_to_string("/etc/fstab").unwrap_or_default();
 
-    // Always strip any pre-migration wraps_disk.bin line so reruns don't
-    // leave a stale fstab entry pointing at a deleted backing file.
     let fstab_lines: Vec<&str> = fstab.lines()
         .filter(|l| !images.iter().any(|(img, _)| l.starts_with(img)))
-        .filter(|l| !l.starts_with("/backingfiles/wraps_disk.bin"))
         .collect();
     fstab = fstab_lines.join("\n");
 
@@ -1011,15 +898,11 @@ async fn update_image_fstab_entries() -> Result<()> {
 async fn initialize_drive_directories() -> Result<()> {
     let _ = sentryusb_gadget::disable();
 
-    // Pre-create the vehicle profile's recording tree on the cam drive
-    // so the car can start recording even if its firmware doesn't create
-    // the folder structure on a blank drive itself (unverified on GM —
-    // creating it up front is harmless either way).
+    // Seed the profile root so snapshot discovery works before the first drive.
     let recording_root = sentryusb_vehicle_profile::Profile::active().recording.root.clone();
     let cam_dirs: &[&str] = &[recording_root.as_str()];
     let drives: &[(&str, &[&str])] = &[
         ("/mnt/cam", cam_dirs),
-        ("/mnt/music", &[]),
     ];
 
     for (mnt, dirs) in drives {

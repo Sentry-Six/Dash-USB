@@ -1,9 +1,9 @@
 const API_BASE = "/api"
 
-// Backend API base URL for resolving relative attachment/media URLs.
-// The Pi proxies API requests locally, but media assets are served directly
-// by the backend. Override via Vite env for staging/dev.
-export const BACKEND_BASE_URL = import.meta.env.VITE_SENTRY_API_URL || "https://api.sentry-six.com"
+// Base URL for resolving relative attachment/media URLs. The Pi proxies API
+// requests locally, but media assets are served directly by the backend.
+// Override via Vite env for staging/dev.
+export const BACKEND_BASE_URL = import.meta.env?.VITE_SENTRY_API_URL || "https://api.sentry-six.com"
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -14,7 +14,8 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     ...options,
   })
   if (!res.ok) {
-    throw new Error(`API error: ${res.status} ${res.statusText}`)
+    const body = await res.json().catch(() => null) as { error?: string } | null
+    throw new Error(body?.error || `API error: ${res.status} ${res.statusText}`)
   }
   return res.json() as Promise<T>
 }
@@ -29,10 +30,10 @@ export interface PiStatus {
   uptime: string
   drives_active: string
   /**
-   * Host-link state from /sys/class/udc ("configured" = the car is
-   * actually enumerated and talking). drives_active only reflects the
-   * configfs binding — the Pi's intent to present — and stays "yes"
-   * through a dead link. Present only on backends ≥ v3.13.4.
+   * Host-link state from /sys/class/udc; "configured" means the car has
+   * enumerated the gadget and is talking. drives_active only reflects the
+   * configfs binding (the Pi's intent to present) and stays "yes" through a
+   * dead link.
    */
   udc_state?: string
   /** Seconds since the car last wrote to cam_disk.bin, -1 when unknown. */
@@ -43,22 +44,19 @@ export interface PiStatus {
   ether_ip: string
   ether_speed: string
   fan_speed: string
+  /** Optional 5 V input measurement; unavailable sensors return null. */
+  supply_voltage?: number | null
+  storage_health?: {
+    state: "healthy" | "warn" | "fail" | "recovering" | "unknown"
+    message: string
+  }
   sbc_model?: string
-  /** Negative integer parsed from iwconfig "Signal level=-48 dBm". Present only on backends ≥ v2.7.4. */
+  /** Negative integer parsed from iwconfig "Signal level=-48 dBm". */
   wifi_signal_dbm?: number
   wifi_rx_bps?: number
   wifi_tx_bps?: number
   ether_rx_bps?: number
   ether_tx_bps?: number
-}
-
-export interface EventMeta {
-  timestamp?: string
-  city?: string
-  reason?: string
-  camera?: string
-  latitude?: string
-  longitude?: string
 }
 
 export interface ClipGroup {
@@ -71,12 +69,10 @@ export interface ClipEntry {
   date: string
   path: string
   files: string[]
-  event?: EventMeta
 }
 
 export interface StorageBreakdown {
   cam_size: number
-  music_size: number
   snapshots_size: number
   total_space: number
   free_space: number
@@ -88,10 +84,17 @@ export interface ArchiveStatus {
   phase: string
   current?: number
   total?: number
+  cycle?: { id: string; cancelling: boolean } | null
+  eta_seconds?: number | null
+  eta_state?: "estimating" | "running" | "stalled" | "unavailable" | "ready"
+  sampled_at?: number
 }
 
 export const api = {
   getStatus: () => request<PiStatus>("/status"),
   getStorageBreakdown: () => request<StorageBreakdown>("/status/storage"),
   getArchiveStatus: () => request<ArchiveStatus>("/archive/status"),
+  cancelArchive: (cycleId: string) => request("/archive/cancel", {
+    method: "POST", body: JSON.stringify({ cycle_id: cycleId }),
+  }),
 }

@@ -22,22 +22,15 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "process
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
-thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-# Drop default `wasmbind` (we never target wasm) and the deprecated
-# `oldtime` shim. `clock` pulls in `std` + `now` for Utc::now() /
-# Local::now() which the API + telemetry code uses; `serde` is needed
-# by the DriveStore serialization paths.
-chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+# `clock` supplies Utc::now(); wasm, oldtime, and serde support are unused.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [profile.release]
 opt-level = "s"
 lto = "thin"
 strip = true
 codegen-units = 1
-# Drops unwinding tables (~5-10 KB on ARM) and shrinks the binary further.
-# No code uses `std::panic::catch_unwind` (grep -r confirms), so the
-# behavioral change is a no-op: any panic now `abort()`s the process,
-# which systemd restarts via Restart=always already in the unit file.
+# No code catches panics; systemd restarts the process after abort.
 panic = "abort"

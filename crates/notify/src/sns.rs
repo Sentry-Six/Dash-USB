@@ -1,11 +1,5 @@
-//! AWS SNS Publish — native SigV4 signed request.
-//!
-//! Credentials come from the environment (AWS_ACCESS_KEY_ID /
-//! AWS_SECRET_ACCESS_KEY / optional AWS_SESSION_TOKEN) when set, falling
-//! back to the values from dashusb.conf. The fallback matters: systemd
-//! starts the server without sourcing the conf, so env-only lookups left
-//! SNS permanently broken for installs configured through the web UI.
-//! Region is parsed from the topic ARN, then the conf, then AWS_REGION.
+//! AWS SNS Publish with SigV4. Credentials resolve from environment then
+//! config; region resolves from the topic ARN, config, then environment.
 
 use anyhow::{bail, Result};
 use chrono::Utc;
@@ -43,7 +37,6 @@ pub async fn send(
     let host = format!("sns.{}.amazonaws.com", region);
     let url = format!("https://{}/", host);
 
-    // Form-encoded Publish body
     let body = format!(
         "Action=Publish&Version=2010-03-31&TopicArn={}&Subject={}&Message={}",
         urlencoding::encode(topic_arn),
@@ -57,7 +50,6 @@ pub async fn send(
 
     let payload_hash = sha256_hex(body.as_bytes());
 
-    // Canonical request
     let mut canonical_headers = format!(
         "content-type:application/x-www-form-urlencoded\nhost:{}\nx-amz-date:{}\n",
         host, amz_date,
@@ -73,7 +65,6 @@ pub async fn send(
         canonical_headers, signed_headers, payload_hash,
     );
 
-    // String to sign
     let credential_scope = format!("{}/{}/sns/aws4_request", date_stamp, region);
     let string_to_sign = format!(
         "AWS4-HMAC-SHA256\n{}\n{}\n{}",
@@ -82,7 +73,6 @@ pub async fn send(
         sha256_hex(canonical_request.as_bytes()),
     );
 
-    // Signing key
     let k_date = hmac_sha256(format!("AWS4{}", secret_key).as_bytes(), date_stamp.as_bytes());
     let k_region = hmac_sha256(&k_date, region.as_bytes());
     let k_service = hmac_sha256(&k_region, b"sns");
@@ -124,7 +114,7 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
     hmac::sign(&k, data).as_ref().to_vec()
 }
 
-/// Parse region from an ARN: arn:aws:sns:<region>:<account>:<topic>
+/// ARN layout: `arn:aws:sns:<region>:<account>:<topic>`.
 fn region_from_arn(arn: &str) -> Option<String> {
     let parts: Vec<&str> = arn.splitn(6, ':').collect();
     if parts.len() >= 4 && !parts[3].is_empty() {

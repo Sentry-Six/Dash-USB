@@ -2,8 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { AlertCircle, Check, Loader2, Terminal } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-// ── Log line parser ────────────────────────────────────────────────────────
-
 type LogLevel = "error" | "warning" | "success" | "info" | "default"
 
 interface ParsedLine {
@@ -65,8 +63,6 @@ const levelColors: Record<LogLevel, { text: string; tag: string }> = {
   default: { text: "text-slate-400",   tag: "text-slate-500"   },
 }
 
-// ── Component ──────────────────────────────────────────────────────────────
-
 const STALE_THRESHOLD_MS = 5 * 60 * 1000
 
 type SetupPhaseStatus = "applying" | "running" | "rebooting" | "finalizing" | "complete" | "error"
@@ -89,13 +85,7 @@ export function SetupProgress({ complete, phase = "running" }: SetupProgressProp
   const prevLenRef = useRef(0)
   const lastChangeRef = useRef(0) // seeded on mount below (render must stay pure)
 
-  // Poll setup log as a fallback / catch-up mechanism only. Real-time log
-  // lines arrive via the `setup_progress` WebSocket event in the next
-  // effect — polling alone used to be the only source, which meant the
-  // UI could be up to 3 seconds behind reality and the Pi would reboot
-  // before the "Rebooting..." line ever showed up. The poll still
-  // matters for (a) seeding on mount, (b) catching up after the server
-  // disappears during a reboot.
+  // Polling seeds and repairs gaps; WebSocket events provide live lines.
   useEffect(() => {
     if (complete) return
     let cancelled = false
@@ -107,7 +97,7 @@ export function SetupProgress({ complete, phase = "running" }: SetupProgressProp
         if (cancelled) return
         setLogLines(text.split("\n").filter(Boolean))
       } catch {
-        // server unreachable during reboot — expected
+        // Server unreachable during reboot: expected.
       }
     }
     poll()
@@ -115,9 +105,7 @@ export function SetupProgress({ complete, phase = "running" }: SetupProgressProp
     return () => { cancelled = true; clearInterval(id) }
   }, [complete])
 
-  // Seed the phase list from the server's persisted ledger, then subscribe
-  // to `setup_phase` WebSocket events for live updates. Polling the ledger
-  // periodically covers the gap when the server is down during a reboot.
+  // Merge the persisted phase ledger with live updates across reboots.
   useEffect(() => {
     if (complete) return
 
@@ -131,14 +119,13 @@ export function SetupProgress({ complete, phase = "running" }: SetupProgressProp
         if (cancelled) return
         const fetched: PhaseEntry[] = data.phases ?? []
         setPhases((prev) => {
-          // Merge: fetched entries (authoritative order) + any WS-added
-          // entries not yet in the fetched list.
+          // Preserve live entries not yet present in the authoritative ledger.
           const seen = new Set(fetched.map((p) => p.id))
           const extras = prev.filter((p) => !seen.has(p.id))
           return [...fetched, ...extras]
         })
       } catch {
-        // server unreachable — expected during reboot
+        // Server unreachable during reboot: expected.
       }
     }
 
@@ -166,12 +153,7 @@ export function SetupProgress({ complete, phase = "running" }: SetupProgressProp
                 return [...prev, { id, label }]
               })
             } else if (msg.type === "setup_progress") {
-              // Live log append — the backend broadcasts this for every
-              // `emitter.progress()` call, so lines land here well before
-              // the 2s HTTP poll would pick them up. The next poll will
-              // authoritative-rewrite the whole list, which papers over
-              // any transient duplicate if the line is already in our
-              // array from a previous poll.
+              // Polling later replaces any transient duplicate authoritatively.
               const text: string = msg.data?.message ?? ""
               if (!text) return
               setLogLines((prev) => {
@@ -200,7 +182,6 @@ export function SetupProgress({ complete, phase = "running" }: SetupProgressProp
     }
   }, [complete])
 
-  // Auto-scroll log + stale detection
   useEffect(() => {
     if (lastChangeRef.current === 0) lastChangeRef.current = Date.now()
     if (logLines.length > prevLenRef.current) {
@@ -224,8 +205,7 @@ export function SetupProgress({ complete, phase = "running" }: SetupProgressProp
   const parsedLines = useMemo(() => logLines.map(parseLine), [logLines])
   const visibleLines = parsedLines.slice(-200)
 
-  // Phase visualisation: done = all but the last; the last is in-progress
-  // while setup is running, and marked done when complete/finalizing.
+  // Treat only the newest phase as active until setup finalizes.
   const isDone = complete || phase === "complete" || phase === "finalizing"
   const activeIdx = isDone ? phases.length : Math.max(0, phases.length - 1)
   const headerLabel = isDone
@@ -238,7 +218,6 @@ export function SetupProgress({ complete, phase = "running" }: SetupProgressProp
 
   return (
     <div className="w-full space-y-5">
-      {/* Current activity heading — centered above the two columns */}
       <div className="flex items-center justify-center gap-2.5 text-center">
         {isDone ? (
           <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-500/20">
@@ -259,7 +238,6 @@ export function SetupProgress({ complete, phase = "running" }: SetupProgressProp
         </div>
       </div>
 
-      {/* Stale warning — full width above both columns */}
       {stale && !isDone && (
         <div className="flex items-start gap-2 rounded-xl border border-yellow-500/20 bg-yellow-500/5 px-3 py-2.5">
           <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-yellow-400" />
@@ -271,11 +249,8 @@ export function SetupProgress({ complete, phase = "running" }: SetupProgressProp
         </div>
       )}
 
-      {/* Two-column layout on lg+, stacked on mobile. The phase list and the
-          setup log scroll independently so neither overflows the viewport
-          when there are 20+ phases / hundreds of log lines. */}
+      {/* Independently scroll phase and log columns on large layouts. */}
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 lg:items-start">
-        {/* Phase list — left column */}
         {phases.length > 0 && (
           <div className="overflow-hidden rounded-xl border border-white/8 bg-white/[0.02]">
             <div className="border-b border-white/5 px-3.5 py-2 text-xs font-medium text-slate-500">
@@ -322,7 +297,6 @@ export function SetupProgress({ complete, phase = "running" }: SetupProgressProp
           </div>
         )}
 
-        {/* Setup log — right column */}
         <div className="overflow-hidden rounded-xl border border-white/8 bg-black/30">
           <div className="flex items-center gap-2 border-b border-white/5 px-3 py-2">
             <Terminal className="h-3.5 w-3.5 text-slate-500" />

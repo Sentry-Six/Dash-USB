@@ -4,11 +4,11 @@ import type { StepProps } from "../SetupWizard"
 const sections = [
   {
     title: "Network",
-    fields: ["DASHUSB_HOSTNAME", "AP_SSID", "AP_PASS", "AP_IP"],
+    fields: ["DASHUSB_HOSTNAME"],
   },
   {
     title: "Storage",
-    fields: ["CAM_SIZE", "MUSIC_SIZE", "DATA_DRIVE"],
+    fields: ["CAM_SIZE", "DATA_DRIVE"],
   },
   {
     title: "Archive",
@@ -72,9 +72,7 @@ function formatReviewValue(key: string, value: string, data: StepProps["data"]):
 export function ReviewStep({ data, setupAlreadyFinished }: StepProps) {
   const configuredCount = Object.entries(data).filter(([k, v]) => !k.startsWith("_") && v && v.trim() !== "").length
 
-  // Fields that are locked once initial setup has completed — surfaced
-  // greyed-out with a "(locked)" suffix so the user understands why the
-  // value isn't editable in the wizard.
+  // Root resizing is locked after initial setup.
   const lockedKeys = new Set(setupAlreadyFinished ? ["INCREASE_ROOT_SIZE"] : [])
 
   return (

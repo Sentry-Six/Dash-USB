@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react"
-import { Cog, Thermometer, MapPin, Search, Battery, AlertTriangle, Ruler } from "lucide-react"
+import { Cog, Thermometer, Search, Battery, AlertTriangle, Ruler } from "lucide-react"
 import type { StepProps } from "../SetupWizard"
 import { SizeInput } from "../SizeInput"
 
@@ -20,11 +20,8 @@ function Field({ label, field, type = "text", placeholder, data, onChange, hint 
 
 const TIMEZONES = [
   "auto",
-  // US: prefer the canonical IANA names below — newer Pi OS / Debian
-  // releases ship a minimal tzdata that drops the legacy `US/*` aliases,
-  // which would make `timedatectl set-timezone` fail. Our backend
-  // normalizes US/Eastern → America/New_York etc. for older saved
-  // configs, but new installs should pick the canonical name directly.
+  // Minimal tzdata omits `US/*`; list canonical IANA names while the backend
+  // normalizes saved aliases.
   // Americas
   "America/Adak", "America/Anchorage", "America/Anguilla", "America/Antigua", "America/Araguaina",
   "America/Argentina/Buenos_Aires", "America/Argentina/Catamarca", "America/Argentina/Cordoba",
@@ -155,8 +152,7 @@ function TempInput({
   placeholder: string
   useFahrenheit: boolean
 }) {
-  // Render the stored value (°C, or legacy milli-°C when >= 1000) as a display
-  // string in the active unit.
+  // Render Celsius or legacy milli-Celsius in the selected unit.
   const toDisplay = (raw: string): string => {
     if (!raw) return ""
     let celsius = parseFloat(raw)
@@ -165,13 +161,8 @@ function TempInput({
     return useFahrenheit ? ((celsius * 9 / 5) + 32).toFixed(1) : celsius.toFixed(1)
   }
 
-  // What the user is actually typing. Keeping this in local state is the fix:
-  // previously the input's value was re-derived from the stored °C on every
-  // render, so each keystroke (which writes a converted °C back to the store)
-  // immediately re-rendered the field to that converted value — typing "7" in
-  // °F stored -13.9 °C and the box jumped to "-13.9", making it impossible to
-  // type a temperature. Now the box shows exactly what's typed; we only push
-  // the converted °C to the store, and re-derive the text on a unit switch.
+  // Keep in-progress text local; converting each keystroke would overwrite
+  // partial Fahrenheit input. Re-derive only when units change.
   const [text, setText] = useState<string>(() => toDisplay(data[field] ?? ""))
   const lastUnit = useRef(useFahrenheit)
   useEffect(() => {
@@ -193,18 +184,16 @@ function TempInput({
           inputMode="decimal"
           value={text}
           onChange={(e) => {
-            // Allow digits, a single decimal point, and a leading minus.
             const v = e.target.value.replace(/[^0-9.-]/g, "")
             setText(v)
-            // Partial inputs ("", "-", ".") aren't a number yet — clear the
-            // stored value but keep the in-progress text on screen.
+            // Preserve incomplete numeric text without storing it.
             if (v === "" || v === "-" || v === "." || v === "-.") {
               onChange(field, "")
               return
             }
             const num = parseFloat(v)
             if (!isNaN(num)) {
-              // Store as °C (converted to milli-°C on save).
+              // Store Celsius; save converts to milli-Celsius.
               const celsius = useFahrenheit ? ((num - 32) * 5 / 9) : num
               onChange(field, celsius.toFixed(1))
             }
@@ -222,8 +211,7 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
   const [tzSearch, setTzSearch] = useState("")
   const [isPi5, setIsPi5] = useState(false)
   const useFahrenheit = data.TEMPERATURE_UNIT === "F"
-  // Master measurement-unit selector reflects the temperature choice (the
-  // per-unit controls below can still diverge into a mixed set).
+  // Temperature controls the master selector; individual units may diverge.
   const isMetric = !useFahrenheit
 
   useEffect(() => {
@@ -243,7 +231,6 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
 
   return (
     <div className="space-y-6">
-      {/* Timezone */}
       <div>
         <label className="mb-1 block text-sm font-medium text-slate-300">Time Zone</label>
         <div className="relative mb-2">
@@ -259,12 +246,10 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
         <select
           value={data.TIME_ZONE ?? "auto"}
           onChange={(e) => onChange("TIME_ZONE", e.target.value)}
-          // Native <select> swallows the change event when the user clicks
-          // an option whose value already matches `value` — so after the
-          // search filter narrows the list, clicking the first result was
-          // a no-op when it happened to match the current selection.
-          // Re-fire on every option click so the selection commits even
-          // if the value didn't change.
+          // A native <select> fires no change event when the clicked option
+          // already matches `value`, so once the search filter narrows the
+          // list, clicking the first result can be a no-op. Re-commit the
+          // selection on every option click.
           onClick={(e) => {
             const target = e.target as HTMLOptionElement
             if (target.tagName === "OPTION" && target.value) {
@@ -283,7 +268,6 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
         </p>
       </div>
 
-      {/* Archive tuning */}
       <div>
         <div className="mb-3 flex items-center gap-2">
           <Cog className="h-4 w-4 text-blue-400" />
@@ -295,13 +279,10 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
           <Field label="Archive Delay (seconds)" field="ARCHIVE_DELAY" placeholder="20"
             data={data} onChange={onChange} hint="Delay between WiFi connect and archiving start" />
           <Field label="Snapshot Interval (seconds)" field="SNAPSHOT_INTERVAL" placeholder="default"
-            data={data} onChange={onChange} hint="Set ~2 min shorter than car's RecentClips retention" />
+            data={data} onChange={onChange} hint="Keep well under the car's rolling-delete window (GM ≈ 2 h; default 900 s)" />
         </div>
       </div>
 
-      {/* Measurement unit — master selector. Sets temperature, distance and
-          tire-pressure units together; the per-unit controls below (and the
-          dashboard's Display & Units) stay in sync via the same config keys. */}
       <div>
         <div className="mb-3 flex items-center gap-2">
           <Ruler className="h-4 w-4 text-blue-400" />
@@ -311,12 +292,12 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
         </div>
         <div className="flex w-fit overflow-hidden rounded-lg border border-white/10">
           <button type="button"
-            onClick={() => { onChange("TEMPERATURE_UNIT", "C"); onChange("DRIVE_MAP_UNIT", "km"); onChange("PRESSURE_UNIT", "bar") }}
+            onClick={() => onChange("TEMPERATURE_UNIT", "C")}
             className={`px-4 py-1.5 text-xs font-medium transition-colors ${isMetric ? "bg-blue-500 text-white" : "text-slate-500 hover:text-slate-300"}`}>
             Metric
           </button>
           <button type="button"
-            onClick={() => { onChange("TEMPERATURE_UNIT", "F"); onChange("DRIVE_MAP_UNIT", "mi"); onChange("PRESSURE_UNIT", "psi") }}
+            onClick={() => onChange("TEMPERATURE_UNIT", "F")}
             className={`px-4 py-1.5 text-xs font-medium transition-colors ${!isMetric ? "bg-blue-500 text-white" : "text-slate-500 hover:text-slate-300"}`}>
             Imperial
           </button>
@@ -326,8 +307,7 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
         </p>
       </div>
 
-      {/* Temperature monitoring — unit follows the Measurement Unit selector
-          above (TEMPERATURE_UNIT); thresholds render in that unit. */}
+      {/* Thresholds render in the unit picked above (TEMPERATURE_UNIT). */}
       <div>
         <div className="mb-3 flex items-center gap-2">
           <Thermometer className="h-4 w-4 text-blue-400" />
@@ -431,7 +411,7 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
                           }}
                           className="mt-0.5 h-4 w-4 rounded border-white/20 bg-white/5 accent-red-500" />
                         <span className="text-xs text-slate-300">
-                          I confirm my RTC battery is rechargeable and accept all risk. Sentry-USB assumes no
+                          I confirm my RTC battery is rechargeable and accept all risk. Dash USB assumes no
                           responsibility for damage caused by enabling trickle charging with an incompatible battery.
                         </span>
                       </label>
@@ -444,7 +424,6 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
         </div>
       )}
 
-      {/* System tuning */}
       <div>
         <div className="mb-3 flex items-center gap-2">
           <Cog className="h-4 w-4 text-blue-400" />
@@ -465,49 +444,11 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
           />
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Additional Packages" field="INSTALL_USER_REQUESTED_PACKAGES" placeholder="iftop mosh sysstat"
-            data={data} onChange={onChange} hint="Space-separated list of apt packages" />
           <Field label="CPU Governor" field="CPU_GOVERNOR" placeholder="conservative"
             data={data} onChange={onChange} hint="Leave empty for Dash USB defaults" />
-          <Field label="Dirty Background Bytes" field="DIRTY_BACKGROUND_BYTES" placeholder="65536"
-            data={data} onChange={onChange} hint="VM write-back tuning. Leave empty for defaults." />
         </div>
       </div>
 
-      {/* Drive Map */}
-      <div>
-        <div className="mb-3 flex items-center gap-2">
-          <MapPin className="h-4 w-4 text-blue-400" />
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
-            Drive Map
-          </h3>
-        </div>
-        <p className="mb-3 text-xs text-slate-500">
-          Automatically extract GPS data from dashcam clips after archiving and build a map of all your drives.
-        </p>
-        <label className="flex cursor-pointer items-center gap-2">
-          <input type="checkbox" checked={(data.DRIVE_MAP_ENABLED ?? "true") === "true"}
-            onChange={(e) => onChange("DRIVE_MAP_ENABLED", e.target.checked ? "true" : "false")}
-            className="h-4 w-4 rounded border-white/20 bg-white/5 accent-blue-500" />
-          <span className="text-sm text-slate-300">Enable drive map processing after archive</span>
-        </label>
-        {(data.DRIVE_MAP_ENABLED ?? "true") === "true" && (
-          <>
-            <label className="mt-2 flex cursor-pointer items-center gap-2">
-              <input type="checkbox" checked={(data.DRIVE_MAP_WHILE_AWAY ?? "true") === "true"}
-                onChange={(e) => onChange("DRIVE_MAP_WHILE_AWAY", e.target.checked ? "true" : "false")}
-                className="h-4 w-4 rounded border-white/20 bg-white/5 accent-blue-500" />
-              <span className="text-sm text-slate-300">Map drives while away</span>
-            </label>
-            <p className="ml-6 text-xs text-slate-600">
-              Process new clips after each snapshot while the car is away. Reduces processing time when you arrive home.
-              Disable if you experience overheating issues.
-            </p>
-          </>
-        )}
-      </div>
-
-      {/* Source */}
       <div>
         <div className="mb-3 flex items-center gap-2">
           <Cog className="h-4 w-4 text-blue-400" />
@@ -516,15 +457,15 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
           </h3>
         </div>
         <p className="mb-2 text-xs text-slate-500">
-          GitHub source used for both initial setup tarball downloads and OTA
-          updates. Forks must keep the original repo name (Dash-USB)
-          and use semver-compatible release tags (e.g. v1.2.3).
+          GitHub source for OTA updates and their supporting scripts. Forks
+          must keep the original repo name (Dash-USB) and use
+          semver-compatible release tags (e.g. v1.2.3).
         </p>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="GitHub Repo" field="REPO" placeholder="Sentry-Six"
-            data={data} onChange={onChange} hint="GitHub user/org. Used for both setup downloads and OTA updates." />
+            data={data} onChange={onChange} hint="GitHub user/org. Release binaries and support scripts come from here." />
           <Field label="Branch" field="BRANCH" placeholder="main"
-            data={data} onChange={onChange} hint="Setup-time tarball downloads only. OTA updates always use GitHub Releases." />
+            data={data} onChange={onChange} hint="Tracking branch for non-binary support files (runtime patches, migration fallback). OTA binaries always come from tagged Releases. Advanced; leave at main unless you maintain a branch." />
         </div>
       </div>
     </div>

@@ -1,10 +1,8 @@
-//! Native notification providers for DashUSB.
-//!
-//! Replaces the bash `send-push-message` script with direct HTTP calls,
-//! eliminating subprocess overhead and Python/curl dependencies.
+//! Notification providers, one module per service. Settings come from
+//! dashusb.conf; [`send_to_all_with_context`] fans every enabled provider
+//! out concurrently over one shared HTTP client.
 
 use anyhow::Result;
-use async_trait::async_trait;
 use tracing::{info, warn};
 
 pub mod discord;
@@ -20,16 +18,8 @@ pub mod sns;
 pub mod telegram;
 pub mod webhook;
 
-/// Trait for notification providers.
-#[async_trait]
-pub trait NotificationProvider: Send + Sync {
-    /// Send a notification with the given title and message.
-    async fn send(&self, title: &str, message: &str) -> Result<()>;
-    /// Provider name for logging/display.
-    fn name(&self) -> &str;
-}
-
-/// Configuration for all notification providers, read from dashusb.conf.
+/// Provider settings, loaded from dashusb.conf.
+#[derive(Default)]
 pub struct NotifyConfig {
     pub pushover_enabled: bool,
     pub pushover_app_key: String,
@@ -77,9 +67,7 @@ pub struct NotifyConfig {
     pub sns_enabled: bool,
     pub sns_topic_arn: String,
     pub sns_region: String,
-    // Passed to the SNS signer because systemd starts the server without
-    // sourcing dashusb.conf — env-only AWS credential lookups never
-    // resolve on a normal install (see sns.rs).
+    // Pass config credentials explicitly because systemd does not source them.
     pub sns_access_key: String,
     pub sns_secret_key: String,
 
@@ -89,7 +77,6 @@ pub struct NotifyConfig {
 }
 
 impl NotifyConfig {
-    /// Load notification config from dashusb.conf.
     pub fn from_config() -> Self {
         let config_path = sentryusb_config::find_config_path();
         let (active, _) = sentryusb_config::parse_file(config_path)
@@ -102,12 +89,13 @@ impl NotifyConfig {
             get(key).to_lowercase() == "true"
         };
 
-        let mobile_push_enabled = is_true("MOBILE_PUSH_ENABLED");
+        // Dash USB has no companion app. Ignore inherited app-push settings
+        // without deleting saved credentials or changing supported providers.
+        let mobile_push_enabled = false;
 
-        // MOBILE_PUSH_DEVICE_ID and MOBILE_PUSH_SECRET are intentionally NOT
-        // stored in dashusb.conf — they live in the credentials JSON managed
-        // by the server. envsetup.sh reads them from that file;
-        // we do the same here when the conf values are absent.
+        // MOBILE_PUSH_DEVICE_ID and MOBILE_PUSH_SECRET are deliberately not
+        // stored in dashusb.conf; they live in the server-managed
+        // credentials JSON. Fall back to it when the conf values are absent.
         let (mobile_push_device_id, mobile_push_secret) = {
             let from_conf = (get("MOBILE_PUSH_DEVICE_ID"), get("MOBILE_PUSH_SECRET"));
             if !from_conf.0.is_empty() && !from_conf.1.is_empty() {
@@ -175,8 +163,7 @@ impl NotifyConfig {
     }
 }
 
-/// Read device_id and device_secret from the credentials JSON file.
-/// Mirrors envsetup.sh's fallback for mobile push credentials.
+/// Same credentials file and keys envsetup.sh reads; the two must stay in sync.
 fn read_mobile_credentials_from_json() -> Option<(String, String)> {
     const CREDS_PATH: &str = "/root/.dashusb/notification-credentials.json";
     let data = std::fs::read_to_string(CREDS_PATH).ok()?;
@@ -189,39 +176,27 @@ fn read_mobile_credentials_from_json() -> Option<(String, String)> {
     Some((id, secret))
 }
 
-/// Request-level context for a single notification dispatch. Only
-/// mobile push (Sentry Connect) currently consumes the extras — the
-/// other channels are title + message only.
+/// Per-dispatch context. Only mobile push (Sentry Connect) reads the
+/// extras; every other channel uses title + message.
 #[derive(Debug, Clone, Default)]
 pub struct NotifyRequest<'a> {
     pub title: &'a str,
     pub message: &'a str,
-    /// `start` / `finish` — matches the bash `$3` positional arg. Drives
-    /// the live_activity branch on mobile push.
+    /// `start` or `finish`. Drives the live_activity branch on mobile push.
     pub type_hint: Option<&'a str>,
-    /// Notification category (`archive_start`, `temperature`, `drives`,
-    /// …). Echoed to the mobile push server for categorization and used
-    /// for the gate check upstream.
+    /// Category forwarded to the push server and used for upstream gating.
     pub notification_type: Option<&'a str>,
-    /// Total clip count for the pending archive run — enables the
+    /// Total clip count for the pending archive run. Enables the
     /// live_activity payload on `archive_start`.
     pub archive_total_count: Option<u32>,
 }
 
-/// Process-wide shared client for outbound notification dispatches.
-/// Built once on first send; reused for the lifetime of the process so
-/// we don't repeatedly stand up a fresh TLS pool + DNS cache + idle
-/// connection pool per sentry event.
+/// Process-wide outbound client with shared TLS and connection pools.
 static NOTIFY_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
 
 fn notify_client() -> &'static reqwest::Client {
     NOTIFY_CLIENT.get_or_init(|| {
-        // Panic-on-error rather than fall back to `Client::default()`: the
-        // default builder discards our 30s/10s timeouts, so a TLS init
-        // failure would silently produce a no-timeout client that can
-        // hang a tokio worker indefinitely on a misconfigured push
-        // endpoint. Failing loudly at first send surfaces the real
-        // problem instead of pretending notifications still work.
+        // Never fall back to a client without the bounded timeout.
         reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .connect_timeout(std::time::Duration::from_secs(10))
@@ -230,10 +205,8 @@ fn notify_client() -> &'static reqwest::Client {
     })
 }
 
-/// Context-aware dispatch — preferred entry point for runtime
-/// notifications. Passes the extra context through to providers that
-/// can use it (currently just Sentry Connect); others ignore the extras
-/// and use title + message.
+/// Preferred entry point for runtime notifications. The extra context
+/// reaches only Sentry Connect; other providers get title + message.
 pub async fn send_to_all_with_context(
     config: &NotifyConfig,
     req: &NotifyRequest<'_>,
@@ -342,7 +315,14 @@ pub async fn send_to_all_with_context(
 
     futures::future::join_all(sends.into_iter().map(
         |(display, key, fut)| async move {
-            let r = fut.await;
+            // Sanitize before either logging or returning errors to API/history.
+            let r = fut.await.map_err(|e| anyhow::anyhow!(safe_provider_error(&e, &[
+                &config.pushover_app_key, &config.pushover_user_key,
+                &config.telegram_bot_token, &config.gotify_app_token, &config.ntfy_token,
+                &config.ifttt_key, &config.matrix_password, &config.sns_access_key,
+                &config.sns_secret_key, &config.mobile_push_secret,
+                &config.discord_webhook_url, &config.slack_webhook_url, &config.webhook_url,
+            ])));
             log_result(display, &r);
             (key, r)
         },
@@ -354,5 +334,112 @@ fn log_result(provider: &str, result: &Result<()>) {
     match result {
         Ok(()) => info!("[notify] {} — sent successfully", provider),
         Err(e) => warn!("[notify] {} — failed: {}", provider, e),
+    }
+}
+
+/// Preserve diagnostic reasons without credentials or secret-bearing URLs.
+pub fn safe_provider_error(error: &anyhow::Error, secrets: &[&str]) -> String {
+    safe_error_text(&format!("{error:#}"), secrets)
+}
+
+/// Redact a credential assignment, not a diagnostic mentioning its field name.
+fn redact_credential_values(mut text: String) -> String {
+    for key in ["authorization", "x-device-secret", "device_secret", "access_token", "password", "api_key", "token", "secret"] {
+        let mut cursor = 0;
+        while let Some(found) = text[cursor..].to_ascii_lowercase().find(key) {
+            let start = cursor + found;
+            let end = start + key.len();
+            cursor = end;
+            if start > 0 && (text.as_bytes()[start - 1].is_ascii_alphanumeric() || text.as_bytes()[start - 1] == b'_') {
+                continue;
+            }
+            let bytes = text.as_bytes();
+            let mut at = end;
+            if at < bytes.len() && matches!(bytes[at], b'"' | b'\'') { at += 1; }
+            while at < bytes.len() && bytes[at].is_ascii_whitespace() { at += 1; }
+            if at >= bytes.len() || !matches!(bytes[at], b':' | b'=') { continue; }
+            at += 1;
+            while at < bytes.len() && bytes[at].is_ascii_whitespace() { at += 1; }
+            if at >= bytes.len() { continue; }
+            let from;
+            let mut to;
+            if matches!(bytes[at], b'"' | b'\'') {
+                let quote = bytes[at];
+                from = at + 1;
+                to = from;
+                while to < bytes.len() && bytes[to] != quote {
+                    if bytes[to] == b'\\' && to + 1 < bytes.len() { to += 1; }
+                    to += 1;
+                }
+            } else {
+                from = at;
+                to = at;
+                while to < bytes.len() && bytes[to] != b'\n' && bytes[to] != b'\r'
+                    && (key == "authorization" || !matches!(bytes[to], b' ' | b'\t' | b',' | b';' | b'}')) {
+                    to += 1;
+                }
+            }
+            text.replace_range(from..to, "[redacted]");
+            cursor = from + "[redacted]".len();
+        }
+    }
+    text
+}
+
+pub fn safe_error_text(message: &str, secrets: &[&str]) -> String {
+    let mut safe = message.to_string();
+    // Longest first prevents one credential exposing the suffix of another.
+    let mut secrets: Vec<&str> = secrets.iter().copied().filter(|s| !s.is_empty()).collect();
+    secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    for secret in secrets {
+        safe = safe.replace(secret, "[redacted]");
+        safe = safe.replace(urlencoding::encode(secret).as_ref(), "[redacted]");
+    }
+    let safe = safe.lines().map(|line| {
+        line.split_whitespace().map(|word| {
+            let lower = word.to_ascii_lowercase();
+            if lower.contains("https://") || lower.contains("http://") {
+                "[redacted URL]"
+            } else { word }
+        }).collect::<Vec<_>>().join(" ")
+    }).collect::<Vec<_>>().join("\n");
+    // Remove URLs first: a capability path ending in "token:" must not be
+    // mistaken for a credential assignment that consumes the following cause.
+    let safe = redact_credential_values(safe);
+    // A provider can return an HTML error page; keep history bounded.
+    if safe.chars().count() > 4096 {
+        format!("{}… [truncated]", safe.chars().take(4096).collect::<String>())
+    } else { safe }
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    #[test]
+    fn notification_redaction_preserves_missing_field_reason_status_and_cause_chain() {
+        assert_eq!(super::safe_error_text("no access_token in login response", &[]),
+            "no access_token in login response");
+        let safe = super::safe_error_text(
+            r#"HTTP 401 — {"error":"invalid device_secret","device_secret":"unknown-secret","access_token":"dynamic-token"}"#, &[]);
+        assert!(safe.contains("HTTP 401"));
+        assert!(safe.contains("invalid device_secret"));
+        assert!(!safe.contains("unknown-secret"));
+        assert!(!safe.contains("dynamic-token"));
+        let error = anyhow::anyhow!("connection refused").context("error sending request for url https://example/private-token");
+        let safe = super::safe_provider_error(&error, &[]);
+        assert!(safe.contains("connection refused"));
+        assert!(!safe.contains("private-token"));
+    }
+
+    #[test]
+    fn notification_errors_keep_reasons_without_credentials_or_urls() {
+        let error = "HTTP 400 chat not found at https://api.example/botSECRET/send?token=SECRET\nAuthorization: Bearer SECRET\nx-device-secret: SECRET\nrequest timed out";
+        let safe = super::safe_error_text(error, &["SECRET"]);
+        assert!(safe.contains("HTTP 400 chat not found"));
+        assert!(safe.contains("request timed out"));
+        assert!(!safe.contains("SECRET"));
+        assert!(!safe.contains("api.example"));
+        assert!(!safe.contains("Bearer"));
+        assert!(!super::safe_error_text("password=p%40ss", &["p@ss"]).contains("p%40ss"));
+        assert!(!super::safe_error_text("HTTP 400 HTTPS://example/private-capability", &[]).contains("private-capability"));
     }
 }

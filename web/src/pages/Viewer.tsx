@@ -7,13 +7,13 @@ import {
 import { cn } from "@/lib/utils"
 import type { ClipEntry, ClipGroup } from "@/lib/api"
 
-/** Shape of GET /api/profile — the active vehicle profile. */
 interface VehicleProfile {
   id: string
   display_name: string
   cameras: { id: string; label: string; optional?: boolean }[]
   grid: string[][]
   filename_regex: string
+  segment_seconds: number
 }
 
 const CATEGORY = "Continuous"
@@ -25,8 +25,8 @@ interface ClipSet {
 
 const SPEED_OPTIONS = [0.5, 1, 1.5, 2, 4]
 
-/** Compile the profile's clip regex. The backend uses Rust regex syntax
- *  with `(?P<name>...)` named captures; JS wants `(?<name>...)`. */
+/** Profile patterns use Rust regex syntax with `(?P<name>...)` named
+ *  captures; JS requires `(?<name>...)`. */
 function compileClipRegex(pattern: string): RegExp | null {
   try {
     return new RegExp(pattern.replace(/\(\?P</g, "(?<"))
@@ -35,9 +35,8 @@ function compileClipRegex(pattern: string): RegExp | null {
   }
 }
 
-/** Group one folder's files into per-segment camera sets using the
- *  profile's filename pattern. All cameras of a segment share the
- *  timestamp captures, which double as the sort key. */
+/** All cameras of a segment share the timestamp captures, which double
+ *  as the sort key. */
 function groupByTimestamp(files: string[], basePath: string, regex: RegExp | null): ClipSet[] {
   if (!regex) return []
   const map = new Map<string, Record<string, string>>()
@@ -97,8 +96,7 @@ export default function Viewer() {
   const [segmentDurations, setSegmentDurations] = useState<number[]>([])
   const [profile, setProfile] = useState<VehicleProfile | null>(null)
 
-  // Active vehicle profile drives the camera set, grid layout and
-  // filename parsing — nothing brand-specific is hard-coded here.
+  // Profile data defines cameras, layout, and filename parsing.
   useEffect(() => {
     fetch("/api/profile")
       .then((r) => r.json())
@@ -122,9 +120,7 @@ export default function Viewer() {
   )
   const gridCols = profile ? Math.max(...profile.grid.map((r) => r.length), 1) : 2
 
-  // Cells to render: the profile grid (incl. "" spacers), plus any
-  // optional cameras (e.g. INTERIOR on 2027+ GMs) that actually have
-  // footage in the selected clip but aren't in the grid.
+  // Append recorded optional cameras that have no configured grid slot.
   const gridCells = useMemo(() => {
     if (!profile) return [] as string[]
     const cells = profile.grid.flat()
@@ -135,6 +131,9 @@ export default function Viewer() {
   }, [profile, clipSets])
 
   const currentSet = clipSets[currentSetIdx] as ClipSet | undefined
+  // Track probes explicitly because fallback and measured durations can match.
+  const segmentSeconds = profile?.segment_seconds ?? 300
+  const probedRef = useRef<Set<number>>(new Set())
 
   const videoRefs = useRef<Map<string, HTMLVideoElement>>(new Map())
   const masterVideoRef = useRef<HTMLVideoElement | null>(null)
@@ -143,11 +142,11 @@ export default function Viewer() {
   const animFrameRef = useRef<number>(0)
   const pendingSeekRef = useRef<number | null>(null)
 
-  // Cross-segment preloading: hidden <video> elements for the next segment
+  // Hidden videos preload the next segment.
   const preloadedVideosRef = useRef<Map<string, HTMLVideoElement>>(new Map())
   const preloadedForIdxRef = useRef<number>(-1)
 
-  // Refs for high-frequency values — avoids triggering React renders at video frame rate
+  // High-frequency values stay in refs to avoid per-frame renders.
   const currentTimeRef = useRef(0)
   const globalTimeRef = useRef(0)
   const playingRef = useRef(false)
@@ -155,11 +154,9 @@ export default function Viewer() {
   const playbackSpeedRef = useRef(1)
   const lastUIUpdateRef = useRef(0)
 
-  // Keep refs in sync with state
   useEffect(() => { currentSetIdxRef.current = currentSetIdx }, [currentSetIdx])
   useEffect(() => { playbackSpeedRef.current = playbackSpeed }, [playbackSpeed])
 
-  // Memoized timeline computations (only recompute when segments change)
   const priorSegmentsTime = useMemo(
     () => segmentDurations.slice(0, currentSetIdx).reduce((a, b) => a + b, 0),
     [segmentDurations, currentSetIdx]
@@ -175,7 +172,6 @@ export default function Viewer() {
 
   const globalTime = priorSegmentsTime + currentTime
 
-  // Memoized segment marker positions for seek bar
   const segmentPositions = useMemo(() => {
     if (segmentDurations.length <= 1 || totalDuration <= 0) return []
     const positions: number[] = []
@@ -189,7 +185,6 @@ export default function Viewer() {
 
   const CLIPS_PAGE_SIZE = 20
 
-  // Fetch the recordings list (single Continuous category).
   useEffect(() => {
     setLoading(true)
     fetch(`/api/clips?category=${CATEGORY}&limit=${CLIPS_PAGE_SIZE}`)
@@ -229,7 +224,6 @@ export default function Viewer() {
 
   const activeGroup = groups.find((g) => g.name === CATEGORY)
 
-  // When clip changes, build clip sets
   useEffect(() => {
     if (selectedClip) {
       const sets = groupByTimestamp(selectedClip.files, selectedClip.path, clipRegex)
@@ -246,12 +240,12 @@ export default function Viewer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- regex/primary are stable once the profile loads
   }, [selectedClip, clipRegex])
 
-  // Preload segment durations — only probe the first few segments eagerly,
-  // defer the rest until the user navigates near them
+  // Probe a small initial batch, then lazily probe nearby segments.
   const EAGER_PROBE_COUNT = 6
   useEffect(() => {
+    probedRef.current = new Set()
     if (!clipSets.length) { setSegmentDurations([]); return }
-    const durations = new Array(clipSets.length).fill(60)
+    const durations = new Array(clipSets.length).fill(segmentSeconds)
     setSegmentDurations([...durations])
 
     let cancelled = false
@@ -273,6 +267,7 @@ export default function Viewer() {
             v.onloadedmetadata = () => {
               if (!cancelled && Number.isFinite(v.duration)) {
                 durations[i] = v.duration
+                probedRef.current.add(i)
                 setSegmentDurations([...durations])
               }
               resolve()
@@ -284,15 +279,13 @@ export default function Viewer() {
       }
     }
 
-    // Only probe the first EAGER_PROBE_COUNT segments initially
     loadBatched(0, Math.min(EAGER_PROBE_COUNT, clipSets.length))
     return () => { cancelled = true; cleanups.forEach((c) => c()) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- segmentSeconds/primaryCamera are stable once the profile loads
   }, [clipSets])
 
-  // Lazily probe segment durations as user navigates near un-probed segments
   useEffect(() => {
     if (!clipSets.length || currentSetIdx < EAGER_PROBE_COUNT - 2) return
-    // Probe a window around the current segment
     const probeStart = Math.max(0, currentSetIdx - 1)
     const probeEnd = Math.min(clipSets.length, currentSetIdx + 4)
 
@@ -300,8 +293,7 @@ export default function Viewer() {
     const cleanups: (() => void)[] = []
 
     for (let i = probeStart; i < probeEnd; i++) {
-      // Skip already-probed segments (non-default duration)
-      if (segmentDurations[i] !== 60) continue
+      if (probedRef.current.has(i)) continue
       const set = clipSets[i]
       const url = (primaryCamera && set.cameras[primaryCamera]) || Object.values(set.cameras)[0]
       if (!url) continue
@@ -310,6 +302,7 @@ export default function Viewer() {
       v.src = url
       v.onloadedmetadata = () => {
         if (!cancelled && Number.isFinite(v.duration)) {
+          probedRef.current.add(i)
           setSegmentDurations((prev) => {
             const next = [...prev]
             next[i] = v.duration
@@ -321,9 +314,7 @@ export default function Viewer() {
     }
 
     return () => { cancelled = true; cleanups.forEach((c) => c()) }
-    // segmentDurations intentionally omitted: it's only read to skip
-    // already-probed segments; depending on it would cancel and re-create
-    // in-flight probes every time one completes.
+    // segmentDurations would restart in-flight probes after every result.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clipSets, currentSetIdx])
 
@@ -345,17 +336,16 @@ export default function Viewer() {
     return () => clearInterval(interval)
   }, [playing])
 
-  // Clean up preloaded videos
   const cleanupPreloaded = useCallback(() => {
     preloadedVideosRef.current.forEach((v) => { v.src = ""; v.remove() })
     preloadedVideosRef.current.clear()
     preloadedForIdxRef.current = -1
   }, [])
 
-  // Cross-segment preloading: when within 5s of segment end, preload next segment's active cameras
+  // Buffer active cameras near the segment boundary.
   useEffect(() => {
     if (!playing || clipSets.length === 0) return
-    const PRELOAD_WINDOW = 5 // seconds before end to start preloading
+    const PRELOAD_WINDOW = 5 // seconds
 
     const checkInterval = setInterval(() => {
       const master = masterVideoRef.current
@@ -365,10 +355,8 @@ export default function Viewer() {
       const nextIdx = currentSetIdxRef.current + 1
 
       if (timeRemaining <= PRELOAD_WINDOW && nextIdx < clipSets.length) {
-        // Already preloaded for this segment?
         if (preloadedForIdxRef.current === nextIdx) return
 
-        // Clean up any stale preloads
         cleanupPreloaded()
         preloadedForIdxRef.current = nextIdx
 
@@ -381,13 +369,11 @@ export default function Viewer() {
           v.muted = true
           v.playsInline = true
           v.src = url
-          // Hidden — just for buffering
           v.style.display = "none"
           document.body.appendChild(v)
           preloadedVideosRef.current.set(cam, v)
         })
       } else if (timeRemaining > PRELOAD_WINDOW && preloadedForIdxRef.current !== -1) {
-        // User seeked away from the end — clean up
         cleanupPreloaded()
       }
     }, 1000)
@@ -397,17 +383,15 @@ export default function Viewer() {
     }
   }, [playing, clipSets, activeCameras, cleanupPreloaded])
 
-  // Clean up preloaded videos on segment change (they've served their purpose or are stale)
   useEffect(() => {
     cleanupPreloaded()
   }, [currentSetIdx, cleanupPreloaded])
 
-  // Clean up preloaded videos on unmount
   useEffect(() => {
     return () => cleanupPreloaded()
   }, [cleanupPreloaded])
 
-  // Set master video ref (primary camera preferred)
+  // Prefer the profile's primary camera as the synchronization master.
   useEffect(() => {
     if (!currentSet) { masterVideoRef.current = null; return }
     const primary = primaryCamera ? videoRefs.current.get(primaryCamera) : undefined
@@ -416,14 +400,13 @@ export default function Viewer() {
       if (v) { masterVideoRef.current = v; return }
     }
     masterVideoRef.current = null
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentSet, currentSetIdx, primaryCamera])
 
-  // Time update animation loop — only runs during playback, throttles React updates to ~15fps
+  // Runs only during playback; React state updates are throttled to ~15fps.
   const startAnimLoop = useCallback(() => {
     const UI_INTERVAL = 66 // ~15fps for React state updates
     function tick() {
-      if (!playingRef.current) return // stop loop when paused
+      if (!playingRef.current) return
       const master = masterVideoRef.current
       if (master) {
         currentTimeRef.current = master.currentTime
@@ -446,13 +429,11 @@ export default function Viewer() {
     return () => cancelAnimationFrame(animFrameRef.current)
   }, [playing, startAnimLoop])
 
-  // Apply playback speed to all videos
   useEffect(() => {
     videoRefs.current.forEach((v) => { if (v) v.playbackRate = playbackSpeed })
   }, [playbackSpeed, currentSetIdx])
 
 
-  // Auto-advance to next clip set
   const handleVideoEnded = useCallback(() => {
     setCurrentSetIdx((i) => {
       if (i < clipSets.length - 1) return i + 1
@@ -461,14 +442,14 @@ export default function Viewer() {
     })
   }, [clipSets.length])
 
-  // Sync all videos to a time — batched in RAF for smoother seeking
+  // Seeks are batched into a RAF callback to keep scrubbing smooth.
   const syncVideos = useCallback((time: number) => {
     requestAnimationFrame(() => {
       videoRefs.current.forEach((v) => {
         if (v) v.currentTime = time
       })
     })
-    // Update UI immediately for paused seeks
+    // Paused seeks need an immediate UI update.
     currentTimeRef.current = time
     if (!playingRef.current) {
       globalTimeRef.current = priorSegmentsTimeRef.current + time
@@ -522,7 +503,6 @@ export default function Viewer() {
     seekToGlobal(pct * total)
   }, [seekToGlobal])
 
-  // Fullscreen toggle
   const toggleFullscreen = useCallback(() => {
     if (!containerRef.current) return
     if (document.fullscreenElement) {
@@ -538,7 +518,8 @@ export default function Viewer() {
     return () => document.removeEventListener("fullscreenchange", onFS)
   }, [])
 
-  // Keyboard shortcuts — stable callbacks mean this only re-attaches on focusedCamera change
+  // Stable callbacks keep this listener from re-attaching except when
+  // focusedCamera changes.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
@@ -568,13 +549,9 @@ export default function Viewer() {
     return () => window.removeEventListener("keydown", onKey)
   }, [togglePlay, skip, toggleFullscreen, focusedCamera])
 
-  // Delete clip
   async function handleDeleteClip(clip: ClipEntry) {
     try {
-      // Delete via /mutable/Recordings (the snapshot-symlink tree this
-      // view actually lists from), NOT /mnt/cam — the live cam-disk image
-      // is unmounted on the Pi side whenever the USB gadget is presenting
-      // it to the car. Matches the download button below and the Files page.
+      // Delete through the listed snapshot tree; /mnt/cam may be host-mounted.
       const fullPath = `/mutable/Recordings/${CATEGORY}/${clip.date}`
       await fetch(`/api/files?path=${encodeURIComponent(fullPath)}`, { method: "DELETE" })
       setGroups((prev) =>
@@ -592,14 +569,13 @@ export default function Viewer() {
     } catch { /* ignore */ }
   }
 
-  // Download clip set as zip
   function handleDownload() {
     if (!selectedClip) return
     const fullPath = `/mutable/Recordings/${CATEGORY}/${selectedClip.date}`
     window.open(`/api/files/download-zip?path=${encodeURIComponent(fullPath)}`, "_blank")
   }
 
-  // Register video ref — stable (reads speed from ref)
+  // Stable identity: playback speed is read from a ref, not a dependency.
   const setVideoRef = useCallback((cam: string) => (el: HTMLVideoElement | null) => {
     if (el) {
       videoRefs.current.set(cam, el)
@@ -611,7 +587,6 @@ export default function Viewer() {
 
   const progress = totalDuration > 0 ? (globalTime / totalDuration) * 100 : 0
 
-  // Cells for rendering ("" = spacer to keep the grid shape)
   const camerasToShow = focusedCamera ? [focusedCamera] : gridCells
 
   return (
@@ -622,7 +597,6 @@ export default function Viewer() {
         isFullscreen ? "h-screen bg-slate-950 p-2" : "h-[calc(100vh-120px)] md:h-[calc(100vh-96px)]"
       )}
     >
-      {/* Header */}
       {!isFullscreen && (
         <div className="mb-3 flex items-center justify-between">
           <div>
@@ -637,7 +611,6 @@ export default function Viewer() {
         </div>
       )}
 
-      {/* Toolbar */}
       <div className={cn("mb-2 flex items-center gap-1", isFullscreen && "mb-1")}>
         <span className="rounded-lg bg-blue-500/15 px-3 py-1.5 text-sm font-medium text-blue-400">
           Recordings
@@ -648,7 +621,6 @@ export default function Viewer() {
           )}
         </span>
 
-        {/* Sidebar toggle */}
         <button
           onClick={() => setSidebarCollapsed((c) => !c)}
           className="ml-auto rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-white/5 hover:text-slate-300"
@@ -659,10 +631,8 @@ export default function Viewer() {
       </div>
 
       <div className="flex min-h-0 flex-1 gap-2">
-        {/* Clip browser sidebar */}
         {!sidebarCollapsed && (
           <div className="glass-card flex w-56 shrink-0 flex-col overflow-hidden">
-            {/* Clip list */}
             <div className="flex-1 overflow-y-auto p-1.5">
               {loading ? (
                 <div className="flex items-center justify-center p-8">
@@ -742,11 +712,9 @@ export default function Viewer() {
           </div>
         )}
 
-        {/* Video area */}
         <div className="flex min-h-0 flex-1 flex-col">
           {currentSet ? (
             <>
-              {/* Camera grid */}
               <div
                 className={cn(
                   "relative min-h-0 flex-1",
@@ -758,7 +726,6 @@ export default function Viewer() {
               >
                 {camerasToShow.map((cam, cellIdx) => {
                   if (!cam) {
-                    // Grid spacer cell (profile rows can be sparse).
                     return <div key={`spacer-${cellIdx}`} className="hidden md:block" />
                   }
                   const hasFocus = focusedCamera === cam
@@ -772,7 +739,6 @@ export default function Viewer() {
                       )}
                       onClick={() => {
                         if (!isCamActive && currentSet.cameras[cam]) {
-                          // Activate this camera stream on click
                           setActiveCameras((prev) => new Set([...prev, cam]))
                           return
                         }
@@ -793,8 +759,9 @@ export default function Viewer() {
                             const v = e.currentTarget
                             v.playbackRate = playbackSpeedRef.current
 
-                            // Determine target time: pending seek (segment change) or
-                            // master video's current time (mid-playback camera activation)
+                            // Target time comes from a pending seek (segment
+                            // change) or the master's clock (a camera
+                            // activated mid-playback).
                             let targetTime: number | null = null
                             if (pendingSeekRef.current !== null) {
                               targetTime = pendingSeekRef.current
@@ -822,11 +789,9 @@ export default function Viewer() {
                           <Video className="h-6 w-6 text-slate-500" />
                         </div>
                       )}
-                      {/* Camera label */}
                       <span className="absolute bottom-1 left-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-slate-400">
                         {cameraLabels[cam] ?? cam}
                       </span>
-                      {/* Focus hint */}
                       {hasFocus && (
                         <span className="absolute right-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-slate-500">
                           Click to exit &middot; ESC
@@ -837,9 +802,7 @@ export default function Viewer() {
                 })}
               </div>
 
-              {/* Transport bar */}
               <div className="glass-card mt-1 p-2">
-                {/* Seek bar */}
                 <div
                   ref={seekBarRef}
                   className="group mb-2 h-1.5 cursor-pointer rounded-full bg-white/10 transition-all hover:h-2.5"
@@ -880,18 +843,15 @@ export default function Viewer() {
                 </div>
 
                 <div className="flex items-center gap-2">
-                  {/* Time display */}
                   <span className="w-28 text-xs tabular-nums text-slate-400">
                     {formatTime(globalTime)} / {formatTime(totalDuration)}
                   </span>
-                  {/* Segment indicator */}
                   {segmentDurations.length > 1 && (
                     <span className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] tabular-nums text-slate-500">
                       {currentSetIdx + 1}/{segmentDurations.length}
                     </span>
                   )}
 
-                  {/* Skip back */}
                   <button
                     onClick={() => skip(-5)}
                     className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-200"
@@ -900,7 +860,6 @@ export default function Viewer() {
                     <SkipBack className="h-3.5 w-3.5" />
                   </button>
 
-                  {/* Play/Pause */}
                   <button
                     onClick={togglePlay}
                     className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-500/20 text-blue-400 transition-colors hover:bg-blue-500/30"
@@ -909,7 +868,6 @@ export default function Viewer() {
                     {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 translate-x-px" />}
                   </button>
 
-                  {/* Skip forward */}
                   <button
                     onClick={() => skip(5)}
                     className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-200"
@@ -920,7 +878,6 @@ export default function Viewer() {
 
                   <div className="flex-1" />
 
-                  {/* Speed selector */}
                   <div className="hidden items-center gap-0.5 sm:flex">
                     {SPEED_OPTIONS.map((s) => (
                       <button
@@ -939,7 +896,6 @@ export default function Viewer() {
                   </div>
 
 
-                  {/* Download the whole day folder as a zip */}
                   <button
                     onClick={handleDownload}
                     className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-white/5 hover:text-slate-300"
@@ -948,7 +904,6 @@ export default function Viewer() {
                     <Download className="h-3.5 w-3.5" />
                   </button>
 
-                  {/* Fullscreen */}
                   <button
                     onClick={toggleFullscreen}
                     className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-white/5 hover:text-slate-300"

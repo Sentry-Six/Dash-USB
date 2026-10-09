@@ -1,51 +1,46 @@
 # Setup Wizard Guide
 
-The Setup Wizard runs the first time you open `http://sentryusb.local`. It walks you through 11 steps. You can re-run it anytime from **Settings** → **Re-run Setup Wizard**.
+The Setup Wizard runs the first time you open `http://dashusb.local`. You can
+re-run it from **Settings → System → Setup Wizard**. Existing settings are the
+starting point, and destructive storage changes require confirmation.
 
 ## 1. Welcome
 
-Confirms the device is reachable and shows any existing configuration detected from a previous install (e.g., from a `sentryusb.conf` you dropped on the SD card's boot partition).
+Confirms the device is reachable. From here you can also **restore a configuration backup** (a `.json` backup exported from a previous Dash USB install) or upload an existing `dashusb.conf` — either pre-fills every later step.
 
 Click **Get Started**.
 
 ## 2. Privacy
 
-Lists every outbound data flow Sentry USB will make and asks you to confirm an **Analytics opt-in** choice before the wizard moves on. Both buttons carry equal visual weight — pick whichever you actually want.
+Lists outbound data flows and offers an **Analytics opt-in** choice. Leaving it
+unanswered remains opted out.
 
-- **Opted out (default)** — no device fingerprint ever leaves the Pi. Update checks still happen but carry no identifier.
-- **Opted in** — a one-way salted hash of your board's serial number is attached to update-check telemetry, so we can count unique installs without double-counting reinstalls.
+- **Opted out (default)** — no fingerprint is included in future update checks;
+  identifier-free checks continue.
+- **Opted in** — a one-way salted hash of the board serial is attached to
+  update-check telemetry for unique-install counts.
 
-Either choice takes effect immediately and persists if you back out of the wizard. You can change it any time at **Settings → Privacy**. Full per-flow disclosure is on the [Privacy](Privacy) page.
+Either choice takes effect immediately and persists if you back out of the wizard. You can change it any time at **Settings → System → Analytics opt-in**. Full per-flow disclosure is on the [Privacy](Privacy) page.
 
 ## 3. Network
 
-- **Device Hostname** — defaults to `sentryusb`. Leave it unless you have a reason to change. The Pi is reachable at `http://<hostname>.local`.
-- **WiFi Access Point** (optional) — broadcast a backup WiFi network from the Pi itself. Useful when you're away from home WiFi and want to reach the web UI from your phone.
+- **WiFi** — configured during SD card imaging (Raspberry Pi Imager), not here. To change it later, re-flash with new settings or use `nmcli` over SSH.
+- **Device Hostname** — defaults to `dashusb`. Leave it unless you have a reason to change. The Pi is reachable at `http://<hostname>.local`.
 
 ## 4. Storage
 
-Pick how much of the SD card each "virtual USB drive" gets. The remainder is used for snapshots (saved and sentry clips). Defaults are sensible — most users only touch **Dashcam Size**.
+- **Dashcam Size** — the virtual USB drive the car records to. Keep the 64 GB
+  default unless necessary: GM requires ≥64 GB total with 32 GB available, and
+  remaining capacity is used for retained snapshots.
+- **External Data Drive** (optional) — store recordings on a USB or NVMe drive
+  instead of the SD card. **The selected drive will be wiped.**
 
-- **Dashcam Size** — the rolling dashcam partition. **40–60 GB is recommended.** Bigger isn't better: Tesla writes ~7–10 GB per hour, but it also needs free space to save Sentry clips. If the dashcam partition is too large, recent clips may fail to save.
-- **Music** (optional) — separate partition for Tesla's music drive. Leave empty if you don't need it. If you set a size, you can also point it at a folder on your archive server to auto-sync.
-- **LightShow** / **Boombox** (optional) — same idea, for custom light shows and boombox sounds.
-- **External Data Drive** (optional) — point Sentry USB at a USB or NVMe drive instead of the SD card. Best for heavy users. **The selected drive will be wiped.**
-- **Use ExFAT filesystem** — on by default. Leave it on unless you have a specific reason to use FAT32.
+The drive is always FAT32 — that's what GM requires, and Dash USB handles the formatting.
 
-> **EU users:** Tesla's RecentClips retention is 10 minutes in the EU (vs 1 hour in North America). You'll need to lower the **Snapshot Interval** to **480 seconds** (8 minutes) on the [Advanced](#10-advanced) step, otherwise recent clips can roll off before they get archived.
+## 5. Archive
 
-## 5. Community
-
-Toggle two optional features:
-
-- **Community Wraps** — browse and apply community-made vehicle wrap previews.
-- **Community Chimes** — replace the default lock chime with sounds from the community library.
-
-Both are stored on the cam drive — no extra partition needed.
-
-## 6. Archive
-
-Pick where your clips get backed up.
+Choose where recordings are backed up. Without an archive, snapshots remain
+local and rotate as space is needed.
 
 | Option | What it is |
 |--------|-----------|
@@ -53,41 +48,46 @@ Pick where your clips get backed up.
 | **rsync** | SSH-based file sync — for Linux/Unix servers |
 | **rclone** | Cloud storage (Google Drive, S3, Backblaze, Dropbox, etc.) |
 | **NFS** | Network File System — common on Linux NAS devices |
-| **None** | No archiving — clips stay on the SD card until overwritten |
+| **None** | No archiving — snapshots stay on the SD card until space runs out |
 
-See [Archive Methods](Archive-Methods) for setup details for each.
+For rsync, the wizard generates an SSH key for the Pi and shows you the public key to paste onto your server, then lets you test the connection. See [Archive Methods](Archive-Methods) for setup details for each backend.
 
-## 7. Keep Awake
+## 6. Notifications
 
-Tesla's Sentry Mode shuts off after the car sleeps. Keep Awake holds the car awake so the Pi keeps getting power.
+Pick one or more push notification providers. Dash USB will notify you when archiving starts, finishes, or fails, and when temperature thresholds trip.
 
-| Option | Requires |
-|--------|----------|
-| **Bluetooth LE** | Pair the Pi to your car once (free, no subscription) |
-| **TeslaFi** | TeslaFi paid subscription |
-| **Tessie** | Tessie paid subscription |
-| **Webhook** | Your own service (e.g., Home Assistant) |
-| **None** | Use the car's built-in Sentry/Camp modes manually |
+Providers are enabled by filling their fields. The wizard rejects incomplete
+credentials. You can also edit providers later under **Notifications → Delivery**.
+See [Notifications](Notifications) for provider setup.
 
-## 8. Notifications
+## 7. Security
 
-Pick one or more push notification providers. Sentry USB will notify you about archive failures, full drives, BLE pairing issues, etc.
-
-See [Notifications](Notifications) for the full list of providers and how to get API keys for each.
-
-## 9. Security
-
-Set a **Web Username** and **Web Password** for the web UI.
+Set a **Web Username** and **Web Password** for the web UI. Set both or neither — the wizard won't let you fill in just one.
 
 Leave both empty to disable web auth entirely — only do this if your network is fully trusted.
 
-## 10. Advanced
+## 8. Advanced
 
-- **Timezone** — pick yours from the list (used for log timestamps and notification times).
-- **Archive Delay (seconds)** — how long to wait after WiFi connects before archiving starts. Default 20 is fine.
-- **Snapshot Interval (seconds)** — how often the Pi looks for new saved clips to archive. Default works for most users. **EU users: set this to 480** (8 min) because Tesla rotates RecentClips faster in the EU. Rule of thumb: set ~2 minutes shorter than the car's RecentClips retention.
-- **Temperature Unit** — °C or °F for the temperature monitoring widget.
+- **Time Zone** — pick yours from the searchable list, or leave it on `auto` (used for log timestamps and notification times).
+- **Archive Delay (seconds)** — how long to wait after Wi-Fi connects before
+  archiving starts (default: 20).
+- **Snapshot Interval (seconds)** — how often the Pi snapshots the recordings the car has written. Default **900** (15 minutes) gives ~8 capture chances per segment inside GM's 2-hour rolling-delete window. Lower it for a smaller worst-case capture gap; don't raise it above roughly half the rolling window or footage can age out before it's captured.
+- **Measurement System** — Metric or Imperial for temperature readouts and the temperature monitor thresholds.
+- **Temperature Monitoring** — optional Warning and Caution thresholds, a fixed
+  log interval, and a post-archive temperature notification toggle.
+- **RTC Battery** (Pi 5 only) — enable the Pi 5's built-in real-time clock if you've fitted a battery on the J5 header; trickle charging is offered behind an explicit "my battery is rechargeable" acknowledgement.
+- **System Tuning** — Increase Root Size (fresh installs only), CPU Governor.
+- **Update Source** — GitHub repo for OTA updates, plus the tracking branch for non-binary support files (runtime patches, migration fallback). Binaries always come from tagged Releases. Leave at the defaults unless you run a fork.
 
-## 11. Review
+## 9. Review
 
-Final summary of every choice. Click **Apply** to write the configuration and reboot. The Pi will come back up at the new hostname (`http://sentryusb.local` by default) in about a minute.
+Final summary of every choice. Click **Apply & Run Setup** to write the configuration and run setup — the Pi reboots several times during this, which is normal, and the page reconnects automatically.
+
+Before applying, the wizard:
+
+- **Checks free space** — incompatible drive sizes produce an inline error and a
+  link to snapshot management.
+- **Detects destructive changes** — changes that recreate disk images require
+  explicit confirmation or can be skipped.
+
+When it finishes, the Pi comes back up at `http://dashusb.local` (or your custom hostname).

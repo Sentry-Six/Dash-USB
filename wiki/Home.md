@@ -1,59 +1,72 @@
-# Sentry USB Wiki
+# Dash USB Wiki
 
-Turn a Raspberry Pi into a smart USB drive for your Tesla's dashcam.
-Clips archive themselves. A web UI lets you review, search, and back
-them up — no SSH, no config files.
+Turn a Raspberry Pi into a smart USB drive for your GM vehicle's built-in
+dashcam (Surround Vision Recorder). The car limits footage to a rolling
+**2 hours** no matter how big the drive is — Dash USB snapshots the
+recordings before the car deletes them and archives everything to your
+own server. A web UI lets you review and back up footage — no SSH, no
+config files.
 
-## Install in one line
+## Install over SSH
 
-> **No prebuilt SD card image yet.** The install path is: flash stock **Raspberry Pi OS Lite (64-bit)**, SSH in, and run the one-liner below. A prebuilt image will come later — for now this is the only supported install route. Full step-by-step in [Getting Started](Getting-Started).
+> **No prebuilt SD card image yet.** Flash **Raspberry Pi OS Lite (64-bit)**,
+> connect over SSH, and follow [Getting Started](Getting-Started).
 
 On a Pi already running Pi OS:
 
 ```bash
 sudo apt update && sudo apt upgrade -y
 sudo -i
-curl -fsSL https://raw.githubusercontent.com/Sentry-Six/Sentry-USB-Rusty/main/install-pi.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Sentry-Six/Dash-USB/main/install-pi.sh | bash
 ```
 
-> Refresh the apt cache first — Pi OS images bake in package lists that go stale as Debian publishes point releases, and a stale cache makes the install hit `404` errors.
+> Refresh and upgrade packages first to avoid stale package-index errors.
 
-Then open `http://sentryusb.local` and the [Setup Wizard](Setup-Wizard-Guide) takes you the rest of the way.
+Then open `http://dashusb.local` and the [Setup Wizard](Setup-Wizard-Guide) takes you the rest of the way.
 
 ## What you need
 
 | Tier | Boards | Notes |
 |------|--------|-------|
 | **Recommended** | Raspberry Pi 4B, Raspberry Pi 5 | USB 2.0 OTG — fastest archiving, best web UI responsiveness |
-| **Tested** | Raspberry Pi Zero 2 W, Raspberry Pi 3 (A+/B/B+) | USB 2.0 OTG — works fine, slower archive speeds |
-| **Community** | Radxa Rock Pi 4C+, Radxa Zero 3W | USB 3.0 OTG Reported working by users, not officially supported |
+| **Should work** | Raspberry Pi Zero 2 W, Raspberry Pi 3 Model A+ | USB 2.0 OTG, slower archive speeds |
+
+> **The Pi 3 Model B and B+ will not work.** Their single USB channel runs through an
+> onboard hub chip that provides Ethernet and the four USB-A ports, which leaves the
+> micro-USB port power-only with no OTG support. The 3A+ omits that chip, so its
+> micro-USB port is wired straight to the SoC and can act as a USB gadget.
 
 Plus:
-- MicroSD card, **256 GB or larger** recommended
-- A **USB 3.0 data cable** (not charge-only) — Pi to your Tesla.
-  Use a 3.0 cable even on boards that only support USB 2.0 OTG: 3.0 cables
-  deliver more power, which keeps lower-end boards stable.
-- WiFi network with internet (for first-time setup and updates)
+- A **high-endurance MicroSD card, 256 GB or larger** (512 GB recommended —
+  GM records roughly 5 GB per hour of driving, all of which Dash USB keeps
+  until space runs out)
+- A **USB-C data cable** (not charge-only) — Pi to any of the car's USB-C ports
+- Wi-Fi; internet access is required for initial setup, updates, and cloud archiving
+
+> Your vehicle needs GM's **Surround Vision Recorder** feature (the built-in
+> rolling dashcam on newer GM EVs and ICE vehicles). Confirmed working on a
+> 2026 model — the car accepts the Pi's USB 2.0 gadget even though GM's spec
+> sheet says USB 3.0.
 
 ## Quick Links
 
 | Page | What's on it |
 |------|--------------|
-| [Getting Started](Getting-Started) | Install in 10 minutes |
+| [Getting Started](Getting-Started) | Installation walkthrough |
 | [Setup Wizard Guide](Setup-Wizard-Guide) | Every wizard step explained |
-| [Drives](Drives) | Trip tracking — route, distance, FSD usage, per-drive telemetry |
-| [Tesla BLE Telemetry](Tesla-BLE-Telemetry) | What BLE pulls from the car and how it enriches drives |
 | [Archive Methods](Archive-Methods) | CIFS, rsync, rclone, NFS |
 | [Notifications](Notifications) | Push notifications to your phone |
-| [Privacy](Privacy) | What we send, when, and why — and how to opt out |
-| [Sentry Cloud](Sentry-Cloud) | Encrypted cloud backup (in beta) |
+| [Privacy](Privacy) | Outbound data and privacy controls |
 | [Troubleshooting](Troubleshooting) | Things that go wrong |
 | [FAQ](FAQ) | Common questions |
 
 ## Links
 
-- **Site**: [sentryusb.com](https://sentryusb.com)
-- **GitHub**: [Sentry-Six/Sentry-USB-Rusty](https://github.com/Sentry-Six/Sentry-USB-Rusty)
-- **Releases**: [Latest](https://github.com/Sentry-Six/Sentry-USB-Rusty/releases/latest)
+- **Site**: [sentry-six.com](https://sentry-six.com)
+- **GitHub**: [Sentry-Six/Dash-USB](https://github.com/Sentry-Six/Dash-USB)
+- **Releases**: [Latest](https://github.com/Sentry-Six/Dash-USB/releases/latest)
 - **Discord**: [Community chat](https://discord.gg/9QZEzVwdnt)
-- **License**: MIT
+- **License**: PolyForm Noncommercial 1.0.0 (source-available; free for noncommercial use)
+
+Dash USB is the GM sibling of the Tesla project [Sentry USB](https://github.com/Sentry-Six/Sentry-USB-Rusty),
+from the Sentry Six project. Not affiliated with General Motors.

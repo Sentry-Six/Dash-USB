@@ -3,17 +3,16 @@ import { Shield, Upload, FileText, CheckCircle, X, ChevronDown, ChevronUp, Rotat
 import type { StepProps } from "../SetupWizard"
 import { cn } from "@/lib/utils"
 
-/** Known config keys grouped by wizard step for display */
+/** Known config keys grouped by wizard step, for the import summary. */
 const CONFIG_GROUPS: Record<string, { label: string; keys: string[] }> = {
   network: {
     label: "Network",
-    keys: ["DASHUSB_HOSTNAME", "AP_SSID", "AP_PASS", "AP_IP"],
+    keys: ["DASHUSB_HOSTNAME"],
   },
   storage: {
     label: "Storage",
     keys: [
-      "camsize", "musicsize", "lightshowsize", "boomboxsize",
-      "USE_NVME", "NVME_DEVICE", "USB_DRIVE",
+      "camsize", "USE_NVME", "NVME_DEVICE", "USB_DRIVE",
     ],
   },
   archive: {
@@ -23,13 +22,6 @@ const CONFIG_GROUPS: Record<string, { label: string; keys: string[] }> = {
       "sharepassword", "sharepath", "RCLONE_DRIVE", "RCLONE_PATH",
       "RSYNC_USER", "RSYNC_SERVER", "RSYNC_PATH",
       "NFS_SERVER", "NFS_PATH",
-    ],
-  },
-  keepawake: {
-    label: "Keep Awake",
-    keys: [
-      "TESLA_BLE_VIN", "TESLA_BLE_RETRY", "TESLAFI_TOKEN",
-      "TESSIE_ACCESS_TOKEN", "WEBHOOK_URL",
     ],
   },
   notifications: {
@@ -56,29 +48,15 @@ const CONFIG_GROUPS: Record<string, { label: string; keys: string[] }> = {
   },
 }
 
-/** Map legacy lowercase config keys to their current canonical names.
- *  Mirrors `migrate_legacy_config_keys` in crates/setup/src/env.rs so the
- *  wizard inputs (which read CAM_SIZE, ARCHIVE_SERVER, etc.) actually
- *  populate from teslausb-era .conf files that still use camsize,
- *  archiveserver, etc. Without this, uploading an old config silently
- *  drops every legacy key into an unread keyspace and the user sees
- *  blank inputs despite a successful "Imported N keys" toast.
- *  New-name wins: if both old and new are present, keep the new value.
- */
+/** Map legacy keys before importing wizard fields. Keep synchronized with
+ * `migrate_legacy_config_keys`; canonical values take precedence. */
 const LEGACY_KEY_MAP: Record<string, string> = {
   archiveserver: "ARCHIVE_SERVER",
   camsize: "CAM_SIZE",
-  musicsize: "MUSIC_SIZE",
-  lightshowsize: "LIGHTSHOW_SIZE",
-  boomboxsize: "BOOMBOX_SIZE",
   sharename: "SHARE_NAME",
-  musicsharename: "MUSIC_SHARE_NAME",
   shareuser: "SHARE_USER",
   sharepassword: "SHARE_PASSWORD",
   sharepath: "SHARE_PATH",
-  tesla_email: "TESLA_EMAIL",
-  tesla_password: "TESLA_PASSWORD",
-  tesla_vin: "TESLA_VIN",
   timezone: "TIME_ZONE",
   usb_drive: "DATA_DRIVE",
   USB_DRIVE: "DATA_DRIVE",
@@ -125,7 +103,6 @@ function parseConfFile(text: string): Record<string, string> {
     if (match) {
       const key = match[1]
       let val = match[2].trim()
-      // Unquote
       if (val.length >= 2) {
         if ((val.startsWith("'") && val.endsWith("'")) || (val.startsWith('"') && val.endsWith('"'))) {
           val = val.slice(1, -1)
@@ -139,7 +116,6 @@ function parseConfFile(text: string): Record<string, string> {
   return migrateLegacyKeys(result)
 }
 
-/** Mask sensitive values for display */
 function maskValue(key: string, value: string): string {
   const sensitiveKeys = [
     "WIFIPASS", "AP_PASS", "sharepassword", "WEB_PASSWORD",
@@ -154,26 +130,18 @@ function maskValue(key: string, value: string): string {
   return value
 }
 
-/** Get a friendly display label for a config key */
 function friendlyLabel(key: string): string {
   const labels: Record<string, string> = {
     SSID: "WiFi SSID",
     WIFIPASS: "WiFi Password",
     DASHUSB_HOSTNAME: "Hostname",
-    AP_SSID: "AP SSID",
-    AP_PASS: "AP Password",
-    AP_IP: "AP IP Address",
     camsize: "Dashcam Size",
-    musicsize: "Music Size",
-    lightshowsize: "Light Show Size",
-    boomboxsize: "Boombox Size",
     ARCHIVE_SYSTEM: "Archive Method",
     archiveserver: "Archive Server",
     sharename: "Share Name",
     shareuser: "Share User",
     sharepassword: "Share Password",
     sharepath: "Share Path",
-    TESLA_BLE_VIN: "Tesla BLE VIN",
     timezone: "Timezone",
   }
   return labels[key] || key
@@ -187,7 +155,7 @@ interface BackupEntry {
   filename: string
 }
 
-export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }: StepProps) {
+export function WelcomeStep({ onBatchChange }: StepProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [imported, setImported] = useState<Record<string, string> | null>(null)
   const [fileName, setFileName] = useState<string | null>(null)
@@ -196,7 +164,6 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
 
   const backupFileInputRef = useRef<HTMLInputElement>(null)
 
-  // Restore from backup state
   const [showRestore, setShowRestore] = useState(false)
   const [backups, setBackups] = useState<BackupEntry[]>([])
   const [loadingBackups, setLoadingBackups] = useState(false)
@@ -217,7 +184,6 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
         setFileName(file.name)
         setRestoreSource(null)
         onBatchChange(parsed)
-        // Expand all groups that have keys
         const groups = new Set<string>()
         for (const [groupId, group] of Object.entries(CONFIG_GROUPS)) {
           if (group.keys.some((k) => k in parsed)) {
@@ -257,7 +223,6 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
     })
   }
 
-  // Load available backups when restore panel is opened
   useEffect(() => {
     if (!showRestore) return
     setLoadingBackups(true)
@@ -273,16 +238,13 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
       })
   }, [showRestore])
 
-  // Handle restoring from a backup
   async function handleRestore(backup: BackupEntry) {
     setRestoringDate(backup.date)
     try {
-      // Fetch the full backup data
       const backupRes = await fetch(`/api/system/backup/${backup.date}`)
       if (!backupRes.ok) throw new Error("Failed to fetch backup")
       const backupData = await backupRes.json()
 
-      // Send to restore endpoint
       const restoreRes = await fetch("/api/system/restore", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -291,17 +253,14 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
       if (!restoreRes.ok) throw new Error("Restore failed")
       const result = await restoreRes.json()
 
-      // Parse the config to populate wizard fields
       const parsed = result.config as Record<string, string>
       setImported(parsed)
       setFileName(null)
       setRestoreSource(backup.date)
       setShowRestore(false)
-      // Signal to SetupWizard that this is a restore — update the destructive
-      // change baseline so drive size comparisons use the backup values.
+      // Rebase destructive-change checks onto restored values.
       onBatchChange({ ...parsed, _restore_baseline: "true" })
 
-      // Expand all groups that have keys
       const groups = new Set<string>()
       for (const [groupId, group] of Object.entries(CONFIG_GROUPS)) {
         if (group.keys.some((k) => k in parsed)) {
@@ -310,18 +269,14 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
       }
       setExpandedGroups(groups)
     } catch {
-      // error handled silently, user sees button reset
+      // Ignore restore-list errors.
     } finally {
       setRestoringDate(null)
     }
   }
 
-  // Handle uploading a backup JSON file from the user's local machine.
-  // Needed during first-run on a fresh image: the archive isn't mounted
-  // yet (its credentials live inside the backup), so /api/system/backups
-  // returns an empty list and the user has no way to pick a backup. POST
-  // the file straight to /api/system/restore — the backend writes config,
-  // SSH keys, rclone config, BLE keys, and notification creds back.
+  // Fresh images cannot mount archives before restoring their credentials, so
+  // upload the backup directly to the restore endpoint.
   async function handleBackupFileUpload(file: File) {
     if (!file.name.endsWith(".json")) {
       setUploadError("Please select a .json backup file")
@@ -375,7 +330,6 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
     }
   }
 
-  // Categorize imported keys
   const groupedEntries: { groupId: string; label: string; entries: [string, string][] }[] = []
   const ungroupedEntries: [string, string][] = []
 
@@ -417,11 +371,9 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
         in Raspberry Pi Imager before flashing your SD card.
       </p>
 
-      {/* Upload .conf file or Restore from backup */}
       <div className="mt-8 w-full max-w-md">
         {!imported ? (
           <div className="space-y-3">
-            {/* Drag-and-drop config import */}
             <div
               onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
               onDragLeave={() => setDragOver(false)}
@@ -455,7 +407,6 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
               />
             </div>
 
-            {/* Restore from backup button / panel */}
             {!showRestore ? (
               <button
                 onClick={() => setShowRestore(true)}
@@ -580,7 +531,6 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
           </div>
         ) : (
           <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
-            {/* Header */}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
                 <CheckCircle className="h-5 w-5 text-emerald-400" />
@@ -612,7 +562,6 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
               </button>
             </div>
 
-            {/* Grouped config summary */}
             <div className="mt-4 space-y-1 text-left">
               {groupedEntries.map(({ groupId, label, entries }) => (
                 <div key={groupId}>
@@ -694,7 +643,6 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
         )}
       </div>
 
-      {/* Info cards */}
       <div className="mt-6 grid w-full max-w-md gap-3 text-left">
         <InfoCard
           title="No SSH Required"

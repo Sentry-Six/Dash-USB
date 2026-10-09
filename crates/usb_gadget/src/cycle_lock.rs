@@ -1,20 +1,6 @@
-//! Cross-process serialization of USB-gadget disable/enable cycles.
-//!
-//! archiveloop wraps every gadget teardown/bring-up — the main loop's
-//! connect/disconnect and the gadget stall watchdog — in an exclusive
-//! `flock` on [`GADGET_CYCLE_LOCK_PATH`] (`GADGET_CYCLE_LOCK` in
-//! `run/archiveloop`). Rust code that cycles the gadget outside archiveloop
-//! must hold the same lock across its whole disable→work→enable window,
-//! otherwise the two sides interleave — worst case one re-enables the
-//! gadget while the other has cam_disk.bin mounted, putting two writers on
-//! one block device and corrupting the filesystem the car records to.
-//!
-//! Deliberately NOT taken inside [`crate::enable`]/[`crate::disable`]:
-//! archiveloop's enable_gadget.sh/disable_gadget.sh shims curl back into
-//! /api/system/gadget-enable|disable *while archiveloop already holds the
-//! flock*, so locking at that depth would wedge the shim until its
-//! `--max-time 30` expires and fail archiveloop's cycle. Only callers that
-//! own a complete cycle take this lock.
+//! Cross-process gadget-cycle lock shared with archiveloop. Hold it around an
+//! entire disable/work/enable sequence to prevent simultaneous block writers.
+//! Do not acquire inside enable/disable because locked shell shims call them.
 
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -31,16 +17,12 @@ pub struct CycleGuard {
     _file: File,
 }
 
-/// Acquire the gadget-cycle flock, waiting up to `timeout` for whoever
-/// holds it (an archive media sync holds it for minutes, the stall
-/// watchdog for seconds). Polls `LOCK_NB` rather than parking in
-/// `flock(2)` so the wait is bounded. Blocking call — run it on a
-/// blocking thread.
+/// Acquire the flock with a bounded poll; call from a blocking thread.
 pub fn acquire(timeout: Duration) -> io::Result<CycleGuard> {
     acquire_path(Path::new(GADGET_CYCLE_LOCK_PATH), timeout)
 }
 
-fn acquire_path(path: &Path, timeout: Duration) -> io::Result<CycleGuard> {
+pub(crate) fn acquire_path(path: &Path, timeout: Duration) -> io::Result<CycleGuard> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -67,9 +49,7 @@ fn acquire_path(path: &Path, timeout: Duration) -> io::Result<CycleGuard> {
 #[cfg(unix)]
 fn try_flock_exclusive(file: &File) -> io::Result<bool> {
     use std::os::unix::io::AsRawFd;
-    // Same primitive as shell `flock`: the lock lives on the open file
-    // description, so it also excludes other threads of this process and
-    // stays held across await points until the guard drops.
+    // The open file description holds the same lock used by shell flock.
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if rc == 0 {
         return Ok(true);

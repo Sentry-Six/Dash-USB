@@ -11,11 +11,9 @@
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg"></a>
 </p>
 
-> [!WARNING]
-> **Early development.** Dash USB has not yet been validated against a real GM vehicle.
-> GM lists USB 3.0 among its drive requirements; the Raspberry Pi's USB gadget mode is
-> USB 2.0, and whether the car actually enforces USB 3.0 is unverified. Follow the
-> issues/Discord for test results before relying on this.
+<p align="center">
+  <img src="docs/images/hero-dashboard.png" alt="Dash USB dashboard" width="900">
+</p>
 
 ---
 
@@ -44,6 +42,30 @@ can be added as data, not code. Not affiliated with General Motors.
 
 ---
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/images/viewer.png" alt="Multi-camera viewer" width="900"><br>
+  <em>Synchronized four-camera playback of the footage your car recorded, kept as long as you want.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/files.png" alt="Files" width="900"><br>
+  <em>Every recording the car wrote, retained past the 2-hour limit and browsable in place.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/setup-wizard.png" alt="Setup Wizard" width="900"><br>
+  <em>The 9-step setup wizard. No SSH, no config files.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/settings.png" alt="Settings" width="900"><br>
+  <em>Everything reconfigurable from the browser, including Travel Mode for archiving over the vehicle hotspot.</em>
+</p>
+
+---
+
 ## Vehicle requirements
 
 Your vehicle needs GM's Surround Vision Recorder feature (rolling dashcam recording to
@@ -55,7 +77,12 @@ the virtual drive presents by default.
 | Tier | Boards | Notes |
 |------|--------|-------|
 | **Recommended** | Raspberry Pi 4B, Raspberry Pi 5 | USB 2.0 OTG — fastest archiving, smoothest UI |
-| **Should work** | Raspberry Pi Zero 2 W, Raspberry Pi 3 (A+/B/B+) | USB 2.0 OTG — slower archive speeds |
+| **Should work** | Raspberry Pi Zero 2 W, Raspberry Pi 3 Model A+ | USB 2.0 OTG, slower archive speeds |
+
+> The Pi 3 Model **B** and **B+** will not work. Their single USB channel is wired
+> through an onboard hub chip for Ethernet and the four USB-A ports, leaving the
+> micro-USB port power-only with no OTG. Only the 3A+, which omits that chip, can act
+> as a USB gadget.
 
 Plus a **256 GB+ high-endurance MicroSD card** (512 GB recommended — GM records
 ~5 GB per hour of driving, all of which Dash USB retains) and a **USB-C data cable**.
@@ -83,10 +110,9 @@ By default, Dash USB sends **no device identifier** to our servers. Here's every
 |---|---|---|
 | Daily update check | Software version, CPU arch, board model | None by default |
 | Once per install | Empty ping (no body) | None — anonymous counter |
-| iOS push pairing (if enabled) | Random pairing ID | Not tied to hardware |
 
 The only way a device fingerprint is sent is if you explicitly opt in to
-**Settings → Privacy → Analytics opt-in** (default: off).
+**Settings → System → Analytics opt-in** (default: off).
 
 ---
 

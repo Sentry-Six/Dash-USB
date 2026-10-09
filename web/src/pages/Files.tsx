@@ -9,7 +9,6 @@ import {
   Folder,
   ArrowLeft,
   Loader2,
-  Music,
   Video,
   CheckCircle,
   X,
@@ -19,6 +18,7 @@ import {
   HardDrive,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { uploadRelativePath } from "@/lib/file-upload"
 
 type SortOption = "name-asc" | "name-desc" | "date-newest" | "date-oldest" | "size-largest" | "size-smallest" | "type"
 
@@ -37,29 +37,23 @@ interface FileEntry {
   path: string
   is_dir: boolean
   size: number
-  // Matches the backend's serialized field name (files.rs FileEntry).
-  // This was previously declared as `modified`, which doesn't exist in
-  // the response — the Date column rendered blank for every file and
-  // the two date sorts quietly degraded to name order (NaN timestamps
-  // made the name tiebreaker always win).
+  // Matches files.rs serialization; date sorting otherwise degrades silently.
   mod_time: string
 }
 
 interface DriveTab {
   id: string
   base: string
-  icon: "cam" | "media" | "drive"
+  icon: "cam" | "drive"
 }
 
 const ALL_DRIVES: DriveTab[] = [
   { id: "USB Drive", base: "/mutable", icon: "drive" },
   { id: "Recordings", base: "/mutable/Recordings", icon: "cam" },
-  { id: "Music", base: "/var/www/html/fs/Music", icon: "media" },
 ]
 
 const TAB_ICONS: Record<DriveTab["icon"], React.ComponentType<{ className?: string }>> = {
   cam: Video,
-  media: Music,
   drive: HardDrive,
 }
 
@@ -71,11 +65,15 @@ function formatSize(bytes: number): string {
 }
 
 interface UploadProgress {
+  id: number
+  file: globalThis.File
   fileName: string
+  destination: string
   loaded: number
   total: number
   done: boolean
-  error: boolean
+  error: string | null
+  conflict: boolean
 }
 
 export default function Files() {
@@ -90,6 +88,16 @@ export default function Files() {
   const folderUploadRef = useRef<HTMLInputElement>(null)
   const [uploads, setUploads] = useState<UploadProgress[]>([])
   const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const mounted = useRef(false)
+  const uploadBusy = useRef(false)
+  const uploadRun = useRef(0)
+  const uploadId = useRef(0)
+  const activeUpload = useRef<XMLHttpRequest | null>(null)
+  const currentPathRef = useRef("")
+  const searchRef = useRef("")
+  const listingRequest = useRef<AbortController | null>(null)
+  const listingGeneration = useRef(0)
   const [dragging, setDragging] = useState(false)
   const dragCounter = useRef(0)
   const [effectiveBase, setEffectiveBase] = useState("")
@@ -99,90 +107,113 @@ export default function Files() {
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const sortMenuRef = useRef<HTMLDivElement>(null)
 
-  // Fetch config to determine which tabs to show
   useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+      activeUpload.current?.abort()
+      listingRequest.current?.abort()
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
+    }
+  }, [])
+
+  function changePath(path: string) {
+    if (path === currentPathRef.current) {
+      void fetchFiles(path, searchRef.current || undefined)
+      return
+    }
+    currentPathRef.current = path
+    listingGeneration.current++
+    listingRequest.current?.abort()
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
+    setCurrentPath(path)
+  }
+
+  useEffect(() => {
+    let cancelled = false
     async function loadConfig() {
       try {
         const res = await fetch("/api/config")
         const cfg = await res.json()
+        if (!mounted.current || cancelled) return
         const visible: DriveTab[] = []
-        // Always show the USB Drive root
         visible.push(ALL_DRIVES.find(d => d.id === "USB Drive")!)
-        // Show Recordings tab if the cam drive is configured
         if (cfg.has_cam === "yes") {
           visible.push(ALL_DRIVES.find(d => d.id === "Recordings")!)
         }
-        if (cfg.has_music === "yes") visible.push(ALL_DRIVES.find(d => d.id === "Music")!)
-        // If nothing is configured (e.g. dev mode), show all
+        // Development mode may not expose configured drives.
         const result = visible.length > 0 ? visible : ALL_DRIVES
         setDrives(result)
         setActiveDrive(result[0])
-        setCurrentPath(result[0].base)
+        changePath(result[0].base)
       } catch {
-        // Fallback: show all
+        if (!mounted.current || cancelled) return
         setDrives(ALL_DRIVES)
         setActiveDrive(ALL_DRIVES[0])
-        setCurrentPath(ALL_DRIVES[0].base)
+        changePath(ALL_DRIVES[0].base)
       }
     }
-    loadConfig()
+    void loadConfig()
+    return () => { cancelled = true }
+    // Load configuration once; directory requests have their own lifecycle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   async function fetchFiles(path: string, searchQuery?: string) {
+    if (!mounted.current || currentPathRef.current !== path) return
+    listingRequest.current?.abort()
+    const controller = new AbortController()
+    listingRequest.current = controller
+    const generation = ++listingGeneration.current
+    const isCurrent = () => mounted.current && !controller.signal.aborted &&
+      listingGeneration.current === generation && currentPathRef.current === path
     setLoading(true)
     setError(null)
     setSelected(new Set())
     try {
       let url = `/api/files/ls?path=${encodeURIComponent(path)}`
       if (searchQuery) url += `&search=${encodeURIComponent(searchQuery)}`
-      const res = await fetch(url)
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({ error: "Failed to load" }))
-        setError(data.error || "Failed to load directory")
-        setFiles([])
-      } else {
-        const raw = await res.json()
-        // Server returns { path, entries: [...] } wrapper
-        const data: FileEntry[] = Array.isArray(raw) ? raw : (raw.entries ?? [])
-        // Auto-navigate into the matching subfolder when at a drive's base path
-        // (Music/LightShow/Boombox disk images have a root folder matching the
-        // drive name, possibly alongside hidden metadata folders)
-        if (activeDrive && path === activeDrive.base && !searchQuery) {
-          const match = data.find(
-            (e) => e.is_dir && e.name === activeDrive.id
-          )
-          if (match) {
-            setEffectiveBase(match.path)
-            setCurrentPath(match.path)
-            return
-          }
+      const res = await fetch(url, { signal: controller.signal })
+      const raw = await res.json().catch(() => null)
+      if (!isCurrent()) return
+      if (!res.ok) throw new Error(typeof raw?.error === "string" ? raw.error : "Failed to load directory")
+      const data: FileEntry[] = Array.isArray(raw) ? raw : (raw?.entries ?? [])
+      // Enter the named drive folder rather than adjacent hidden metadata.
+      if (activeDrive && path === activeDrive.base && !searchQuery) {
+        const match = data.find(e => e.is_dir && e.name === activeDrive.id)
+        if (match) {
+          setEffectiveBase(match.path)
+          changePath(match.path)
+          return
         }
-        setFiles(data)
       }
-    } catch {
-      setError("Unable to connect")
-      setFiles([])
+      setFiles(data)
+    } catch (failure) {
+      if (isCurrent()) {
+        setError(failure instanceof Error ? failure.message : "Unable to connect")
+        setFiles([])
+      }
+    } finally {
+      if (isCurrent()) setLoading(false)
     }
-    setLoading(false)
   }
 
   useEffect(() => {
     if (currentPath) fetchFiles(currentPath, search || undefined)
-    // search intentionally omitted: search changes fetch via the debounced
-    // handler below; including it here would double-fetch on every keystroke.
+    // search intentionally omitted: the debounced handler below already
+    // fetches on change, so listing it here double-fetches per keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPath])
 
-  // Debounced search
   function handleSearchChange(value: string) {
     setSearch(value)
+    searchRef.current = value
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
     searchTimerRef.current = setTimeout(() => {
       if (currentPath) fetchFiles(currentPath, value || undefined)
     }, 300)
   }
 
-  // Close sort menu on outside click
   useEffect(() => {
     function handleClick(e: MouseEvent) {
       if (sortMenuRef.current && !sortMenuRef.current.contains(e.target as Node)) {
@@ -193,11 +224,11 @@ export default function Files() {
     return () => document.removeEventListener("mousedown", handleClick)
   }, [showSortMenu])
 
-  // Client-side sorting (directories always first, name tiebreaker for stability)
+  // Client-side sort: directories first, name as the tiebreaker so the
+  // order stays stable across refetches.
   const sortedFiles = useMemo(() => {
     const sorted = [...files]
     sorted.sort((a, b) => {
-      // Directories always come first
       if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1
       const nameCmp = a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
       switch (sortOption) {
@@ -227,7 +258,7 @@ export default function Files() {
 
   function navigate(entry: FileEntry) {
     if (entry.is_dir) {
-      setCurrentPath(entry.path)
+      changePath(entry.path)
     }
   }
 
@@ -236,14 +267,15 @@ export default function Files() {
     if (!activeDrive || !base || currentPath === base) return
     const parent = currentPath.split("/").slice(0, -1).join("/")
     if (parent.length < base.length) return
-    setCurrentPath(parent || base)
+    changePath(parent || base)
   }
 
   function switchDrive(drive: DriveTab) {
     setActiveDrive(drive)
     setEffectiveBase("")
     setSearch("")
-    setCurrentPath(drive.base)
+    searchRef.current = ""
+    changePath(drive.base)
   }
 
   async function handleDelete() {
@@ -255,72 +287,132 @@ export default function Files() {
     fetchFiles(currentPath)
   }
 
-  function uploadFileWithProgress(file: globalThis.File, destPath: string, index: number): Promise<void> {
-    return new Promise((resolve) => {
-      const form = new FormData()
-      form.append("file", file)
-      form.append("path", destPath)
-
-      const xhr = new XMLHttpRequest()
-      xhr.open("POST", "/api/files/upload")
-
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) {
-          setUploads((prev) => prev.map((u, i) => i === index ? { ...u, loaded: e.loaded, total: e.total } : u))
+  function uploadFileWithProgress(item: UploadProgress, run: number, overwrite = false): Promise<void> {
+    return new Promise(resolve => {
+      let settled = false
+      let xhr: XMLHttpRequest | null = null
+      const update = (patch: Partial<UploadProgress>) => {
+        if (mounted.current && uploadRun.current === run) {
+          setUploads(previous => previous.map(upload => upload.id === item.id ? { ...upload, ...patch } : upload))
         }
       }
-
-      xhr.onload = () => {
-        setUploads((prev) => prev.map((u, i) => i === index ? { ...u, done: true, loaded: u.total, error: xhr.status >= 400 } : u))
+      const finish = (error: string | null, conflict = false) => {
+        if (settled) return
+        settled = true
+        if (activeUpload.current === xhr) activeUpload.current = null
+        update({ done: true, error, conflict, loaded: error ? 0 : item.file.size, total: item.file.size })
         resolve()
       }
-
-      xhr.onerror = () => {
-        setUploads((prev) => prev.map((u, i) => i === index ? { ...u, done: true, error: true } : u))
-        resolve()
+      update({ loaded: 0, total: item.file.size, done: false, error: null, conflict: false })
+      try {
+        const form = new FormData()
+        form.append("path", item.destination)
+        form.append("relative_path", item.fileName)
+        form.append("overwrite", String(overwrite))
+        form.append("file", item.file)
+        xhr = new XMLHttpRequest()
+        activeUpload.current = xhr
+        xhr.open("POST", "/api/files/upload")
+        xhr.upload.onprogress = event => {
+          if (!settled && event.lengthComputable) update({ loaded: event.loaded, total: event.total })
+        }
+        xhr.onload = () => {
+          const request = xhr!
+          let response: { error?: unknown; path?: unknown } | null = null
+          try { response = JSON.parse(request.responseText) } catch { /* Non-JSON failures need a fallback. */ }
+          if (request.status < 200 || request.status >= 300) {
+            const message = typeof response?.error === "string" && response.error.trim()
+              ? response.error : `Upload failed (${request.status}). Please retry.`
+            finish(message, request.status === 409)
+          } else if (typeof response?.path !== "string") {
+            finish("Could not confirm the upload. Check the folder before retrying.")
+          } else finish(null)
+        }
+        xhr.onerror = () => finish("Connection lost. Check the folder before retrying.")
+        xhr.onabort = () => finish("Upload cancelled. Check the folder before retrying.")
+        xhr.ontimeout = () => finish("Upload timed out. Check the folder before retrying.")
+        xhr.send(form)
+      } catch (failure) {
+        finish(failure instanceof Error ? `Could not start upload: ${failure.message}` : "Could not start upload. Please retry.")
       }
-
-      xhr.send(form)
     })
   }
 
-  const processFiles = useCallback(async (fileArr: globalThis.File[]) => {
-    if (fileArr.length === 0) return
-    const initial: UploadProgress[] = fileArr.map((f) => ({
-      fileName: f.name,
-      loaded: 0,
-      total: f.size,
-      done: false,
-      error: false,
-    }))
-
-    setUploads(initial)
-    setUploading(true)
-
-    // Upload files sequentially to avoid overwhelming low-RAM devices
-    for (let i = 0; i < fileArr.length; i++) {
-      await uploadFileWithProgress(fileArr[i], currentPath, i)
+  async function processFiles(fileArr: globalThis.File[]) {
+    // React state may not have rendered when a second picker/drop event arrives.
+    if (!fileArr.length || uploadBusy.current || !currentPathRef.current) return
+    const destination = currentPathRef.current
+    let batch: UploadProgress[]
+    try {
+      batch = fileArr.map(file => ({
+        id: ++uploadId.current, file, fileName: uploadRelativePath(file), destination,
+        loaded: 0, total: file.size, done: false, error: null, conflict: false,
+      }))
+    } catch (failure) {
+      setUploadError(failure instanceof Error ? failure.message : "Invalid upload path")
+      return
     }
+    uploadBusy.current = true
+    const run = ++uploadRun.current
+    setUploadError(null)
+    setUploads(previous => [...previous, ...batch])
+    setUploading(true)
+    try {
+      for (const item of batch) {
+        if (!mounted.current || run !== uploadRun.current) break
+        await uploadFileWithProgress(item, run)
+      }
+    } finally {
+      if (run === uploadRun.current) {
+        uploadBusy.current = false
+        if (mounted.current) {
+          setUploading(false)
+          if (currentPathRef.current === destination) void fetchFiles(destination, searchRef.current || undefined)
+        }
+      }
+    }
+  }
 
-    fetchFiles(currentPath)
-    if (uploadRef.current) uploadRef.current.value = ""
-    if (folderUploadRef.current) folderUploadRef.current.value = ""
+  async function retryUpload(item: UploadProgress) {
+    if (uploadBusy.current || !item.error) return
+    // A lost response may mean a previous attempt succeeded. Every ordinary
+    // retry is non-overwriting; only a confirmed name conflict can replace.
+    const overwrite = item.conflict
+    if (overwrite && !confirm(`Replace ${item.fileName} in ${item.destination}?`)) return
+    uploadBusy.current = true
+    const run = ++uploadRun.current
+    setUploading(true)
+    try {
+      await uploadFileWithProgress(item, run, overwrite)
+    } finally {
+      if (run === uploadRun.current) {
+        uploadBusy.current = false
+        if (mounted.current) {
+          setUploading(false)
+          if (currentPathRef.current === item.destination) void fetchFiles(item.destination, searchRef.current || undefined)
+        }
+      }
+    }
+  }
 
-    setTimeout(() => {
-      setUploads([])
-      setUploading(false)
-    }, 2000)
-    // fetchFiles is a plain function (new identity each render); listing it
-    // would defeat the memoization. It only closes over currentPath, which
-    // is a dep.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPath])
+  function cancelUploads() {
+    if (!uploadBusy.current) return
+    uploadRun.current++
+    uploadBusy.current = false
+    activeUpload.current?.abort()
+    activeUpload.current = null
+    setUploading(false)
+    setUploads(previous => previous.map(item => item.done ? item : {
+      ...item, done: true, loaded: 0, error: "Upload cancelled. Check the folder before retrying.", conflict: false,
+    }))
+  }
 
-  const handleUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const fileList = e.target.files
-    if (!fileList || fileList.length === 0) return
-    await processFiles(Array.from(fileList))
-  }, [processFiles])
+  async function handleUpload(event: React.ChangeEvent<HTMLInputElement>) {
+    const fileArr = Array.from(event.target.files ?? [])
+    // Allow selecting the same file again after a failed or cancelled attempt.
+    event.target.value = ""
+    await processFiles(fileArr)
+  }
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -341,15 +433,24 @@ export default function Files() {
     e.stopPropagation()
   }, [])
 
-  const handleDrop = useCallback(async (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
+  async function handleDrop(event: React.DragEvent) {
+    event.preventDefault()
+    event.stopPropagation()
     setDragging(false)
     dragCounter.current = 0
-    if (uploading) return
-    const files = Array.from(e.dataTransfer.files)
-    if (files.length > 0) await processFiles(files)
-  }, [uploading, processFiles])
+    if (uploadBusy.current) return
+    const items = Array.from(event.dataTransfer.items ?? [])
+    if (items.some(item => item.webkitGetAsEntry?.()?.isDirectory)) {
+      setUploadError("Choose Upload Folder to preserve a folder's structure.")
+      return
+    }
+    const dropped = Array.from(event.dataTransfer.files)
+    if (!dropped.length) {
+      setUploadError("No files were available from this drop. Use Upload or Upload Folder instead.")
+      return
+    }
+    await processFiles(dropped)
+  }
 
   function handleDownloadSelected() {
     if (selected.size === 0) return
@@ -417,7 +518,7 @@ export default function Files() {
             {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
             {uploading ? "Uploading..." : "Upload"}
           </button>
-          <input ref={uploadRef} type="file" multiple className="hidden" onChange={handleUpload} />
+          <input ref={uploadRef} aria-label="Choose files to upload" type="file" multiple className="hidden" onChange={handleUpload} />
           <button
             onClick={() => folderUploadRef.current?.click()}
             disabled={uploading}
@@ -430,11 +531,10 @@ export default function Files() {
             Upload Folder
           </button>
           {/* @ts-expect-error webkitdirectory is non-standard but supported in all major browsers */}
-          <input ref={folderUploadRef} type="file" multiple webkitdirectory="" className="hidden" onChange={handleUpload} />
+          <input ref={folderUploadRef} aria-label="Choose folder to upload" type="file" multiple webkitdirectory="" className="hidden" onChange={handleUpload} />
         </div>
       </div>
 
-      {/* Drive selector */}
       <div className="flex flex-wrap gap-1">
         {drives.map((drive) => (
           <button
@@ -453,7 +553,6 @@ export default function Files() {
         ))}
       </div>
 
-      {/* Search and Sort */}
       <div className="flex items-center gap-2">
         <div className="relative flex-1">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-600" />
@@ -504,67 +603,60 @@ export default function Files() {
         </div>
       </div>
 
-      {/* Upload progress */}
+      {uploadError && <p role="alert" className="text-sm text-red-400">{uploadError}</p>}
       {uploads.length > 0 && (
-        <div className="glass-card space-y-2 p-3">
+        <div className="glass-card max-h-72 shrink-0 space-y-2 overflow-y-auto p-3" aria-label="Upload progress">
           <div className="flex items-center justify-between">
-            <p className="text-xs font-medium text-slate-300">
-              {uploading ? "Uploading files..." : (
+            <p className="text-xs font-medium text-slate-300" role="status">
+              {uploading ? "Uploading files..." : uploads.some(item => item.error) ? "Some files were not uploaded" : (
                 <span className="flex items-center gap-1.5">
-                  <CheckCircle className="h-3.5 w-3.5 text-emerald-400" />
-                  Upload complete
+                  <CheckCircle className="h-3.5 w-3.5 text-emerald-400" />Upload complete
                 </span>
               )}
             </p>
-            {!uploading && (
-              <button onClick={() => setUploads([])} className="rounded p-0.5 text-slate-600 hover:text-slate-400">
+            {uploading ? (
+              <button type="button" onClick={cancelUploads} className="rounded border border-white/10 px-2 py-1 text-xs text-slate-300">Cancel uploads</button>
+            ) : (
+              <button type="button" aria-label="Dismiss upload results" onClick={() => setUploads([])} className="rounded p-0.5 text-slate-600 hover:text-slate-400">
                 <X className="h-3.5 w-3.5" />
               </button>
             )}
           </div>
-          {uploads.map((u, i) => {
-            const pct = u.total > 0 ? Math.round((u.loaded / u.total) * 100) : 0
+          {uploads.map(item => {
+            const pct = item.total > 0 ? Math.min(100, Math.round((item.loaded / item.total) * 100)) : item.done && !item.error ? 100 : 0
             return (
-              <div key={i} className="space-y-1">
-                <div className="flex items-center justify-between text-[11px]">
-                  <span className="truncate text-slate-400">{u.fileName}</span>
-                  <span className={cn("tabular-nums", u.error ? "text-red-400" : u.done ? "text-emerald-400" : "text-slate-500")}>
-                    {u.error ? "Error" : u.done ? "Done" : `${pct}%`}
+              <div key={item.id} className="space-y-1">
+                <div className="flex items-center justify-between gap-2 text-[11px]">
+                  <span className="truncate text-slate-400" title={item.fileName}>{item.fileName}</span>
+                  <span className={cn("tabular-nums", item.error ? "text-red-400" : item.done ? "text-emerald-400" : "text-slate-500")}>
+                    {item.error ? "Not uploaded" : item.done ? "Done" : `${pct}%`}
                   </span>
                 </div>
-                <div className="h-1 overflow-hidden rounded-full bg-slate-800">
-                  <div
-                    className={cn(
-                      "h-full rounded-full transition-all duration-300",
-                      u.error ? "bg-red-500" : u.done ? "bg-emerald-500" : "bg-blue-500"
-                    )}
-                    style={{ width: `${pct}%` }}
-                  />
-                </div>
+                <p className="truncate text-[10px] text-slate-500" title={item.destination}>To {item.destination}</p>
+                {item.error ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p role="alert" className="text-xs text-red-300">{item.error}</p>
+                    <button type="button" disabled={uploading} onClick={() => void retryUpload(item)}
+                      className="rounded border border-white/10 px-2 py-1 text-xs text-slate-300 disabled:opacity-50">
+                      {item.conflict ? "Replace existing file" : "Retry"}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="h-1 overflow-hidden rounded-full bg-slate-800" role="progressbar" aria-label={`Upload ${item.fileName}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
+                    <div className={cn("h-full rounded-full transition-all duration-300", item.done ? "bg-emerald-500" : "bg-blue-500")} style={{ width: `${pct}%` }} />
+                  </div>
+                )}
               </div>
             )
           })}
-          {uploading && uploads.length > 1 && (() => {
-            const totalLoaded = uploads.reduce((s, u) => s + u.loaded, 0)
-            const totalSize = uploads.reduce((s, u) => s + u.total, 0)
-            const totalPct = totalSize > 0 ? Math.round((totalLoaded / totalSize) * 100) : 0
-            const doneCount = uploads.filter((u) => u.done).length
-            return (
-              <div className="border-t border-white/5 pt-2">
-                <div className="flex items-center justify-between text-[11px]">
-                  <span className="text-slate-500">{doneCount}/{uploads.length} files</span>
-                  <span className="tabular-nums text-slate-400">{formatSize(totalLoaded)} / {formatSize(totalSize)} ({totalPct}%)</span>
-                </div>
-                <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-800">
-                  <div className="h-full rounded-full bg-blue-500 transition-all duration-300" style={{ width: `${totalPct}%` }} />
-                </div>
-              </div>
-            )
-          })()}
+          {uploading && uploads.length > 1 && (
+            <p className="border-t border-white/5 pt-2 text-[11px] text-slate-500">
+              {uploads.filter(item => item.done).length}/{uploads.length} files finished
+            </p>
+          )}
         </div>
       )}
 
-      {/* File list */}
       <div
         className={cn("glass-card flex min-h-0 flex-1 flex-col overflow-hidden relative", dragging && "ring-2 ring-blue-500/50")}
         onDragEnter={handleDragEnter}
@@ -576,7 +668,7 @@ export default function Files() {
           <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-900/80 backdrop-blur-sm">
             <div className="flex flex-col items-center gap-2 text-blue-400">
               <Upload className="h-10 w-10" />
-              <p className="text-sm font-medium">Drop files here to upload</p>
+              <p className="text-sm font-medium">Drop files here; use Upload Folder for folders</p>
             </div>
           </div>
         )}
@@ -678,7 +770,6 @@ export default function Files() {
         </div>
       </div>
 
-      {/* Floating selection action bar */}
       {selected.size > 0 && (
         <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 md:left-[calc(50%+7rem)]">
           <div className="glass-card flex items-center gap-3 border border-blue-500/20 bg-slate-900/95 px-4 py-3 shadow-2xl backdrop-blur-xl animate-in slide-in-from-bottom-2 fade-in duration-200">

@@ -47,10 +47,7 @@ export function NasSSHKey({
 
   async function copyKey() {
     if (!pubKey) return
-    // The Pi serves over plain HTTP on the LAN. navigator.clipboard is gated
-    // on a "secure context" in modern browsers, so calling it from
-    // http://dashusb.local throws or rejects. Try modern API first, fall
-    // back to legacy execCommand which works on http://.
+    // Clipboard API requires HTTPS; retain an HTTP-compatible LAN fallback.
     let ok = false
     if (navigator.clipboard && window.isSecureContext) {
       try {

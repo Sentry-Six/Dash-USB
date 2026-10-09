@@ -1,8 +1,5 @@
-// The system allocator is used so the binary works on every Pi kernel
-// regardless of page size (Pi 5 / Bookworm uses 16 KB pages while older
-// Pis use 4 KB pages). A page-size-specific allocator like jemalloc
-// aborts at startup when its compiled-in page size doesn't match the
-// kernel's, which is why we don't use one here.
+// The system allocator supports both the 4 KiB and 16 KiB page sizes used by
+// supported Pi kernels; page-size-specific allocators can abort at startup.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -29,19 +26,16 @@ struct Args {
     #[arg(long)]
     dev: bool,
 
-    /// Optional subcommand. Without one, the HTTP server runs.
-    ///
-    /// Subcommands are invoked by the `/root/bin/{make,release}_snapshot.sh`,
-    /// `enable/disable_gadget.sh`, and `manage_free_space.sh` wrappers
-    /// installed by the setup wizard — archiveloop calls those wrappers
-    /// every cycle, so keeping the subcommands working here keeps the
-    /// archive flow alive.
+    /// Optional command used by the installed gadget and archive wrappers.
+    /// Without one, the HTTP server runs.
     #[command(subcommand)]
     command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// Install this binary's bundled archive helpers without network access.
+    RefreshArchiveRuntime,
     /// USB gadget control (configfs + UDC bind/unbind).
     Gadget {
         #[command(subcommand)]
@@ -63,8 +57,8 @@ enum Command {
 enum GadgetAction {
     /// Attach the USB mass-storage gadget + bind the UDC.
     Enable {
-        /// Ignored — the shim in `/root/bin/enable_gadget.sh` splats
-        /// `"$@"`, so callers may pass through args we don't use.
+        /// Ignored. The `/root/bin/enable_gadget.sh` shim splats `"$@"`,
+        /// so callers can pass through unused args.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -79,7 +73,7 @@ enum GadgetAction {
 enum SnapshotAction {
     /// Create a new reflink snapshot of `/backingfiles/cam_disk.bin`.
     Make {
-        /// Reserved for future compat (e.g. `nofsck`); ignored for now.
+        /// Accepted but ignored for wrapper CLI compatibility.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -94,7 +88,8 @@ enum SnapshotAction {
 enum SpaceAction {
     /// Delete old snapshots until `/backingfiles` has enough free space.
     Manage {
-        /// Reserved for future compat (e.g. reserve size); ignored for now.
+        /// Reserve in bytes (archiveloop passes its 10GB+3% figure);
+        /// omitted = same formula computed here.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -102,13 +97,9 @@ enum SpaceAction {
 
 #[tokio::main]
 async fn main() {
-    // Boot-phase timer. Lets us attribute the gap between systemd
-    // "Started dashusb.service" and the UDC bind in the journal.
-    // Each `phase!` call emits `boot_phase=NAME elapsed_ms=N` so it's
-    // greppable: `journalctl -b -u dashusb.service | grep boot_phase`.
+    // Record startup phases so journal logs expose delays before the UDC bind.
     let t0 = std::time::Instant::now();
 
-    // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -126,56 +117,41 @@ async fn main() {
     let args = Args::parse();
     phase!("args_parsed");
 
-    // Subcommand dispatch — the wrappers in /root/bin/ expect these to
-    // run to completion synchronously and exit with a status code.
+    // Installed wrappers require a synchronous exit status.
     if let Some(cmd) = args.command {
         std::process::exit(run_subcommand(cmd).await);
     }
 
     info!("DashUSB server starting on port {}", args.port);
 
-    // Run startup migration in background
     tokio::spawn(async {
         migrate::run_startup_migration().await;
     });
 
-    // Boot-time timezone safety net: if setup left TIME_ZONE=auto unresolved
-    // (no network during setup → Pi stuck on UTC → drive telemetry mis-links),
-    // re-resolve once now. Non-blocking; no-op once a real zone is set.
+    // Retry unresolved automatic timezones without blocking startup.
     tokio::spawn(async {
         sentryusb_setup::system::ensure_timezone_resolved().await;
     });
 
-    // Periodic malloc_trim — releases heap pages back to the kernel that
-    // glibc would otherwise keep cached in its per-arena free lists.
-    // Combined with MALLOC_ARENA_MAX=2 (set in the systemd unit) this
-    // keeps RSS bounded during/after burst workloads like clip ingest.
-    // No-op on non-glibc targets.
+    // Return cached glibc heap pages after burst workloads.
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     tokio::spawn(async {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(300));
         tick.tick().await; // skip the first immediate tick
         loop {
             tick.tick().await;
-            // SAFETY: malloc_trim is thread-safe (takes the arena mutex
-            // internally per glibc docs) and we call it from a tokio task,
-            // never a signal handler. Returns 1 if memory was released, 0
-            // if not.
+            // SAFETY: glibc documents malloc_trim as thread-safe; this runs in
+            // a task, not a signal handler.
             unsafe { libc::malloc_trim(0); }
         }
     });
 
-    // Publish the active vehicle profile to the bash side (archiveloop
-    // sources /root/bin/profile_env.sh). Rewritten only when content
-    // differs, so OTA updates propagate profile changes without a
-    // setup re-run.
+    // Keep archiveloop's generated profile environment current across updates.
     sentryusb_vehicle_profile::write_profile_env();
 
-    // Initialize auth
     let auth = sentryusb_api::init_auth();
     phase!("auth_initialized");
 
-    // WebSocket hub
     let hub = sentryusb_ws::Hub::new();
 
     phase!("processor_initialized");
@@ -189,19 +165,14 @@ async fn main() {
     // Resume setup if it was interrupted by a reboot (e.g. dwc2 overlay, root shrink)
     sentryusb_api::setup::auto_resume_setup(hub.clone());
 
-    // Fire the anonymous install beacon once per install (gated by
-    // /mutable/.beaconed). No fingerprint, no identifier — just an
-    // incrementing counter on the support server. The opted-in update-
-    // check telemetry is handled separately in check_for_update().
+    // The once-per-install beacon has no fingerprint or identifier; update
+    // telemetry is separately opt-in.
     sentryusb_api::update::spawn_install_beacon();
 
-    // Boot-time storage auto repair (opt-in via the storage_auto_repair
-    // preference). Detects a /backingfiles that failed to mount at boot
-    // and runs the guarded xfs_repair ladder; see api::storage_repair.
+    // Run the opt-in boot repair check for an unmounted /backingfiles.
     sentryusb_api::storage_repair::spawn_boot_check(hub.clone());
     phase!("startup_tasks_spawned");
 
-    // Build the API router
     let mut app = sentryusb_api::build_router(app_state.clone());
 
     // Serve recording video files via the bind mount of
@@ -211,13 +182,6 @@ async fn main() {
         tower_http::services::ServeDir::new("/var/www/html/Recordings"),
     );
 
-    // Serve /fs/ for the music autofs mount
-    app = app.nest_service(
-        "/fs",
-        tower_http::services::ServeDir::new("/var/www/html/fs"),
-    );
-
-    // Static file serving with SPA fallback (unless dev mode)
     if !args.dev {
         app = app.fallback(embed::spa_handler);
         info!("Serving embedded static files");
@@ -225,45 +189,9 @@ async fn main() {
         info!("Running in development mode (no static file serving)");
     }
 
-    // Compression wraps everything *after* all routes are added. axum's
-    // `Router::layer` only wraps routes registered before the call, so we
-    // apply compression AFTER the api router + ServeDir nests + SPA fallback
-    // are in place. The predicate keeps already-compressed media bodies
-    // (MP4, MP3, JPEG, ZIP) and binary streams out of the gzip path:
-    //   - video/*  — dashcam MP4s under /Recordings/*; gzipping wastes CPU
-    //                and produces no size win on already-compressed H.264.
-    //   - audio/*  — /fs/* music/lock_chimes (MP3/AAC/OGG are pre-compressed).
-    //   - image/*  — already-compressed JPEG/PNG/WebP.
-    //   - application/octet-stream — /api/files/download streams arbitrary
-    //                binary; without Content-Length the default predicate
-    //                would gzip-stream the whole download. Skip.
-    //   - application/zip — /api/files/download-zip; entries inside the zip
-    //                are already DEFLATE'd, re-gzipping gains nothing.
-    //   - application/grpc, text/event-stream — never compress these.
-    // Size floor raised from the tower-http default of 32 bytes to 1024 to
-    // match nginx/Cloudflare defaults — sub-1 KB JSON responses don't benefit
-    // from gzip and incur per-request compression CPU. JSON above 1 KB and
-    // the SPA JS/CSS bundle still compress normally (1.2 MB → ~280 KB).
-    // Explicitly enable brotli + gzip + deflate. tower-http's
-    // `compression-full` feature compiles all three in; the
-    // CompressionLayer default already enables them, but spelling it
-    // out makes the supported codecs obvious to anyone auditing the
-    // file. Brotli is preferred when the client supports it (15–25%
-    // smaller than gzip for JSON/HTML at comparable CPU).
-    //
-    // Embedded SPA assets that build.sh pre-compressed into
-    // .br/.gz siblings are served by embed.rs with a
-    // Content-Encoding header already set — tower-http detects that
-    // and skips re-compressing, so no per-request CPU is wasted on
-    // the bundle.
-    // Brotli quality 6 (not the default 11) on dynamic responses. Quality
-    // 11 is the compression algorithm's slowest setting — fine for the
-    // build-time pre-compressed assets (paid once, served forever) but
-    // wasteful per-request on a Pi Zero 2W where it can add 100-200 ms
-    // to a single big-JSON response. Quality 6 gets within ~5% of
-    // quality-11 size at ~15× the encode speed. Gzip and deflate use
-    // level 6 too, which is their normal default — no behavior change
-    // for those codecs.
+    // Apply after registering routes because Router::layer wraps only existing
+    // routes. Skip compressed/streaming media, avoid sub-1 KiB CPU overhead,
+    // and use Brotli quality 6 to keep Pi response latency bounded.
     let compression = CompressionLayer::new()
         .br(true)
         .gzip(true)
@@ -281,7 +209,6 @@ async fn main() {
     );
     app = app.layer(compression);
 
-    // Auth middleware
     app = app.layer(axum::middleware::from_fn_with_state(
         auth,
         sentryusb_api::auth::auth_middleware,
@@ -312,8 +239,7 @@ async fn main() {
 }
 
 async fn shutdown_signal() {
-    // systemd stops the service with SIGTERM — without listening for it
-    // the graceful drain below only ever ran on interactive Ctrl+C.
+    // systemd uses SIGTERM; interactive sessions use Ctrl+C.
     #[cfg(unix)]
     {
         let mut sigterm =
@@ -331,12 +257,14 @@ async fn shutdown_signal() {
     info!("Shutdown signal received, draining connections...");
 }
 
-/// Dispatch a subcommand. Returns the exit code the wrapper scripts should
-/// propagate back to their caller. `0` on success; `1` (or a shell-friendly
-/// non-zero) on failure. Errors are printed to stderr so archiveloop's
-/// existing `ERROR: make_snapshot.sh failed (exit $?)` log lines stay useful.
+/// Dispatch a wrapper command, returning its shell exit status and writing
+/// failures to stderr for archiveloop diagnostics.
 async fn run_subcommand(cmd: Command) -> i32 {
     match cmd {
+        Command::RefreshArchiveRuntime => match sentryusb_setup::archive_runtime::refresh_configured(std::path::Path::new("/root/bin")) {
+            Ok(()) => 0,
+            Err(error) => { eprintln!("Could not refresh archive runtime: {error:#}"); 1 }
+        },
         Command::Gadget { action } => run_gadget(action).await,
         Command::Snapshot { action } => run_snapshot(action).await,
         Command::Space { action } => run_space(action).await,
@@ -344,9 +272,7 @@ async fn run_subcommand(cmd: Command) -> i32 {
 }
 
 async fn run_gadget(action: GadgetAction) -> i32 {
-    // usb_gadget::enable/disable are synchronous and touch configfs; run
-    // them on a blocking thread so they don't panic inside a tokio worker
-    // on slow udc bind retries.
+    // configfs operations are synchronous and may block during UDC retries.
     let result = match action {
         GadgetAction::Enable { .. } => {
             tokio::task::spawn_blocking(sentryusb_gadget::enable).await
@@ -371,10 +297,7 @@ async fn run_gadget(action: GadgetAction) -> i32 {
 async fn run_snapshot(action: SnapshotAction) -> i32 {
     match action {
         SnapshotAction::Make { args } => {
-            // archiveloop calls `make_snapshot.sh nofsck` after a reboot
-            // to skip the redundant fsck pass; treat anything else
-            // (including bare "fsck" or no arg) as fsck-on. The bash
-            // wrapper forwards `"$@"` so the first arg is what landed.
+            // Only an explicit `nofsck` from archiveloop skips the check.
             let skip_fsck = args.iter().any(|a| a.eq_ignore_ascii_case("nofsck"));
             match sentryusb_gadget::snapshot::make_snapshot(skip_fsck).await {
                 Ok(Some(name)) => {
@@ -382,11 +305,7 @@ async fn run_snapshot(action: SnapshotAction) -> i32 {
                     0
                 }
                 Ok(None) => {
-                    // Snapshot was identical to the previous one and
-                    // discarded. Print nothing — callers that capture
-                    // stdout will see an empty string and know to
-                    // skip; archiveloop's only consumer of this output
-                    // is informational logging.
+                    // Empty stdout tells the wrapper no snapshot was retained.
                     0
                 }
                 Err(e) => {
@@ -409,12 +328,27 @@ async fn run_snapshot(action: SnapshotAction) -> i32 {
 
 async fn run_space(action: SpaceAction) -> i32 {
     match action {
-        SpaceAction::Manage { .. } => match sentryusb_gadget::space::manage_free_space().await {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("space manage: {}", e);
-                1
+        SpaceAction::Manage { args } => {
+            // Reject invalid explicit reserves instead of diverging from
+            // archiveloop's space policy.
+            let reserve = match args.first().map(|a| (a, a.parse::<u64>())) {
+                None => Ok(None),
+                Some((_, Ok(v))) => Ok(Some(v)),
+                Some((a, Err(e))) => Err(format!("invalid reserve {a:?} (expected bytes): {e}")),
+            };
+            match reserve {
+                Err(msg) => {
+                    eprintln!("space manage: {msg}");
+                    2
+                }
+                Ok(reserve) => match sentryusb_gadget::space::manage_free_space(reserve).await {
+                    Ok(()) => 0,
+                    Err(e) => {
+                        eprintln!("space manage: {}", e);
+                        1
+                    }
+                },
             }
-        },
+        }
     }
 }

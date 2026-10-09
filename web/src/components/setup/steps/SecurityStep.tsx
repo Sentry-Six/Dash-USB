@@ -38,7 +38,6 @@ export function SecurityStep({ data, onChange }: StepProps) {
         </h3>
       </div>
 
-      {/* Web UI auth */}
       <div>
         <p className="mb-3 text-xs text-slate-500">
           Protect the web interface with a username and password. Recommended if
