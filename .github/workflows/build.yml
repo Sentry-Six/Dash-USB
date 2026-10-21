@@ -154,7 +154,7 @@ jobs:
 
       - name: Validate Cargo.lock
         # Fail on lockfile inconsistency before the slower build.
-        run: cargo fetch --target ${{ matrix.target }}
+        run: cargo fetch --locked --target ${{ matrix.target }}
 
       - name: Build release binaries (dashusb)
         # RUSTFLAGS tunes each variant. mold supports native aarch64, while
@@ -165,7 +165,7 @@ jobs:
             aarch64-*) BUILD_WRAPPER="mold -run" ;;
             *)         BUILD_WRAPPER="" ;;
           esac
-          $BUILD_WRAPPER cargo build --release --target ${{ matrix.target }} -p sentryusb
+          $BUILD_WRAPPER cargo build --locked --release --target ${{ matrix.target }} -p sentryusb
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: ${{ matrix.linker }}
@@ -195,7 +195,7 @@ jobs:
         with:
           cache-on-failure: true
       - name: Run tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       # Exercise archiveloop code that Cargo cannot see.
       - name: Run shell tests
