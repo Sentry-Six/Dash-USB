@@ -118,7 +118,7 @@ The only way a device fingerprint is sent is if you explicitly opt in to
 
 ## Build from source
 
-Prerequisites: Rust stable, Node 20+, and `cross` (`cargo install cross`).
+Prerequisites: Rust stable, Node 20.19+ or 22.12+, and `cross` (`cargo install cross`).
 
 ```bash
 # Web UI

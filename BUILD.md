@@ -48,6 +48,8 @@ cargo build --release
 
 ## Full OS image
 
+Prebuilt images aren't offered right now; this script is kept for a future image release and isn't maintained or tested in the meantime.
+
 `build-image.sh` wraps pi-gen with the DashUSB stage overlay:
 ```
 ./build-image.sh                  # arm64

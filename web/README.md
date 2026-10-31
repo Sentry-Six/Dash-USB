@@ -45,7 +45,7 @@ cd .. && ./build.sh arm64
 | **Notifications** | Notification history and per-channel test sends |
 | **Terminal** | Shell session over WebSocket |
 | **Support** | Support tickets, raised and read in-app |
-| **Settings** | Setup wizard, device/network/notifications/system tabs, health check, OTA update, reboot |
+| **Settings** | Setup wizard, Device/Network/System tabs, health check, OTA update, reboot (notification delivery settings live on the Notifications page) |
 
 ## Structure
 
@@ -57,5 +57,6 @@ src/
 │   ├── setup/         # SetupWizard + 9 step components
 │   └── ui/            # Shared primitives
 ├── pages/             # Top-level routes, plus pages/settings/ tabs
+├── hooks/             # useAuth, connection status, version and update checks
 └── lib/               # api.ts, ws.ts (WebSocket hook), units.ts, utils.ts
 ```
