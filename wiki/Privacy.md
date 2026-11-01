@@ -71,15 +71,22 @@ Connect push pairing, if you use it, uses a separate random pairing ID.
 - **Purpose:** Resolve `TIME_ZONE=auto` to an IANA time zone.
 - **How to disable:** Select an explicit time zone in the Setup Wizard.
 
-### 4. Support page
+### 4. AI Support page
 
-- **Endpoint:** `https://api.sentry-six.com/chat/ticket/...`, proxied by the
+- **Endpoint:** `https://api.sentry-six.com/ai-support/...`, proxied by the
   Pi.
-- **Sent:** The messages and attachments you send on the Support page, as a
-  private support ticket.
-- **Where it goes:** Ticket messages and attachments are relayed into a
-  private Discord thread visible to Sentry Six staff.
-- **How to disable:** Don't open a support ticket.
+- **Sent:** Your chat messages, the Dash USB version, board model, vehicle
+  profile ID, archive method and snapshot interval. The Pi's public IP is used
+  for abuse prevention.
+- **Where it goes:** Sentry Six servers in Canada; Anthropic processes the
+  chat to write each answer (Sentry Assistant).
+- **Retention:** Redacted chats are kept for up to 90 days after the last
+  message and may be reviewed by authorized maintainers. **New chat** deletes
+  the current chat.
+- **Diagnostics:** A diagnostics report is generated and uploaded only after
+  you approve a request in the chat, and is deleted within 7 days.
+- **How to disable:** Don't start a chat. Discord remains available for help
+  from a person.
 
 ### 5. Sentry Connect push pairing (opt-in)
 
@@ -103,8 +110,7 @@ Connect push pairing, if you use it, uses a separate random pairing ID.
 - Bundle multiple consents under one button. Each opt-in is a separate
   affirmative action.
 - Use pre-ticked checkboxes — explicit click required.
-- Upload footage automatically. Recordings go to the configured archive unless
-  you explicitly attach media to a support ticket.
+- Upload footage. Recordings go only to the archive you configure.
 
 ## Source code references
 
@@ -114,7 +120,7 @@ Connect push pairing, if you use it, uses a separate random pairing ID.
   bodyless and gated on `/mutable/.beaconed`.
 - Push pairing: `crates/api/src/notifications.rs` →
   `register_code_with_backend()`.
-- Support tickets: `crates/api/src/support.rs`.
+- AI Support proxy: `crates/api/src/support.rs`.
 - Time-zone lookup: `crates/setup/src/system.rs` →
   `resolve_timezone_via_geoip()`.
 

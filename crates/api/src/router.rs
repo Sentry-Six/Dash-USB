@@ -84,15 +84,21 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/notifications/history", get(crate::notification_center::get_history).post(crate::notification_center::append_history).delete(crate::notification_center::clear_history))
         .route("/api/notifications/history/{id}", delete(crate::notification_center::delete_history_item))
         .route("/api/notifications/settings/check", get(crate::notification_center::check_notification_type))
-        .route("/api/support/check", get(crate::support::check_available))
-        .route("/api/support/ticket", post(crate::support::create_ticket))
-        .route("/api/support/ticket/{id}/message", post(crate::support::send_message))
-        .route("/api/support/ticket/{id}/media", post(crate::support::upload_media))
-        .route("/api/support/ticket/{id}/messages", get(crate::support::fetch_messages))
-        .route("/api/support/ticket/{id}/close", post(crate::support::close_ticket))
-        .route("/api/support/ticket/{id}/mark-read", post(crate::support::mark_read))
-        .route("/api/support/ticket/{id}/register-device", post(crate::support::register_device))
-        .route("/api/support/ticket/{id}/unregister-device", post(crate::support::unregister_device))
+        // AI Support: a fixed, product-scoped proxy to the Sentry Six gateway.
+        .route("/api/support/ai/conversations", post(crate::support::create_ai_conversation))
+        .route("/api/support/ai/conversations/{id}", delete(crate::support::delete_ai_conversation))
+        .route(
+            "/api/support/ai/conversations/{id}/messages",
+            get(crate::support::fetch_ai_messages).post(crate::support::send_ai_message),
+        )
+        .route(
+            "/api/support/ai/conversations/{id}/file-decisions",
+            post(crate::support::decide_ai_file_request),
+        )
+        .route(
+            "/api/support/ai/conversations/{id}/files",
+            post(crate::support::upload_ai_file).layer(DefaultBodyLimit::max(3 * 1024 * 1024)),
+        )
         .route("/api/memory", get(crate::memory::memory_stats))
         .route("/api/system/backup", post(crate::backup::create_backup))
         .route("/api/system/backups", get(crate::backup::list_backups))

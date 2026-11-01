@@ -111,7 +111,7 @@ Here's everything Dash USB sends to Sentry Six services:
 | When you check for updates | Software version, CPU arch, board model, update status | None by default; a salted hash of the board serial (or `/etc/machine-id`) if you opt in |
 | First startup, before setup (retried on later boots if needed) | Empty ping (no body) | None; the server keeps a daily count |
 | Time zone `auto` | A lookup to `sentryusb.com`, which sees your IP | None |
-| Support page (if used) | Your messages and attachments, relayed to a private Discord thread for staff | Ticket only |
+| AI Support page (if used) | Your messages plus version, board model, vehicle profile, archive method and snapshot interval; processed by Anthropic, redacted chats kept up to 90 days. Diagnostics only when you approve, kept 7 days | Conversation only |
 | Sentry Connect push pairing (if used) | Random pairing ID and secret, the Pi's hostname, and notification text relayed to Apple | Random ID |
 
 A device ID is sent only if you opt in under
