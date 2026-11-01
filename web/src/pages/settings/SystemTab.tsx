@@ -286,7 +286,7 @@ function PrivacyCards() {
           />
           <FlowRow
             when="Time zone set to auto"
-            what="A lookup to sentry-six.com, which sees your IP address"
+            what="A lookup to sentryusb.com, which sees your IP address"
             note="Choose a time zone to avoid it."
           />
           <FlowRow

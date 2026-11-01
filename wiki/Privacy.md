@@ -62,11 +62,12 @@ Connect push pairing, if you use it, uses a separate random pairing ID.
 
 ### 3. Automatic time-zone lookup
 
-- **Endpoint:** `GET https://sentry-six.com/api/geoip/me`
+- **Endpoint:** `GET https://sentryusb.com/api/geoip/me`
 - **When:** During setup and at boot while the time zone is `auto` and the
   system time zone is still UTC.
-- **Sent:** No request body. sentry-six.com and Cloudflare, which sits in
-  front of it, see your public IP address.
+- **Sent:** No request body. The endpoint sees your public IP address and
+  returns an approximate city, region and time zone; it rate-limits by IP for
+  24 hours.
 - **Purpose:** Resolve `TIME_ZONE=auto` to an IANA time zone.
 - **How to disable:** Select an explicit time zone in the Setup Wizard.
 

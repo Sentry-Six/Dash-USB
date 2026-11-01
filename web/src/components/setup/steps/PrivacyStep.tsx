@@ -77,7 +77,7 @@ export function PrivacyStep() {
           />
           <FlowRow
             when="Time zone set to auto"
-            what="A lookup to sentry-six.com, which sees your IP address"
+            what="A lookup to sentryusb.com, which sees your IP address"
             why="Set the Pi's local time zone"
             note="Pick a time zone in the wizard to avoid it."
           />

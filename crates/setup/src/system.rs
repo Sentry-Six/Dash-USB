@@ -522,7 +522,7 @@ pub async fn configure_timezone(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
 pub(crate) async fn resolve_timezone_via_geoip() -> Option<String> {
     // Keep IP processing first-party; do not add public geo-IP fallbacks.
     // Unavailable lookups retain UTC and retry on a later boot.
-    const ENDPOINTS: &[&str] = &["https://sentry-six.com/api/geoip/me"];
+    const ENDPOINTS: &[&str] = &["https://sentryusb.com/api/geoip/me"];
     for url in ENDPOINTS {
         if let Ok(out) = sentryusb_shell::run("curl", &["-s", "--max-time", "5", url]).await {
             if let Some(tz) = extract_timezone(&out) {
@@ -541,7 +541,7 @@ fn extract_timezone(body: &str) -> Option<String> {
         // Flat key (preferred: `{"timezone":"America/New_York", ...}`)
         // or GeoLite2's native nested `{"location":{"time_zone":"..."}}`.
         let candidates = [
-            v.get("timeZone").and_then(|x| x.as_str()), // sentry-six.com/api/geoip/me
+            v.get("timeZone").and_then(|x| x.as_str()), // sentryusb.com/api/geoip/me
             v.get("timezone").and_then(|x| x.as_str()),
             v.get("time_zone").and_then(|x| x.as_str()),
             v.get("tz").and_then(|x| x.as_str()),
