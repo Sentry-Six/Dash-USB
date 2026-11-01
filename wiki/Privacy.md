@@ -7,20 +7,24 @@ support actions make additional user-directed connections.
 ## Summary
 
 By default, Dash USB sends **no device identifier** to Sentry Six services.
-The "opt-in for analytics" toggle in the setup wizard and in
+The analytics choice in the setup wizard and in
 `Settings → System → Analytics opt-in` is the only switch that controls
-whether a device-derived identifier ever leaves your Pi.
+whether a device-derived identifier is sent with update checks. Sentry
+Connect push pairing, if you use it, uses a separate random pairing ID.
 
 ## Per-flow disclosure
 
 ### 1. Update checks
 
 - **Endpoint:** `POST https://api.sentry-six.com/dashusb/telemetry`
-- **Sent:** `current_version`, `arch`, `model`, `update_available` flag,
-  `new_version` (when relevant)
-- **Identifier:** None by default. **If you have opted in** to the
-  analytics toggle, a one-way salted SHA-256 of your board's serial
-  number is included as `fingerprint`.
+- **When:** When you check for updates in Settings, even if GitHub can't be
+  reached.
+- **Sent:** `current_version`, `arch`, `model` (board model),
+  `update_available` flag, `new_version` (when relevant)
+- **Identifier:** None by default. **If you have opted in** to analytics, a
+  salted SHA-256 hash of your board's serial number (or `/etc/machine-id`
+  when there is no serial) is included as `fingerprint`. The salt is public
+  in the open-source code, so the ID is pseudonymous.
 - **Purpose:** Detect vulnerable builds, ship compatible binaries,
   and (for opted-in devices) count unique installs without double-
   counting reinstalls.
@@ -28,6 +32,10 @@ whether a device-derived identifier ever leaves your Pi.
   default (no fingerprint) version — Recital 49 explicitly recognizes
   security as a legitimate-interest purpose. For the opted-in
   fingerprinted variant, consent under Art. 6(1)(a).
+- **Stored:** For opted-in checks, the server keeps the device ID, version,
+  architecture, board model and previous version.
+- **Discord:** For opted-in checks, the version, architecture, board model
+  and update status are posted to a private maintainers' Discord channel.
 - **Retention:** Opted-in rows remain until manually purged or deletion is
   requested. Non-fingerprinted calls create no database row; the application
   keeps only short-lived in-memory rate-limit counters.
@@ -43,19 +51,49 @@ whether a device-derived identifier ever leaves your Pi.
 - **Purpose:** Count aggregate installs without identifying devices.
 - **Network metadata:** The source IP is used by an in-memory rate limiter but
   is not stored by this endpoint.
+- **When:** At first startup, before the setup wizard, regardless of the
+  analytics choice. Retried on later boots until it succeeds once (tracked
+  by a `/mutable/.beaconed` marker).
 - **Retention:** Daily counts are kept indefinitely as aggregate
   numbers. No per-user data exists to retain.
-- **How to disable:** Fires exactly once per install (gated by a
-  `/mutable/.beaconed` marker). To suppress entirely, create that file
-  before first boot: `sudo touch /mutable/.beaconed`. Network-block
+- **How to disable:** To suppress it entirely, create the marker before first
+  boot: `sudo touch /mutable/.beaconed`. Network-block
   `api.sentry-six.com` if you want to be sure.
 
 ### 3. Automatic time-zone lookup
 
 - **Endpoint:** `GET https://sentry-six.com/api/geoip/me`
-- **Sent:** No request body; the service necessarily receives the source IP.
+- **When:** During setup and at boot while the time zone is `auto` and the
+  system time zone is still UTC.
+- **Sent:** No request body. sentry-six.com and Cloudflare, which sits in
+  front of it, see your public IP address.
 - **Purpose:** Resolve `TIME_ZONE=auto` to an IANA time zone.
 - **How to disable:** Select an explicit time zone in the Setup Wizard.
+
+### 4. Support page
+
+- **Endpoint:** `https://api.sentry-six.com/chat/ticket/...`, proxied by the
+  Pi.
+- **Sent:** The messages and attachments you send on the Support page, as a
+  private support ticket.
+- **Where it goes:** Ticket messages and attachments are relayed into a
+  private Discord thread visible to Sentry Six staff.
+- **How to disable:** Don't open a support ticket.
+
+### 5. Sentry Connect push pairing (opt-in)
+
+- **Endpoint:** `POST https://notifications.sentry-six.com/register-code`,
+  then `https://notifications.sentry-six.com/send` for each notification.
+- **Sent:** A random `device_id` and `device_secret` generated on this Pi,
+  your pairing code and the Pi's hostname. When a phone pairs, the Sentry
+  Connect app registers its Apple push (APNs) token, a device name (such as
+  "iPhone") and platform. Each notification's title and message text pass
+  through `notifications.sentry-six.com` to Apple (APNs) for delivery.
+- **Identifier:** The random `device_id`.
+- **Retention:** When the last phone unpairs, the hostname and device link
+  are cleared. Registrations with no paired phone and no activity for 90 days
+  are deleted.
+- **How to disable:** Don't pair, or unpair in the Sentry Connect app.
 
 ## Things Dash USB does **not** do
 
@@ -73,6 +111,9 @@ whether a device-derived identifier ever leaves your Pi.
   The `fingerprint` key is inserted only when the preference is `true`.
 - Install beacon: same file → `spawn_install_beacon()`. The POST is
   bodyless and gated on `/mutable/.beaconed`.
+- Push pairing: `crates/api/src/notifications.rs` →
+  `register_code_with_backend()`.
+- Support tickets: `crates/api/src/support.rs`.
 - Time-zone lookup: `crates/setup/src/system.rs` →
   `resolve_timezone_via_geoip()`.
 

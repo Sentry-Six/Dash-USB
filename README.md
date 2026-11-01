@@ -104,15 +104,21 @@ of the way.
 
 ## Privacy
 
-By default, Dash USB sends **no device identifier** to our servers. Here's everything it ever sends:
+Here's everything Dash USB sends to Sentry Six services:
 
 | When | What | Identifier? |
 |---|---|---|
-| Daily update check | Software version, CPU arch, board model | None by default |
-| Once per install | Empty ping (no body) | None — anonymous counter |
+| When you check for updates | Software version, CPU arch, board model, update status | None by default; a salted hash of the board serial (or `/etc/machine-id`) if you opt in |
+| First startup, before setup (retried on later boots if needed) | Empty ping (no body) | None; the server keeps a daily count |
+| Time zone `auto` | A lookup to `sentry-six.com`, which sees your IP | None |
+| Support page (if used) | Your messages and attachments, relayed to a private Discord thread for staff | Ticket only |
+| Sentry Connect push pairing (if used) | Random pairing ID and secret, the Pi's hostname, and notification text relayed to Apple | Random ID |
 
-The only way a device fingerprint is sent is if you explicitly opt in to
-**Settings → System → Analytics opt-in** (default: off).
+A device ID is sent only if you opt in under
+**Settings → System → Analytics opt-in** (default: off). Opted-in checks are
+stored with the version, architecture and board model, and a private
+maintainers' Discord channel gets the version, architecture, board model and
+update status. Full details are in [`wiki/Privacy.md`](wiki/Privacy.md).
 
 ---
 

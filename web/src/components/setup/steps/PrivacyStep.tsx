@@ -64,16 +64,34 @@ export function PrivacyStep() {
         </p>
         <div className="divide-y divide-white/5">
           <FlowRow
-            when="Daily update check"
-            what="Software version, CPU architecture, board model"
+            when="When you check for updates"
+            what="Software version, CPU architecture, board model, update status"
             why="Detect vulnerable builds, ship compatible binaries"
-            note="No device identifier sent unless you opt in below."
+            note="Device ID only if you opt in below. Opted-in checks are stored, and maintainers' Discord gets their version, architecture, board and update status."
           />
           <FlowRow
-            when="Once per install"
+            when="First startup"
             what="Empty ping (no body, no identifier)"
             why="Count gross install volume on the server"
-            note="Anonymous. There's nothing to opt out of."
+            note="Sent before this step (retried on later boots if needed). The server keeps a daily count."
+          />
+          <FlowRow
+            when="Time zone set to auto"
+            what="A lookup to sentry-six.com, which sees your IP address"
+            why="Set the Pi's local time zone"
+            note="Pick a time zone in the wizard to avoid it."
+          />
+          <FlowRow
+            when="If you use the Support page"
+            what="Your messages and attachments"
+            why="Answer your support request"
+            note="Relayed to a private Discord thread for Sentry Six staff."
+          />
+          <FlowRow
+            when="If you pair Sentry Connect"
+            what="A random pairing ID and secret, the Pi's hostname, and notification text"
+            why="Route push notifications through notifications.sentry-six.com and Apple"
+            note="Hostname cleared when the last phone unpairs; inactive unpaired records deleted after 90 days."
           />
         </div>
         <p className="mt-4 text-[11px] leading-relaxed text-slate-500">
@@ -105,11 +123,10 @@ export function PrivacyStep() {
           Help us count new installs?
         </p>
         <p className="mt-2 text-xs leading-relaxed text-slate-400">
-          If you opt in, daily update checks will include a one-way hashed
-          device ID (derived from your board's serial number) so we can tell
-          how many unique devices are running each version, without double-
-          counting reinstalls. You can change this any time in Settings →
-          Privacy.
+          If you opt in, update checks include a pseudonymous device ID (a
+          hash of your board's serial number or machine ID) so we can count
+          unique devices per version without double-counting reinstalls.
+          Change this any time in Settings → System → Analytics opt-in.
         </p>
 
         <div className="mt-4 flex flex-col gap-2 sm:flex-row">
@@ -159,7 +176,7 @@ export function PrivacyStep() {
         )}
         {choice !== null && !error && (
           <p className="mt-3 text-[11px] text-emerald-300/70">
-            Saved. You can change this any time in Settings → Privacy.
+            Saved. Change this any time in Settings → System → Analytics opt-in.
           </p>
         )}
         {error && (

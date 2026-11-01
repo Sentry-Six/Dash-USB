@@ -17,8 +17,9 @@ unanswered remains opted out.
 
 - **Opted out (default)** — no fingerprint is included in future update checks;
   identifier-free checks continue.
-- **Opted in** — a one-way salted hash of the board serial is attached to
-  update-check telemetry for unique-install counts.
+- **Opted in** — a salted hash of the board serial (or `/etc/machine-id`) is
+  attached to update checks for unique-install counts. The salt is public in
+  the source code, so the ID is pseudonymous.
 
 Either choice takes effect immediately and persists if you back out of the wizard. You can change it any time at **Settings → System → Analytics opt-in**. Full per-flow disclosure is on the [Privacy](Privacy) page.
 

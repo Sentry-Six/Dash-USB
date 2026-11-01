@@ -216,10 +216,9 @@ function PrivacyCards() {
         title="Analytics opt-in"
       >
         <p className="t-xs">
-          When opted in, daily update checks include a one-way hashed device
-          ID (derived from your board serial) so we can count unique installs
-          without double-counting reinstalls. When opted out, nothing
-          identifying is sent on update checks.
+          When opted in, update checks include a pseudonymous device ID (a
+          hash of your board serial or machine ID) so we can count unique
+          installs without double-counting reinstalls.
         </p>
 
         <div className="mt-1 flex flex-col gap-2 sm:flex-row">
@@ -276,14 +275,29 @@ function PrivacyCards() {
       >
         <div className="divide-y divide-white/5">
           <FlowRow
-            when="Daily update check"
-            what="Version, architecture, board model"
-            note="Device identifier only if opted in above."
+            when="When you check for updates"
+            what="Version, architecture, board model, update status"
+            note="Device ID only if opted in above. Opted-in checks notify maintainers' Discord."
           />
           <FlowRow
-            when="Once per install"
+            when="First startup"
             what="Empty ping (no body, no identifier)"
-            note="Anonymous gross-install counter."
+            note="Retried on later boots if needed. The server keeps a daily count."
+          />
+          <FlowRow
+            when="Time zone set to auto"
+            what="A lookup to sentry-six.com, which sees your IP address"
+            note="Choose a time zone to avoid it."
+          />
+          <FlowRow
+            when="Support page (if used)"
+            what="Your messages and attachments"
+            note="Relayed to a private Discord thread for Sentry Six staff."
+          />
+          <FlowRow
+            when="Sentry Connect pairing (if used)"
+            what="Random pairing ID and secret, hostname, notification text (relayed to Apple)"
+            note="Hostname cleared when the last phone unpairs; inactive unpaired records deleted after 90 days."
           />
         </div>
         <div className="tile-divider" />
