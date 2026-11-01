@@ -24,7 +24,7 @@ Connect push pairing, if you use it, uses a separate random pairing ID.
 - **Identifier:** None by default. **If you have opted in** to analytics, a
   salted SHA-256 hash of your board's serial number (or `/etc/machine-id`
   when there is no serial) is included as `fingerprint`. The salt is public
-  in the open-source code, so the ID is pseudonymous.
+  in the source code, so the ID is pseudonymous.
 - **Purpose:** Detect vulnerable builds, ship compatible binaries,
   and (for opted-in devices) count unique installs without double-
   counting reinstalls.
