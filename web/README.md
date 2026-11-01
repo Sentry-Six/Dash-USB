@@ -45,7 +45,7 @@ cd .. && ./build.sh arm64
 | **Notifications** | Notification history and per-channel test sends |
 | **Terminal** | Shell session over WebSocket |
 | **Support** | Support tickets, raised and read in-app |
-| **Settings** | Setup wizard, Device/Network/System tabs, health check, OTA update, reboot (notification delivery settings live on the Notifications page) |
+| **Settings** | Setup wizard, Device / Car & Network / System tabs, health check, OTA update, reboot (notification delivery settings live on the Notifications page) |
 
 ## Structure
 

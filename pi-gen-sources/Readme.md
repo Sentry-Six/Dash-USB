@@ -2,7 +2,7 @@
 
 > **Prebuilt images aren't offered right now.** Install Dash USB with the one-liner in the [README](../README.md#install). These image scripts are kept for a future image release and aren't maintained or tested in the meantime.
 
-The Dash USB image is a custom Raspberry Pi OS image with everything pre-installed. Users just flash it, configure WiFi in Pi Imager, boot, and open the web UI — no SSH required.
+The Dash USB image is a custom Raspberry Pi OS image with everything pre-installed. Users flash it, boot, and set up WiFi over Bluetooth (BLE provisioning); no SSH required.
 
 ### Quick Method (recommended)
 
@@ -27,11 +27,12 @@ You can also pass a pre-built binary (it is staged in every CPU variant slot), o
 
 ### Manual Method
 
-1. Clone pi-gen: `git clone https://github.com/RPi-Distro/pi-gen`
+1. Clone pi-gen: `git clone --branch arm64 https://github.com/RPi-Distro/pi-gen` (omit `--branch arm64` for a 32-bit image, which stages only `dashusb-linux-armv7`)
 2. From the pi-gen folder, run: `bash /path/to/Dash-USB/pi-gen-sources/prepare.sh`
 3. Optionally inject local binaries by copying them to `stage_dashusb/00-dashusb-tweaks/files/dashusb-linux-arm64-a53` (and `-a72`, `-a76`), and copy `server/ble/*` into the same folder; binaries you don't supply are downloaded from the latest release
-4. Run `./build-docker.sh` (Docker recommended) or `./build.sh`
-5. Image will be in `deploy/`. Flash with Raspberry Pi Imager.
+4. Raise the Trixie export margin: in `export-image/prerun.sh`, change `200 * 1024 * 1024` to `800 * 1024 * 1024` (`build-image.sh` does this for you)
+5. Run `./build-docker.sh` (Docker recommended) or `./build.sh`
+6. Image will be in `deploy/`. Flash it with Raspberry Pi Imager without OS customization; the image removes Pi Imager's first-boot setup.
 
 ### GitHub Actions (CI)
 
@@ -50,8 +51,8 @@ CI builds and publishes the `dashusb-*` binaries only; there is no image workflo
 
 ### User experience after flashing
 
-1. User flashes image with Pi Imager, configures WiFi + password in settings
-2. Boots Pi → WiFi connects → Dash USB web server starts on port 80
+1. User flashes the image and boots the Pi
+2. Sets up WiFi over Bluetooth (BLE provisioning) → Dash USB web server starts on port 80
 3. User opens `http://dashusb.local` → sees the dashboard
 4. Completes Setup Wizard → Pi reboots several times (10–20 min) → done
 5. Plugs into the vehicle

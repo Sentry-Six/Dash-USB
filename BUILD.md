@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Rust stable (1.85+, edition 2024)
+- Rust stable (1.88+; some locked dependencies need it)
 - Node `^20.19.0 || >=22.12.0` and npm
 - `cross` for cross-compilation: `cargo install cross`
 - Docker (for `cross` and image builds)
