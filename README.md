@@ -151,7 +151,7 @@ contributors.
 
 - **Discord** — [discord.gg/9QZEzVwdnt](https://discord.gg/9QZEzVwdnt) — fastest help, real humans
 - **Issues** — [github.com/Sentry-Six/Dash-USB/issues](https://github.com/Sentry-Six/Dash-USB/issues) — reproducible bugs
-- **Site** — [sentry-six.com](https://sentry-six.com)
+- **Site** — [sentry-six.com/dash-usb](https://sentry-six.com/dash-usb/)
 
 ## License
 

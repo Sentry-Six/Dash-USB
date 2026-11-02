@@ -11,6 +11,6 @@
 
 ---
 
-- [sentry-six.com](https://sentry-six.com)
+- [sentry-six.com](https://sentry-six.com/dash-usb/)
 - [Releases](https://github.com/Sentry-Six/Dash-USB/releases/latest)
 - [Discord](https://discord.gg/9QZEzVwdnt)

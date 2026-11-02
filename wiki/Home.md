@@ -64,7 +64,7 @@ Plus:
 
 ## Links
 
-- **Site**: [sentry-six.com](https://sentry-six.com)
+- **Site**: [sentry-six.com/dash-usb](https://sentry-six.com/dash-usb/)
 - **GitHub**: [Sentry-Six/Dash-USB](https://github.com/Sentry-Six/Dash-USB)
 - **Releases**: [Latest](https://github.com/Sentry-Six/Dash-USB/releases/latest)
 - **Discord**: [Community chat](https://discord.gg/9QZEzVwdnt)
