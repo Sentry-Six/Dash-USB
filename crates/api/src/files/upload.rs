@@ -380,7 +380,7 @@ mod tests {
     fn concurrent_default_publish_has_one_winner_and_no_partial_files() {
         let (_root, base, staging) = directories();
         let barrier = Arc::new(std::sync::Barrier::new(2));
-        let threads: Vec<_> = [b'a', b'b'].into_iter().map(|byte| {
+        let threads: Vec<_> = (*b"ab").into_iter().map(|byte| {
             let path = staging.join(format!("source-{byte}"));
             std::fs::write(&path, vec![byte; 131_072]).unwrap();
             let target = base.join("same.mp4"); let barrier = barrier.clone();

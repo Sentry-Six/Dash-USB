@@ -188,7 +188,8 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned so a new clippy release can't fail CI without a code change; bump deliberately.
+      - uses: dtolnay/rust-toolchain@1.99.0
         with:
           components: clippy
       - name: Cache cargo registry + build
