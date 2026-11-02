@@ -35,3 +35,6 @@ sentryusb-gadget = { path = "../usb_gadget", package = "sentryusb-gadget" }
 tempfile = "3"
 # Only used by tests to read archives back and validate the hand-rolled writer.
 zip = { version = "9", default-features = false }
+
+[lints]
+workspace = true

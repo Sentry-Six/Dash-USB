@@ -28,3 +28,6 @@ sentryusb-gadget = { path = "../usb_gadget", package = "sentryusb-gadget" }
 [[bin]]
 name = "dashusb"
 path = "src/main.rs"
+
+[lints]
+workspace = true

@@ -611,10 +611,8 @@ fn walk_for_symlink_pointing_at(dir: &Path, needle: &str, depth: u8) -> bool {
                     return true;
                 }
             }
-        } else if md.is_dir() {
-            if walk_for_symlink_pointing_at(&p, needle, depth + 1) {
-                return true;
-            }
+        } else if md.is_dir() && walk_for_symlink_pointing_at(&p, needle, depth + 1) {
+            return true;
         }
     }
     false
