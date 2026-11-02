@@ -223,17 +223,17 @@ fn spawn_setup(hub: sentryusb_ws::Hub) {
     tokio::spawn(async move {
         // A deliberate retry supersedes the previous failure.
         clear_setup_failure();
-        hub.broadcast("setup_status", &serde_json::json!({"status": "running"}));
+        hub.broadcast("setup_status", serde_json::json!({"status": "running"}));
         info!("[setup] Starting native Rust setup");
 
         let hub_progress = hub.clone();
         let hub_phase = hub.clone();
         let emitter = sentryusb_setup::runner::make_emitter(
             move |msg: &str| {
-                hub_progress.broadcast("setup_progress", &serde_json::json!({"message": msg}));
+                hub_progress.broadcast("setup_progress", serde_json::json!({"message": msg}));
             },
             move |id: &str, label: &str| {
-                hub_phase.broadcast("setup_phase", &serde_json::json!({"id": id, "label": label}));
+                hub_phase.broadcast("setup_phase", serde_json::json!({"id": id, "label": label}));
             },
         );
 
@@ -243,7 +243,7 @@ fn spawn_setup(hub: sentryusb_ws::Hub) {
 
         match result {
             Ok(()) => {
-                hub.broadcast("setup", &serde_json::json!({"status": "complete"}));
+                hub.broadcast("setup", serde_json::json!({"status": "complete"}));
             }
             Err(e) => {
                 tracing::error!("[setup] Failed: {:#}", e);
@@ -269,10 +269,10 @@ fn spawn_setup(hub: sentryusb_ws::Hub) {
                     use std::io::Write;
                     let _ = writeln!(f, "{}", stamped);
                 }
-                hub.broadcast("setup_progress", &serde_json::json!({"message": stamped}));
+                hub.broadcast("setup_progress", serde_json::json!({"message": stamped}));
                 hub.broadcast(
                     "setup",
-                    &serde_json::json!({
+                    serde_json::json!({
                         "status": "error",
                         "error": e.to_string(),
                         "kind": failure.kind,
@@ -337,7 +337,7 @@ pub async fn test_archive(
         }
         hub.broadcast(
             "archive_test_status",
-            &serde_json::json!({ "stage": "installing", "package": pkg }),
+            serde_json::json!({ "stage": "installing", "package": pkg }),
         );
         // Wait for setup's dpkg lock, with a larger outer timeout for hangs.
         sentryusb_shell::run_with_timeout(
@@ -369,7 +369,7 @@ pub async fn test_archive(
             }
             s.hub.broadcast(
                 "archive_test_status",
-                &serde_json::json!({ "stage": "testing" }),
+                serde_json::json!({ "stage": "testing" }),
             );
             let _ = std::fs::create_dir_all(tmp_dir);
             let mut opts = format!("username={},password={},iocharset=utf8", user, pass);
@@ -435,7 +435,7 @@ pub async fn test_archive(
             }
             s.hub.broadcast(
                 "archive_test_status",
-                &serde_json::json!({ "stage": "testing" }),
+                serde_json::json!({ "stage": "testing" }),
             );
             let _ = std::fs::create_dir_all(tmp_dir);
             let src = format!("{}:{}", server, export);

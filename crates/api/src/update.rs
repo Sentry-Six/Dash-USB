@@ -114,7 +114,7 @@ pub async fn run_update(
 
     let hub = s.hub.clone();
     tokio::spawn(async move {
-        hub.broadcast("update_status", &serde_json::json!({"status": "running"}));
+        hub.broadcast("update_status", serde_json::json!({"status": "running"}));
 
         let result = self_update(&hub, target_version).await;
 
@@ -122,7 +122,7 @@ pub async fn run_update(
 
         match result {
             Ok(msg) => {
-                hub.broadcast("update_status", &serde_json::json!({
+                hub.broadcast("update_status", serde_json::json!({
                     "status": "complete",
                     "output": msg
                 }));
@@ -130,7 +130,7 @@ pub async fn run_update(
                 // Let the completion message land before announcing the
                 // restart.
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                hub.broadcast("update_status", &serde_json::json!({
+                hub.broadcast("update_status", serde_json::json!({
                     "status": "restarting",
                     "message": "Restarting Pi to apply update…"
                 }));
@@ -138,7 +138,7 @@ pub async fn run_update(
 
                 let _ = sentryusb_shell::run("reboot", &[]).await;
             }
-            Err(e) => hub.broadcast("update_status", &serde_json::json!({
+            Err(e) => hub.broadcast("update_status", serde_json::json!({
                 "status": "error",
                 "error": e.to_string()
             })),
@@ -271,7 +271,7 @@ async fn download_with_progress(
             last_emit = std::time::Instant::now();
             hub.broadcast(
                 "update_status",
-                &serde_json::json!({
+                serde_json::json!({
                     "status": "downloading",
                     "message": "Downloading update…",
                     "percent": percent,
@@ -312,7 +312,7 @@ async fn self_update(
 ) -> anyhow::Result<String> {
     hub.broadcast(
         "update_status",
-        &serde_json::json!({"status": "checking", "message": "Checking release…"}),
+        serde_json::json!({"status": "checking", "message": "Checking release…"}),
     );
     let suffix = detect_release_suffix().await?;
     let repo = update_repo();
@@ -350,7 +350,7 @@ async fn self_update(
     // Install layouts differ; try each supported root remount form.
     hub.broadcast(
         "update_status",
-        &serde_json::json!({"status": "remounting", "message": "Preparing filesystem…"}),
+        serde_json::json!({"status": "remounting", "message": "Preparing filesystem…"}),
     );
     let _ = sentryusb_shell::run("/root/bin/remountfs_rw", &[]).await;
     let _ = sentryusb_shell::run("mount", &["-o", "remount,rw", "/"]).await;
@@ -364,7 +364,7 @@ async fn self_update(
 
     hub.broadcast(
         "update_status",
-        &serde_json::json!({"status": "installing", "message": "Installing update…"}),
+        serde_json::json!({"status": "installing", "message": "Installing update…"}),
     );
     sentryusb_shell::run("chmod", &["+x", tmp]).await?;
 
@@ -381,7 +381,7 @@ async fn self_update(
     let mut install_warnings: Vec<String> = Vec::new();
     hub.broadcast(
         "update_status",
-        &serde_json::json!({"status": "installing", "message": "Installing components…"}),
+        serde_json::json!({"status": "installing", "message": "Installing components…"}),
     );
 
     // Use the requested tag or resolve latest through the HTTP client; the
@@ -425,7 +425,7 @@ async fn self_update(
     let source = sentryusb_config::github_source();
     hub.broadcast(
         "update_status",
-        &serde_json::json!({"status": "updating_scripts", "message": "Updating scripts…"}),
+        serde_json::json!({"status": "updating_scripts", "message": "Updating scripts…"}),
     );
     let patches_path = "/usr/local/bin/dashusb-apply-runtime-patches";
     let patches_ref = if source.branch_explicit {

@@ -552,7 +552,7 @@ impl RepairLog {
         self.buf.push('\n');
         self.hub.broadcast(
             "storage_repair",
-            &serde_json::json!({ "status": "running", "phase": phase, "line": line }),
+            serde_json::json!({ "status": "running", "phase": phase, "line": line }),
         );
     }
 
@@ -685,7 +685,7 @@ async fn run_repair(hub: sentryusb_ws::Hub, device: String, mode: RepairMode) {
             let log_file = persist_log(&log.buf);
             hub.broadcast(
                 "storage_repair",
-                &serde_json::json!({
+                serde_json::json!({
                     "status": "needs_force",
                     "device": device,
                     "log_file": log_file,
@@ -716,7 +716,7 @@ async fn run_repair(hub: sentryusb_ws::Hub, device: String, mode: RepairMode) {
         let log_file = persist_log(&log.buf);
         hub.broadcast(
             "storage_repair",
-            &serde_json::json!({
+            serde_json::json!({
                 "status": "error",
                 "device": device,
                 "log_file": log_file,
@@ -758,7 +758,7 @@ async fn run_repair(hub: sentryusb_ws::Hub, device: String, mode: RepairMode) {
     };
     hub.broadcast(
         "storage_repair",
-        &serde_json::json!({
+        serde_json::json!({
             "status": "reboot_required",
             "device": device,
             "cam_disk_present": cam_present,
