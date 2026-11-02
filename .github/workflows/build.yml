@@ -4,10 +4,10 @@ on:
   push:
     tags: ['v*']
     # Branch pushes run test and lint only; build and release remain tag-gated.
-    branches: [main, main-dev]
+    branches: [main]
   # Compile-test pull requests without building or publishing releases.
   pull_request:
-    branches: [main, main-dev]
+    branches: [main]
   workflow_dispatch:
 
 env:

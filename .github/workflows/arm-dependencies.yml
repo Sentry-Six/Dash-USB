@@ -4,7 +4,7 @@ name: ARM dependency checks
 # Ordinary source, frontend and documentation changes retain the main checks.
 on:
   push:
-    branches: [main, main-dev]
+    branches: [main]
     paths:
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -15,7 +15,7 @@ on:
       - '.github/workflows/arm-dependencies.yml'
       - '.github/workflows/build.yml'
   pull_request:
-    branches: [main, main-dev]
+    branches: [main]
     paths:
       - 'Cargo.toml'
       - 'Cargo.lock'

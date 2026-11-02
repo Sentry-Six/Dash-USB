@@ -98,7 +98,7 @@ its sample device, or POST `/__preview/reset` to start another sample archive.
 The separate **ARM dependency checks** workflow compiles and links the native
 ARM64 a53 and cross-compiled ARMv7 variants when Cargo manifests, lockfiles,
 Rust build scripts, Cargo configuration, or the relevant build workflows change.
-It runs on pushes to `main`/`main-dev` and pull requests targeting those branches;
+It runs on pushes to `main` and pull requests targeting it;
 documentation-only changes do not start these ARM jobs. The main workflow still
 runs Rust/shell tests, web tests, preview tests, lint, and the real frontend build.
 
