@@ -42,9 +42,9 @@ cd .. && ./build.sh arm64
 | **Files** | Browse, upload, and delete under `/mutable` and `/mutable/Recordings` |
 | **Snapshots** | List, create, and release reflink snapshots |
 | **Logs** | Live tail of archiveloop, setup, and diagnostics logs |
-| **Notifications** | Notification history and per-channel test sends |
+| **Notifications** | Notification history, event toggles, and delivery providers |
 | **Terminal** | Shell session over WebSocket |
-| **Support** | Support tickets, raised and read in-app |
+| **Support** | AI Support & Help chat |
 | **Settings** | Setup wizard, Device / Car & Network / System tabs, health check, OTA update, reboot (notification delivery settings live on the Notifications page) |
 
 ## Structure

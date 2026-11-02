@@ -8,7 +8,7 @@ starting point, and destructive storage changes require confirmation.
 
 Confirms the device is reachable. From here you can also **restore a configuration backup** (a `.json` backup exported from a previous Dash USB install) or upload an existing `dashusb.conf` — either pre-fills every later step.
 
-Click **Get Started**.
+Click **Next**.
 
 ## 2. Privacy
 

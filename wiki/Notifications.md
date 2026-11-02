@@ -7,6 +7,8 @@ Dash USB can send you push notifications when:
 - The Pi's temperature crosses your Warning / Caution thresholds
 - A post-archive temperature report, when enabled
 - Storage repair completes or requires manual action
+- A software update is available
+- The RTC battery is low or missing
 
 Configure providers under **Notifications → Delivery** or in the
 [Setup Wizard](Setup-Wizard-Guide#6-notifications). Choose which events send

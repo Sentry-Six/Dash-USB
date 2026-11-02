@@ -28,12 +28,12 @@ One binary ships with the project:
 
 ### Cross-compile for the Pi
 
-64-bit (Pi 3/4/5/Zero 2):
+64-bit (Pi 3A+/4/5/Zero 2 W):
 ```
 cross build --release --target aarch64-unknown-linux-gnu -p sentryusb
 ```
 
-32-bit (armhf — Pi 3 with 32-bit Pi OS):
+32-bit (armhf — Pi 3A+ with 32-bit Pi OS):
 ```
 cross build --release --target armv7-unknown-linux-gnueabihf -p sentryusb
 ```
@@ -89,7 +89,8 @@ its sample device, or POST `/__preview/reset` to start another sample archive.
 
 ### Automated checks
 
-- Rust unit tests: `cargo test`
+- Rust unit tests: `cargo test --workspace --locked`
+- Clippy: `cargo +1.99.0 clippy --workspace --all-targets --locked -- -D warnings` (CI pins Rust 1.99.0)
 - Frontend regression tests: `cd web && npm test`
 - Shell harnesses: `test/*.sh`
 - Lint: `bash check.sh` (runs ShellCheck against selected runtime scripts)

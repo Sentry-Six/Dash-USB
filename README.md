@@ -85,7 +85,8 @@ the virtual drive presents by default.
 > as a USB gadget.
 
 Plus a **256 GB+ high-endurance MicroSD card** (512 GB recommended — GM records
-~5 GB per hour of driving, all of which Dash USB retains) and a **USB-C data cable**.
+~5 GB per hour of driving, all of which Dash USB retains) and a **USB-C data cable** (USB-C to micro-USB for a Pi Zero 2 W, USB-C to USB-A
+for a Pi 3A+).
 
 ## Install
 
@@ -142,7 +143,7 @@ See [BUILD.md](BUILD.md) for details.
 ## Based on
 
 A white-label of [Sentry-USB-Rusty](https://github.com/Sentry-Six/Sentry-USB-Rusty)
-(Rust rewrite of the original Go [`Scottmg1/Sentry-USB`](https://github.com/Scottmg1/Sentry-USB)),
+(Rust rewrite of the original Go [`Scottmg1/Sentry-USB`](https://github.com/Scottmg1/Sentry-USB), now archived),
 itself descended from [TeslaUSB](https://github.com/marcone/teslausb) by marcone and
 contributors.
 

@@ -34,13 +34,15 @@ Then open `http://dashusb.local` and the [Setup Wizard](Setup-Wizard-Guide) take
 > **The Pi 3 Model B and B+ will not work.** Their single USB channel runs through an
 > onboard hub chip that provides Ethernet and the four USB-A ports, which leaves the
 > micro-USB port power-only with no OTG support. The 3A+ omits that chip, so its
-> micro-USB port is wired straight to the SoC and can act as a USB gadget.
+> USB-A port is wired straight to the SoC and can act as a USB gadget.
 
 Plus:
 - A **high-endurance MicroSD card, 256 GB or larger** (512 GB recommended —
   GM records roughly 5 GB per hour of driving, all of which Dash USB keeps
   until space runs out)
-- A **USB-C data cable** (not charge-only) — Pi to any of the car's USB-C ports
+- A **USB-C data cable** (not charge-only) — Pi to any of the car's USB-C ports.
+  A Pi Zero 2 W needs USB-C to micro-USB (into the port labelled **USB**), and a
+  Pi 3A+ needs USB-C to USB-A.
 - Wi-Fi; internet access is required for initial setup, updates, and cloud archiving
 
 > Your vehicle needs GM's **Surround Vision Recorder** feature (the built-in
