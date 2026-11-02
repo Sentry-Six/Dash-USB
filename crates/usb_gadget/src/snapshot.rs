@@ -431,7 +431,7 @@ fn make_links_in(
     info!("Making links for {}, retargeted to {}", cur_mnt, final_mnt);
 
     let mut clips = Vec::new();
-    collect_clips_under(&rec_root, profile, cur_mnt, 0, &mut clips);
+    collect_clips_under(&rec_root, profile, 0, &mut clips);
 
     // Newest timestamp per camera in THIS snapshot.
     let mut newest: std::collections::HashMap<&str, chrono::NaiveDateTime> =
@@ -488,7 +488,6 @@ fn make_links_in(
 fn collect_clips_under(
     dir: &Path,
     profile: &sentryusb_vehicle_profile::Profile,
-    cur_mnt: &str,
     depth: u8,
     out: &mut Vec<(std::path::PathBuf, String, sentryusb_vehicle_profile::ClipInfo, u64)>,
 ) {
@@ -502,7 +501,7 @@ fn collect_clips_under(
         let path = entry.path();
         let Ok(ftype) = entry.file_type() else { continue };
         if ftype.is_dir() {
-            collect_clips_under(&path, profile, cur_mnt, depth + 1, out);
+            collect_clips_under(&path, profile, depth + 1, out);
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_string();

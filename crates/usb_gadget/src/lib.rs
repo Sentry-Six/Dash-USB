@@ -353,10 +353,11 @@ pub fn is_active() -> bool {
 /// First available UDC (USB Device Controller) under /sys/class/udc.
 fn find_udc() -> Result<String> {
     let udc_dir = Path::new("/sys/class/udc");
-    if let Ok(entries) = fs::read_dir(udc_dir) {
-        for entry in entries.flatten() {
-            return Ok(entry.file_name().to_string_lossy().to_string());
-        }
+    if let Some(entry) = fs::read_dir(udc_dir)
+        .ok()
+        .and_then(|entries| entries.flatten().next())
+    {
+        return Ok(entry.file_name().to_string_lossy().to_string());
     }
     bail!("no UDC found in /sys/class/udc")
 }
