@@ -9,6 +9,40 @@ const MIGRATE_DIR: &str = "/opt/dashusb";
 /// Ref used by the generated migration script for its support files.
 const USED_REF_FILE: &str = "/opt/dashusb/.migrate-used-ref";
 
+// Time zone rules change between releases (BC, Alberta, the Northwest
+// Territories and Manitoba all dropped clock changes in 2026). Local times on
+// the Pi come from its own tzdata, and setup is never rerun, so each release
+// refreshes the package once. Unlock root only if it was locked.
+const TZDATA_REFRESH: &str = r#"ro_before=no
+findmnt -no OPTIONS / 2>/dev/null | grep -qE '(^|,)ro(,|$)' && ro_before=yes
+if [ "$ro_before" = yes ]; then
+  { [ -x /root/bin/remountfs_rw ] && /root/bin/remountfs_rw >/dev/null 2>&1; } || mount -o remount,rw / || exit 1
+fi
+status=0
+if dpkg-query -W -f='${Status}' tzdata 2>/dev/null | grep -q 'ok installed'; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get -o DPkg::Lock::Timeout=60 -qq update \
+    && apt-get -o DPkg::Lock::Timeout=60 -y -qq install --only-upgrade tzdata || status=$?
+fi
+if [ "$ro_before" = yes ]; then sync; mount -o remount,ro / 2>/dev/null || true; fi
+dpkg-query -W -f='${Version}' tzdata 2>/dev/null || true
+exit $status
+"#;
+
+async fn refresh_tzdata(script: &str, timeout: Duration) -> bool {
+    match sentryusb_shell::run_with_timeout(timeout, "bash", &["-c", script]).await {
+        Ok(version) => {
+            // apt's own progress lines come first; the version is printed last.
+            info!("[migrate] tzdata is {}", version.lines().last().unwrap_or("").trim());
+            true
+        }
+        Err(error) => {
+            warn!("[migrate] tzdata refresh deferred to the next release: {error}");
+            false
+        }
+    }
+}
+
 pub async fn run_startup_migration() {
     // Heals must run outside the per-version marker so later additions apply.
     heal_temperature_unit_key();
@@ -157,6 +191,8 @@ pub async fn run_startup_migration() {
                     warn!("[migrate] Failed to write marker {}: {}", marker_file, e);
                 }
                 info!("[migrate] Startup migration complete for {}", current_version);
+                // Optional and slow on a cold apt cache, so it never holds up the migration.
+                tokio::spawn(refresh_tzdata(TZDATA_REFRESH, Duration::from_secs(600)));
                 return;
             }
             Err(e) => {
@@ -414,6 +450,26 @@ systemctl restart dashusb-ble 2>/dev/null || true
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tzdata_refresh_is_valid_bash_and_relocks_root() {
+        let mut child = std::process::Command::new("bash").arg("-n")
+            .stdin(std::process::Stdio::piped()).spawn().unwrap();
+        use std::io::Write;
+        child.stdin.take().unwrap().write_all(TZDATA_REFRESH.as_bytes()).unwrap();
+        assert!(child.wait().unwrap().success());
+        assert!(TZDATA_REFRESH.contains("install --only-upgrade tzdata"));
+        assert!(TZDATA_REFRESH.contains("mount -o remount,ro /"));
+    }
+
+    #[tokio::test]
+    async fn tzdata_refresh_failure_is_nonfatal_and_bounded() {
+        assert!(!refresh_tzdata("echo apt unavailable >&2; exit 100", Duration::from_secs(5)).await);
+        assert!(refresh_tzdata("echo Preconfiguring packages; printf 2026f-0+deb13u1", Duration::from_secs(5)).await);
+        let started = std::time::Instant::now();
+        assert!(!refresh_tzdata("sleep 10", Duration::from_millis(100)).await);
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
 
     /// Render the shell template and verify its syntax.
     #[test]
