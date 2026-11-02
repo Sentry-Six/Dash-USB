@@ -9,8 +9,7 @@ support actions make additional user-directed connections.
 By default, Dash USB sends **no device identifier** to Sentry Six services.
 The analytics choice in the setup wizard and in
 `Settings → System → Analytics opt-in` is the only switch that controls
-whether a device-derived identifier is sent with update checks. Sentry
-Connect push pairing, if you use it, uses a separate random pairing ID.
+whether a device-derived identifier is sent with update checks.
 
 ## Per-flow disclosure
 
@@ -88,21 +87,6 @@ Connect push pairing, if you use it, uses a separate random pairing ID.
 - **How to disable:** Don't start a chat. Discord remains available for help
   from a person.
 
-### 5. Sentry Connect push pairing (opt-in)
-
-- **Endpoint:** `POST https://notifications.sentry-six.com/register-code`,
-  then `https://notifications.sentry-six.com/send` for each notification.
-- **Sent:** A random `device_id` and `device_secret` generated on this Pi,
-  your pairing code and the Pi's hostname. When a phone pairs, the Sentry
-  Connect app registers its Apple push (APNs) token, a device name (such as
-  "iPhone") and platform. Each notification's title and message text pass
-  through `notifications.sentry-six.com` to Apple (APNs) for delivery.
-- **Identifier:** The random `device_id`.
-- **Retention:** When the last phone unpairs, the hostname and device link
-  are cleared. Registrations with no paired phone and no activity for 90 days
-  are deleted.
-- **How to disable:** Don't pair, or unpair in the Sentry Connect app.
-
 ## Things Dash USB does **not** do
 
 - Send a hardware fingerprint without explicit opt-in.
@@ -118,8 +102,6 @@ Connect push pairing, if you use it, uses a separate random pairing ID.
   The `fingerprint` key is inserted only when the preference is `true`.
 - Install beacon: same file → `spawn_install_beacon()`. The POST is
   bodyless and gated on `/mutable/.beaconed`.
-- Push pairing: `crates/api/src/notifications.rs` →
-  `register_code_with_backend()`.
 - AI Support proxy: `crates/api/src/support.rs`.
 - Time-zone lookup: `crates/setup/src/system.rs` →
   `resolve_timezone_via_geoip()`.

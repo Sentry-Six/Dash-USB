@@ -290,14 +290,9 @@ function PrivacyCards() {
             note="Choose a time zone to avoid it."
           />
           <FlowRow
-            when="Support page (if used)"
-            what="Your messages and attachments"
-            note="Relayed to a private Discord thread for Sentry Six staff."
-          />
-          <FlowRow
-            when="Sentry Connect pairing (if used)"
-            what="Random pairing ID and secret, hostname, notification text (relayed to Apple)"
-            note="Hostname cleared when the last phone unpairs; inactive unpaired records deleted after 90 days."
+            when="AI Support (if used)"
+            what="Your messages, plus version, board model, vehicle profile, archive method, snapshot interval"
+            note="Processed by Anthropic; redacted chats kept up to 90 days. Diagnostics only when you approve, deleted within 7 days."
           />
         </div>
         <div className="tile-divider" />

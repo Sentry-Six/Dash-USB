@@ -82,16 +82,10 @@ export function PrivacyStep() {
             note="Pick a time zone in the wizard to avoid it."
           />
           <FlowRow
-            when="If you use the Support page"
-            what="Your messages and attachments"
-            why="Answer your support request"
-            note="Relayed to a private Discord thread for Sentry Six staff."
-          />
-          <FlowRow
-            when="If you pair Sentry Connect"
-            what="A random pairing ID and secret, the Pi's hostname, and notification text"
-            why="Route push notifications through notifications.sentry-six.com and Apple"
-            note="Hostname cleared when the last phone unpairs; inactive unpaired records deleted after 90 days."
+            when="If you use AI Support"
+            what="Your messages, plus version, board model, vehicle profile, archive method and snapshot interval"
+            why="Answer your support question"
+            note="Anthropic processes the chat; redacted chats are kept up to 90 days. Diagnostics only when you approve, deleted within 7 days."
           />
         </div>
         <p className="mt-4 text-[11px] leading-relaxed text-slate-500">
