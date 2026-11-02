@@ -18,6 +18,12 @@ pub struct Hub {
     client_count: Arc<AtomicUsize>,
 }
 
+impl Default for Hub {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Hub {
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(256);
