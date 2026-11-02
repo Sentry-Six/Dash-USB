@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react"
+import { createContext, useContext, useState, useEffect, type ReactNode } from "react"
 
 type AuthState = "loading" | "authenticated" | "unauthenticated"
 
@@ -24,18 +24,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>("loading")
   const [authRequired, setAuthRequired] = useState(false)
 
-  const checkAuth = useCallback(async () => {
-    try {
-      const res = await fetch("/api/auth/check")
-      const data = await res.json()
-      setAuthRequired(data.auth_required)
-      setState(data.authenticated || !data.auth_required ? "authenticated" : "unauthenticated")
-    } catch {
-      // Connectivity handling, rather than auth UI, reports an unavailable server.
-      setState("authenticated")
-    }
-  }, [])
-
   async function login(username: string, password: string): Promise<string | null> {
     try {
       const res = await fetch("/api/auth/login", {
@@ -60,11 +48,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   useEffect(() => {
+    let stopped = false
+    // State updates run only in the request callbacks, never synchronously.
+    const checkAuth = () => {
+      fetch("/api/auth/check")
+        .then((res) => res.json())
+        .then((data) => {
+          if (stopped) return
+          setAuthRequired(data.auth_required)
+          setState(data.authenticated || !data.auth_required ? "authenticated" : "unauthenticated")
+        })
+        .catch(() => {
+          // Connectivity handling, rather than auth UI, reports an unavailable server.
+          if (!stopped) setState("authenticated")
+        })
+    }
     checkAuth()
     // Server restarts invalidate the in-memory session store.
     const iv = setInterval(checkAuth, 10_000)
-    return () => clearInterval(iv)
-  }, [checkAuth])
+    return () => {
+      stopped = true
+      clearInterval(iv)
+    }
+  }, [])
 
   return (
     <AuthContext.Provider value={{ state, authRequired, login, logout }}>

@@ -217,11 +217,11 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: Lint
-        # Ratchet the reviewed warning budget downward only.
+        # Keep lint warnings out of release builds.
         run: |
           cd web
           npm ci
-          npx eslint . --max-warnings 30
+          npx eslint . --max-warnings 0
           npm test
           node --test ../dev/*.test.mjs
           npm run build

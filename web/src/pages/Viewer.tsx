@@ -83,7 +83,6 @@ export default function Viewer() {
   const [groups, setGroups] = useState<ClipGroup[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedClip, setSelectedClip] = useState<ClipEntry | null>(null)
-  const [clipSets, setClipSets] = useState<ClipSet[]>([])
   const [currentSetIdx, setCurrentSetIdx] = useState(0)
   const [playing, setPlaying] = useState(false)
   const [focusedCamera, setFocusedCamera] = useState<string | null>(null)
@@ -107,6 +106,11 @@ export default function Viewer() {
   const clipRegex = useMemo(
     () => (profile ? compileClipRegex(profile.filename_regex) : null),
     [profile]
+  )
+  // A clip selected before the profile loads regroups once the regex arrives.
+  const clipSets = useMemo(
+    () => (selectedClip ? groupByTimestamp(selectedClip.files, selectedClip.path, clipRegex) : []),
+    [selectedClip, clipRegex]
   )
   const cameraLabels = useMemo(() => {
     const m: Record<string, string> = {}
@@ -134,6 +138,21 @@ export default function Viewer() {
   // Track probes explicitly because fallback and measured durations can match.
   const segmentSeconds = profile?.segment_seconds ?? 300
   const probedRef = useRef<Set<number>>(new Set())
+
+  // Reset durations and playback while rendering a new clip set so the probe
+  // and playback effects never see the previous clip's state.
+  const [observedClipSets, setObservedClipSets] = useState(clipSets)
+  if (clipSets !== observedClipSets) {
+    setObservedClipSets(clipSets)
+    setSegmentDurations(new Array(clipSets.length).fill(segmentSeconds))
+    if (selectedClip) {
+      setCurrentSetIdx(0)
+      setPlaying(false)
+      setFocusedCamera(null)
+      setActiveCameras(new Set(primaryCamera ? [primaryCamera] : []))
+      setCurrentTime(0)
+    }
+  }
 
   const videoRefs = useRef<Map<string, HTMLVideoElement>>(new Map())
   const masterVideoRef = useRef<HTMLVideoElement | null>(null)
@@ -185,15 +204,18 @@ export default function Viewer() {
 
   const CLIPS_PAGE_SIZE = 20
 
+  // loading starts true, so the mount fetch only clears it.
   useEffect(() => {
-    setLoading(true)
-    fetch(`/api/clips?category=${CATEGORY}&limit=${CLIPS_PAGE_SIZE}`)
+    const controller = new AbortController()
+    fetch(`/api/clips?category=${CATEGORY}&limit=${CLIPS_PAGE_SIZE}`, { signal: controller.signal })
       .then((r) => r.json())
       .then((data: ClipGroup[]) => {
+        if (controller.signal.aborted) return
         setGroups(data)
         setLoading(false)
       })
-      .catch(() => setLoading(false))
+      .catch(() => { if (!controller.signal.aborted) setLoading(false) })
+    return () => controller.abort()
   }, [])
 
   const [loadingMore, setLoadingMore] = useState(false)
@@ -224,29 +246,20 @@ export default function Viewer() {
 
   const activeGroup = groups.find((g) => g.name === CATEGORY)
 
+  // Playback state resets during render above; the matching refs reset here.
   useEffect(() => {
-    if (selectedClip) {
-      const sets = groupByTimestamp(selectedClip.files, selectedClip.path, clipRegex)
-      setClipSets(sets)
-      setCurrentSetIdx(0)
-      setPlaying(false)
-      setFocusedCamera(null)
-      setActiveCameras(new Set(primaryCamera ? [primaryCamera] : []))
-      pendingSeekRef.current = null
-      setCurrentTime(0)
-      currentTimeRef.current = 0
-      globalTimeRef.current = 0
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- regex/primary are stable once the profile loads
+    if (!selectedClip) return
+    pendingSeekRef.current = null
+    currentTimeRef.current = 0
+    globalTimeRef.current = 0
   }, [selectedClip, clipRegex])
 
   // Probe a small initial batch, then lazily probe nearby segments.
   const EAGER_PROBE_COUNT = 6
   useEffect(() => {
     probedRef.current = new Set()
-    if (!clipSets.length) { setSegmentDurations([]); return }
+    if (!clipSets.length) return
     const durations = new Array(clipSets.length).fill(segmentSeconds)
-    setSegmentDurations([...durations])
 
     let cancelled = false
     const cleanups: (() => void)[] = []
@@ -563,7 +576,6 @@ export default function Viewer() {
       )
       if (selectedClip?.date === clip.date) {
         setSelectedClip(null)
-        setClipSets([])
       }
       setDeleteConfirm(null)
     } catch { /* ignore */ }

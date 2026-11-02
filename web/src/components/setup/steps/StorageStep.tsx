@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { HardDrive, RefreshCw } from "lucide-react"
 import type { StepProps } from "../SetupWizard"
 import { SizeInput } from "../SizeInput"
@@ -12,19 +12,25 @@ interface BlockDevice {
 
 export function StorageStep({ data, onChange }: StepProps) {
   const [devices, setDevices] = useState<BlockDevice[]>([])
-  const [loadingDevices, setLoadingDevices] = useState(false)
+  // Starts true for the mount fetch; Refresh sets it before refetching.
+  const [loadingDevices, setLoadingDevices] = useState(true)
+  const devicesRequest = useRef<AbortController | null>(null)
 
-  async function fetchDevices() {
-    setLoadingDevices(true)
-    try {
-      const res = await fetch("/api/system/block-devices")
-      const data = await res.json()
-      setDevices(Array.isArray(data) ? data : [])
-    } catch { setDevices([]) }
-    setLoadingDevices(false)
-  }
+  const fetchDevices = useCallback(() => {
+    devicesRequest.current?.abort()
+    const controller = new AbortController()
+    devicesRequest.current = controller
+    fetch("/api/system/block-devices", { signal: controller.signal })
+      .then((res) => res.json())
+      .then((data) => { if (!controller.signal.aborted) setDevices(Array.isArray(data) ? data : []) })
+      .catch(() => { if (!controller.signal.aborted) setDevices([]) })
+      .finally(() => { if (!controller.signal.aborted) setLoadingDevices(false) })
+  }, [])
 
-  useEffect(() => { fetchDevices() }, [])
+  useEffect(() => {
+    fetchDevices()
+    return () => devicesRequest.current?.abort()
+  }, [fetchDevices])
 
   // The dashcam warning only applies to GB values.
   const camRaw = data.CAM_SIZE ?? ""
@@ -79,7 +85,7 @@ export function StorageStep({ data, onChange }: StepProps) {
           </select>
           <button
             type="button"
-            onClick={fetchDevices}
+            onClick={() => { setLoadingDevices(true); fetchDevices() }}
             disabled={loadingDevices}
             className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 transition-colors hover:bg-white/10 disabled:opacity-50"
           >

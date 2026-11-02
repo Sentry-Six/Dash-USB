@@ -20,8 +20,7 @@ export default defineConfig([
       globals: globals.browser,
     },
     rules: {
-      // Fetch-on-mount effects intentionally set state; surface them as warnings.
-      'react-hooks/set-state-in-effect': 'warn',
+      'react-hooks/set-state-in-effect': 'error',
       // Stale-closure detector — kept at error; intentional omissions get
       // inline suppressions with a reason.
       'react-hooks/exhaustive-deps': 'error',

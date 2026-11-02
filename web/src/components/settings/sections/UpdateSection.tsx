@@ -49,21 +49,22 @@ export function UpdateSection({ onInstallStart }: Props) {
   const [includePrerelease, setIncludePrerelease] = useState(false)
   const [showRestartModal, setShowRestartModal] = useState(false)
 
-  useEffect(() => {
+  // Open the restart modal on entering a restart phase and close it on idle or
+  // error. Adjusting during render avoids an extra effect-driven pass.
+  const [observedStatus, setObservedStatus] = useState(updateStatus)
+  if (updateStatus !== observedStatus) {
+    setObservedStatus(updateStatus)
     if (updateStatus === "restarting" || updateStatus === "reconnecting") {
       setShowRestartModal(true)
-    }
-  }, [updateStatus])
-
-  useEffect(() => {
-    if (!showRestartModal) return
-    if (updateStatus === "done") {
-      const t = setTimeout(() => setShowRestartModal(false), 3000)
-      return () => clearTimeout(t)
-    }
-    if (updateStatus === "idle" || updateStatus === "error") {
+    } else if (updateStatus === "idle" || updateStatus === "error") {
       setShowRestartModal(false)
     }
+  }
+
+  useEffect(() => {
+    if (!showRestartModal || updateStatus !== "done") return
+    const t = setTimeout(() => setShowRestartModal(false), 3000)
+    return () => clearTimeout(t)
   }, [showRestartModal, updateStatus])
 
   useEffect(() => {

@@ -223,19 +223,23 @@ export function WelcomeStep({ onBatchChange }: StepProps) {
     })
   }
 
+  // The button that opens the restore panel sets loadingBackups first.
   useEffect(() => {
     if (!showRestore) return
-    setLoadingBackups(true)
-    fetch("/api/system/backups")
+    const controller = new AbortController()
+    fetch("/api/system/backups", { signal: controller.signal })
       .then((r) => r.json())
       .then((data: BackupEntry[]) => {
+        if (controller.signal.aborted) return
         setBackups(data || [])
         setLoadingBackups(false)
       })
       .catch(() => {
+        if (controller.signal.aborted) return
         setBackups([])
         setLoadingBackups(false)
       })
+    return () => controller.abort()
   }, [showRestore])
 
   async function handleRestore(backup: BackupEntry) {
@@ -409,7 +413,7 @@ export function WelcomeStep({ onBatchChange }: StepProps) {
 
             {!showRestore ? (
               <button
-                onClick={() => setShowRestore(true)}
+                onClick={() => { setLoadingBackups(true); setShowRestore(true) }}
                 className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.02] px-4 py-3 text-sm text-slate-400 transition-colors hover:border-white/20 hover:bg-white/[0.04] hover:text-slate-300"
               >
                 <RotateCcw className="h-4 w-4" />

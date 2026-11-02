@@ -1,38 +1,32 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 import { Wifi, WifiOff, Loader2, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useConnectionStatus, type ConnectionState } from "@/hooks/useConnectionStatus"
 
 export function ConnectionBanner() {
   const { state, retry } = useConnectionStatus()
-  const [visible, setVisible] = useState(false)
-  const [displayState, setDisplayState] = useState<ConnectionState | "connected-flash">(state)
+  // Stay hidden until the first drop; after that every state change remounts
+  // the notice, which resets dismissal and restarts the connected flash.
+  const [hasDisconnected, setHasDisconnected] = useState(state !== "connected")
+  if (state !== "connected" && !hasDisconnected) setHasDisconnected(true)
+
+  if (state === "connected" && !hasDisconnected) return null
+  return <ConnectionNotice key={state} displayState={state === "connected" ? "connected-flash" : state} retry={retry} />
+}
+
+function ConnectionNotice({ displayState, retry }: {
+  displayState: Exclude<ConnectionState, "connected"> | "connected-flash"
+  retry: () => void
+}) {
   const [dismissed, setDismissed] = useState(false)
-  // Transition bookkeeping only, never rendered. Must stay a ref: as state
-  // it would re-run the effect and cancel the connected-flash timer.
-  const prevStateRef = useRef<ConnectionState>(state)
-
+  const [expired, setExpired] = useState(false)
   useEffect(() => {
-    const prevState = prevStateRef.current
-    if (state === prevState) return
-    const wasDisconnected = prevState === "disconnected" || prevState === "reconnecting"
-    prevStateRef.current = state
-    setDismissed(false)
+    if (displayState !== "connected-flash") return
+    const timer = setTimeout(() => setExpired(true), 3000)
+    return () => clearTimeout(timer)
+  }, [displayState])
 
-    if (state === "connected" && wasDisconnected) {
-      setDisplayState("connected-flash")
-      setVisible(true)
-      const timer = setTimeout(() => setVisible(false), 3000)
-      return () => clearTimeout(timer)
-    } else if (state === "reconnecting" || state === "disconnected") {
-      setDisplayState(state)
-      setVisible(true)
-    } else {
-      setVisible(false)
-    }
-  }, [state])
-
-  if (!visible || dismissed) return null
+  if (dismissed || expired) return null
 
   return (
     <div
