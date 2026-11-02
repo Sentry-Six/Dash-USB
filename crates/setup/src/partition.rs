@@ -227,7 +227,7 @@ pub async fn setup_sd_card(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
     ).await?.trim().parse().context("sfdisk End parse error")?;
 
     // Round up to a 1 MB (2048-sector) boundary.
-    let first_bf_sector = ((last_part_end + 1 + 2047) / 2048) * 2048;
+    let first_bf_sector = (last_part_end + 1).div_ceil(2048) * 2048;
     let bf_num_sectors = first_mutable_sector - first_bf_sector;
 
     // Capture before repartitioning: sfdisk can change the disk identifier,

@@ -281,8 +281,7 @@ async fn refresh_bundled_archive_runtime() -> bool {
 fn build_migration_script() -> String {
     // Arguments: tag and fallback URLs, optional patch URL, tag and branch
     // refs, then the path where the selected ref is reported.
-    format!(
-        r#"set -e
+    r#"set -e
 TARBALL_URL="$1"
 FALLBACK_URL="$2"
 PATCHES_URL="$3"
@@ -345,7 +344,7 @@ fi
 # pi-bluetooth/rfkill are Pi-OS niceties: best-effort (absent on other
 # distros, usually preinstalled on Pi OS — cheap insurance either way).
 for pkg in python3-dbus python3-gi bluez pi-bluetooth rfkill; do
-  if ! dpkg-query -W --showformat='${{db:Status-Status}}\n' "$pkg" 2>/dev/null | grep -q '^installed$'; then
+  if ! dpkg-query -W --showformat='${db:Status-Status}\n' "$pkg" 2>/dev/null | grep -q '^installed$'; then
     DEBIAN_FRONTEND=noninteractive apt-get -y install "$pkg" 2>/dev/null || true
   fi
 done
@@ -354,13 +353,13 @@ done
 # Legacy BlueZ (< 5.55) needs it for LEAdvertisingManager1; newer BlueZ does not, and
 # the flag there registers LE Audio services that trigger Android pairing prompts.
 BTOVERRIDE=/etc/systemd/system/bluetooth.service.d/dashusb-experimental.conf
-BTDAEMON=$(systemctl cat bluetooth.service 2>/dev/null | grep '^ExecStart=' | head -1 | sed 's/ExecStart=//' | awk '{{print $1}}')
-BTDAEMON=${{BTDAEMON:-$(command -v bluetoothd 2>/dev/null)}}
+BTDAEMON=$(systemctl cat bluetooth.service 2>/dev/null | grep '^ExecStart=' | head -1 | sed 's/ExecStart=//' | awk '{print $1}')
+BTDAEMON=${BTDAEMON:-$(command -v bluetoothd 2>/dev/null)}
 if [ -n "$BTDAEMON" ] && [ -x "$BTDAEMON" ]; then
   BTVER=$("$BTDAEMON" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
-  BTMAJ=${{BTVER%%.*}}
-  BTMIN=${{BTVER##*.}}
-  if [ -n "$BTVER" ] && {{ [ "$BTMAJ" -lt 5 ] || {{ [ "$BTMAJ" -eq 5 ] && [ "$BTMIN" -lt 55 ]; }}; }}; then
+  BTMAJ=${BTVER%%.*}
+  BTMIN=${BTVER##*.}
+  if [ -n "$BTVER" ] && { [ "$BTMAJ" -lt 5 ] || { [ "$BTMAJ" -eq 5 ] && [ "$BTMIN" -lt 55 ]; }; }; then
     if [ ! -f "$BTOVERRIDE" ]; then
       mkdir -p /etc/systemd/system/bluetooth.service.d
       cat > "$BTOVERRIDE" << BTEOF
@@ -443,8 +442,7 @@ printf '%s' "$USED_REF" > "$USED_REF_FILE"
 # ── Restart the phone-app BLE daemon ──
 systemctl enable dashusb-ble 2>/dev/null || true
 systemctl restart dashusb-ble 2>/dev/null || true
-"#
-    )
+"#.to_string()
 }
 
 #[cfg(test)]

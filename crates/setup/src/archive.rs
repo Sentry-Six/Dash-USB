@@ -33,7 +33,7 @@ impl ArchiveSystem {
 /// Classify missing keys as configuration errors so auto-resume stops.
 fn validate_archive_config(env: &SetupEnv, system: ArchiveSystem) -> Result<()> {
     let require = |key: &str| -> Result<()> {
-        if env.config.get(key).map_or(true, |v| v.is_empty()) {
+        if env.config.get(key).is_none_or(|v| v.is_empty()) {
             return Err(
                 ConfigError(format!("Required config variable {key} is not set")).into(),
             );

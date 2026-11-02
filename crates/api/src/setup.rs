@@ -82,7 +82,7 @@ impl SetupFailure {
 
 /// Resume reboots and transient failures, but wait for user fixes after config errors.
 fn should_auto_resume(started: bool, finished: bool, failure: Option<&SetupFailure>) -> bool {
-    started && !finished && failure.map_or(true, |f| f.kind != "config")
+    started && !finished && failure.is_none_or(|f| f.kind != "config")
 }
 
 fn read_setup_failure() -> Option<SetupFailure> {
@@ -563,7 +563,7 @@ pub async fn preflight(
     }
 
     let need_kb = requested_kb - usable_kb;
-    let need_gb = (need_kb + 1024 * 1024 - 1) / (1024 * 1024);
+    let need_gb = need_kb.div_ceil(1024 * 1024);
     let req_gb = requested_kb / 1024 / 1024;
     let avail_gb = usable_kb / 1024 / 1024;
 

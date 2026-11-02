@@ -143,7 +143,7 @@ mod tests {
 
         let value = list_clips_in(root.path(), "Continuous", 20, None);
         assert_eq!(value[0]["name"].as_str().unwrap(), "Continuous");
-        assert_eq!(value[0]["hasMore"].as_bool().unwrap(), false);
+        assert!(!value[0]["hasMore"].as_bool().unwrap());
 
         let clips = value[0]["clips"].as_array().unwrap();
         assert_eq!(clips.len(), 1);
@@ -184,7 +184,7 @@ mod tests {
 
         // `limit` truncates and reports hasMore, newest first.
         let value = list_clips_in(root.path(), "Continuous", 2, None);
-        assert_eq!(value[0]["hasMore"].as_bool().unwrap(), true);
+        assert!(value[0]["hasMore"].as_bool().unwrap());
         let clips = value[0]["clips"].as_array().unwrap();
         assert_eq!(clips.len(), 2);
         assert_eq!(clips[0]["date"].as_str().unwrap(), "2025-02-22_10-00-00");
@@ -192,7 +192,7 @@ mod tests {
 
         // `before` cursor drops entries at or after the cursor.
         let value = list_clips_in(root.path(), "Continuous", 20, Some("2025-02-22_10-00-00"));
-        assert_eq!(value[0]["hasMore"].as_bool().unwrap(), false);
+        assert!(!value[0]["hasMore"].as_bool().unwrap());
         let clips = value[0]["clips"].as_array().unwrap();
         assert_eq!(clips.len(), 2);
         assert_eq!(clips[0]["date"].as_str().unwrap(), "2025-02-21_10-00-00");
@@ -205,7 +205,7 @@ mod tests {
         let value = list_clips_in(root.path(), "Continuous", 20, None);
         assert_eq!(value[0]["name"].as_str().unwrap(), "Continuous");
         assert_eq!(value[0]["clips"].as_array().unwrap().len(), 0);
-        assert_eq!(value[0]["hasMore"].as_bool().unwrap(), false);
+        assert!(!value[0]["hasMore"].as_bool().unwrap());
     }
 
     /// Clip directories may be symlinks into reflink snapshots.
