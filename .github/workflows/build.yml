@@ -189,11 +189,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - name: Cache cargo registry + build
         # Preserve dependencies even after a failed test run.
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Run tests
         run: cargo test --workspace --locked
 
