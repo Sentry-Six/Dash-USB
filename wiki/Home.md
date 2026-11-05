@@ -7,12 +7,14 @@ recordings before the car deletes them and archives everything to your
 own server. A web UI lets you review and back up footage — no SSH, no
 config files.
 
-## Install over SSH
+## Install
 
-> **No prebuilt SD card image yet.** Flash **Raspberry Pi OS Lite (64-bit)**,
-> connect over SSH, and follow [Getting Started](Getting-Started).
+**With the Dash USB image (recommended):** download
+**[Dash-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest](https://github.com/Sentry-Six/Dash-USB/releases/latest/download/Dash-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest)**,
+double-click it to open Raspberry Pi Imager, pick your Pi, add your Wi-Fi
+and write the card. [Getting Started](Getting-Started) has the steps.
 
-On a Pi already running Pi OS:
+**On a Pi already running Pi OS:**
 
 ```bash
 sudo apt update && sudo apt upgrade -y

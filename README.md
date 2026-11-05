@@ -90,7 +90,16 @@ for a Pi 3A+).
 
 ## Install
 
-On a Pi already running **Raspberry Pi OS Lite (64-bit)**:
+**With the Dash USB image (recommended):**
+
+1. Download **[Dash-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest](https://github.com/Sentry-Six/Dash-USB/releases/latest/download/Dash-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest)** and double-click it to open [Raspberry Pi Imager](https://www.raspberrypi.com/software/).
+2. Pick your Pi, add your Wi-Fi when Imager asks, and write the card.
+3. Boot the Pi and open `http://dashusb.local` about a minute later.
+4. Follow the setup wizard, then plug the Pi into your car.
+
+The [Getting Started guide](wiki/Getting-Started.md) has the click-by-click walkthrough.
+
+**On a Pi already running Raspberry Pi OS Lite (64-bit):**
 
 ```bash
 sudo apt update && sudo apt upgrade -y
