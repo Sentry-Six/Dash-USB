@@ -1,0 +1,62 @@
+#!/bin/bash
+#
+# Board-specific install steps for a card written from the Dash USB SD card
+# image. install-pi.sh skips them in the image build, where they would
+# check the build machine instead of the user's board, so they run here on
+# the card's first boot: the runtime patches (the BLE advertising helper
+# for the Pi Zero 2 W, EATT, the I/O scheduler, the watchdog).
+#
+# The BLE helper's files come from GitHub, so this waits for the network.
+# Without it the card tries again on its next boot; once the patches have
+# run, the marker stops the unit for good.
+
+set -u
+
+DONE=/etc/dashusb-image-firstboot.done
+PATCHES=/usr/local/bin/dashusb-apply-runtime-patches
+REPO=Sentry-Six/Dash-USB
+REF=main
+
+log() { echo "dashusb-image-firstboot: $*"; }
+
+# shellcheck disable=SC1091
+[ -r /etc/dashusb-image ] && . /etc/dashusb-image
+REPO="${DASHUSB_IMAGE_REPO:-$REPO}"
+if [ -s /opt/dashusb/version ]; then
+    REF="$(tr -d '[:space:]' < /opt/dashusb/version)"
+fi
+
+online=0
+for _ in $(seq 1 24); do
+    if curl -fsI --max-time 5 "https://raw.githubusercontent.com/${REPO}/${REF}/README.md" >/dev/null 2>&1; then
+        online=1
+        break
+    fi
+    sleep 5
+done
+if [ "$online" != 1 ]; then
+    log "GitHub not reachable; trying again on the next boot"
+    exit 0
+fi
+
+if [ -x "$PATCHES" ]; then
+    DASHUSB_REPO_SLUG="$REPO" DASHUSB_REF="$REF" "$PATCHES" \
+        || log "some runtime patches failed; see the messages above"
+else
+    log "$PATCHES is missing"
+fi
+
+ro_before=0
+findmnt -no OPTIONS / 2>/dev/null | grep -qE '(^|,)ro(,|$)' && ro_before=1
+[ -x /root/bin/remountfs_rw ] && /root/bin/remountfs_rw >/dev/null 2>&1
+mount -o remount,rw / 2>/dev/null || true
+if date -u +%Y-%m-%dT%H:%M:%SZ > "$DONE"; then
+    log "done"
+else
+    log "could not write $DONE; running again on the next boot"
+fi
+if [ "$ro_before" = 1 ]; then
+    sync
+    mount -o remount,ro / 2>/dev/null || true
+fi
+exit 0

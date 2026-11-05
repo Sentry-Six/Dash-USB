@@ -1,58 +1,13 @@
-## Building a Dash USB Image
+## pi-gen-sources
 
-> **Prebuilt images aren't offered right now.** Install Dash USB with the one-liner in the [README](../README.md#install). These image scripts are kept for a future image release and aren't maintained or tested in the meantime.
+The old pi-gen image build was retired. The SD card image is now built by
+[`image/build-image.sh`](../image/build-image.sh); see
+[BUILD.md](../BUILD.md#sd-card-image).
 
-The Dash USB image is a custom Raspberry Pi OS image with everything pre-installed. Users flash it, boot, and set up WiFi over Bluetooth (BLE provisioning); no SSH required.
+Two files stay here because installers and the updater of already-released
+versions fetch them by this path:
 
-### Quick Method (recommended)
-
-From the repo root, run:
-
-```bash
-./build-image.sh
-```
-
-This will:
-1. Build the CPU-tuned Dash USB binaries with `cross` (or download them from the latest release)
-2. Clone pi-gen and inject the binary
-3. Build the image using Docker
-4. Output a compressed `.img.gz` in `deploy/`
-
-Takes 15–30 minutes. Requires **Docker**.
-
-You can also pass a pre-built binary (it is staged in every CPU variant slot), or add `--32bit` for an armhf image:
-```bash
-./build-image.sh /path/to/dashusb
-```
-
-### Manual Method
-
-1. Clone pi-gen: `git clone --branch arm64 https://github.com/RPi-Distro/pi-gen` (omit `--branch arm64` for a 32-bit image, which stages only `dashusb-linux-armv7`)
-2. From the pi-gen folder, run: `bash /path/to/Dash-USB/pi-gen-sources/prepare.sh`
-3. Optionally inject local binaries by copying them to `stage_dashusb/00-dashusb-tweaks/files/dashusb-linux-arm64-a53` (and `-a72`, `-a76`), and copy `server/ble/*` into the same folder; binaries you don't supply are downloaded from the latest release
-4. Raise the Trixie export margin: in `export-image/prerun.sh`, change `200 * 1024 * 1024` to `800 * 1024 * 1024` (`build-image.sh` does this for you)
-5. Run `./build-docker.sh` (Docker recommended) or `./build.sh`
-6. Image will be in `deploy/`. Flash it with Raspberry Pi Imager without OS customization; the image removes Pi Imager's first-boot setup.
-
-### GitHub Actions (CI)
-
-CI builds and publishes the `dashusb-*` binaries only; there is no image workflow. Build images locally with `./build-image.sh`.
-
-### What's in the image
-
-- Raspberry Pi OS Trixie Lite (64-bit arm64, or armhf with `--32bit`)
-- DashUSB binaries pre-installed in `/opt/dashusb/` as per-CPU variants (`dashusb-linux-arm64-a53`/`-a72`/`-a76`); `dashusb-pick-binary` selects one at service start
-- systemd service enabled (web UI on port 80)
-- rc.local boot-loop for setup (creates partitions, configures archiving)
-- SSH enabled, `dwc2` overlay for USB gadget
-- BLE provisioning daemon (`dashusb-ble.service`)
-- Prerequisite packages: dos2unix, parted, fdisk, curl, xfsprogs, autofs, rsync, bluez
-- Unnecessary packages removed, swap disabled
-
-### User experience after flashing
-
-1. User flashes the image and boots the Pi
-2. Sets up WiFi over Bluetooth (BLE provisioning) → Dash USB web server starts on port 80
-3. User opens `http://dashusb.local` → sees the dashboard
-4. Completes Setup Wizard → Pi reboots several times (10–20 min) → done
-5. Plugs into the vehicle
+- `00-dashusb-tweaks/files/dashusb-pick-binary`: picks the per-CPU
+  binary at each service start (`install-pi.sh`, `crates/sentryusb/src/migrate.rs`)
+- `00-dashusb-tweaks/files/dashusb.conf.sample`: the documented sample
+  config (`install-pi.sh`)

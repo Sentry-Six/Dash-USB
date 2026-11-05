@@ -1,0 +1,18 @@
+[Unit]
+Description=Dash USB image: board-specific install steps
+# Installed only by image/build-image.sh. Runs on the card's first boot,
+# and on later boots only until it has finished once.
+ConditionPathExists=!/etc/dashusb-image-firstboot.done
+Wants=network-online.target
+# bluetooth/hciuart first, so the BLE chip check sees the adapter.
+After=network-online.target bluetooth.service hciuart.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/dashusb-image-firstboot
+TimeoutStartSec=10min
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

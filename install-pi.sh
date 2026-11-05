@@ -10,10 +10,18 @@
 #
 # Or with a local binary:
 #   bash install-pi.sh /path/to/dashusb-binary
+#
+# DASHUSB_RELEASE_TAG=vX.Y.Z installs that release instead of the latest.
+# DASHUSB_IMAGE_BUILD=1 is set by image/build-image.sh, which runs this
+# inside the SD card image's chroot: services are enabled but not started,
+# board-specific steps wait for the card's first boot on the real board,
+# and Pi OS's first boot is left alone so Raspberry Pi Imager's settings
+# still apply on the user's card.
 
 REPO="${REPO:-Sentry-Six/Dash-USB}"
 INSTALL_DIR="/opt/dashusb"
 BINARY_NAME="dashusb"
+IMAGE_BUILD="${DASHUSB_IMAGE_BUILD:-0}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -94,12 +102,36 @@ if [ -n "${1:-}" ] && [ -f "${1:-}" ]; then
 else
     info "Downloading DashUSB binary variants from GitHub..."
 
+    # Resolve the release first so the binaries, the version file and the
+    # scripts fetched below all come from the same tag.
+    RELEASE_TAG="${DASHUSB_RELEASE_TAG:-}"
+    if [ -z "$RELEASE_TAG" ]; then
+        RELEASE_TAG=$(curl -fsSL --max-time 10 \
+            "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
+            | grep '"tag_name"' | head -1 \
+            | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' || true)
+    fi
+    if [ -z "$RELEASE_TAG" ]; then
+        RELEASE_URL=$(curl -fsSL --max-time 10 -o /dev/null -w '%{url_effective}' \
+            "https://github.com/${REPO}/releases/latest" 2>/dev/null || true)
+        RELEASE_TAG="${RELEASE_URL##*/}"
+        if [ "$RELEASE_TAG" = latest ]; then RELEASE_TAG=""; fi
+    fi
+    if [ -n "$RELEASE_TAG" ]; then
+        DOWNLOAD_BASE="https://github.com/${REPO}/releases/download/${RELEASE_TAG}"
+    elif [ "$IMAGE_BUILD" = 1 ]; then
+        error_exit "Could not resolve the DashUSB release to put in the image"
+    else
+        warn "Could not resolve the latest release tag; downloading the latest release"
+        DOWNLOAD_BASE="https://github.com/${REPO}/releases/latest/download"
+    fi
+
     for sfx in $SUFFIXES; do
-        DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/${BINARY_NAME}-${sfx}"
+        DOWNLOAD_URL="${DOWNLOAD_BASE}/${BINARY_NAME}-${sfx}"
         TMP="/tmp/${BINARY_NAME}-${sfx}.new"
         success=false
         for attempt in $(seq 1 5); do
-            if curl -fsSL "$DOWNLOAD_URL" -o "$TMP" 2>/dev/null; then
+            if curl -fsSL "$DOWNLOAD_URL" -o "$TMP" 2>/dev/null && [ -s "$TMP" ]; then
                 chmod +x "$TMP"
                 mv "$TMP" "$INSTALL_DIR/$BINARY_NAME-$sfx"
                 ok "Downloaded $BINARY_NAME-$sfx"
@@ -114,18 +146,18 @@ else
         fi
     done
 
-    RELEASE_TAG=$(curl -fsSL --max-time 10 \
-        "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
-        | grep '"tag_name"' | head -1 \
-        | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' || true)
-    if [ -n "${RELEASE_TAG:-}" ]; then
+    if [ -n "$RELEASE_TAG" ]; then
         echo "$RELEASE_TAG" > "$INSTALL_DIR/version"
         ok "Version: $RELEASE_TAG"
     fi
 fi
 
+# Fetch scripts and services from the same tag as the release binaries.
+# Local-binary development installs follow main.
+SOURCE_REF="${RELEASE_TAG:-main}"
+
 # Select the matching CPU variant at every service start.
-PICKER_URL="https://raw.githubusercontent.com/${REPO}/main/pi-gen-sources/00-dashusb-tweaks/files/dashusb-pick-binary"
+PICKER_URL="https://raw.githubusercontent.com/${REPO}/${SOURCE_REF}/pi-gen-sources/00-dashusb-tweaks/files/dashusb-pick-binary"
 PICKER_DST="/usr/local/bin/dashusb-pick-binary"
 PICKER_LOCAL_FALLBACK="$(dirname "${1:-/dev/null}")/dashusb-pick-binary"
 if [ -f "$PICKER_LOCAL_FALLBACK" ]; then
@@ -138,8 +170,12 @@ else
     error_exit "Failed to install dashusb-pick-binary — daemon won't start without it"
 fi
 
-# Create the active symlink before systemd starts the service.
-"$PICKER_DST" || error_exit "dashusb-pick-binary failed on first run — check journalctl"
+# Create the active symlink before systemd starts the service. An image
+# build skips this: the build machine's CPU says nothing about the user's
+# board, and the service runs the picker on every start anyway.
+if [ "$IMAGE_BUILD" != 1 ]; then
+    "$PICKER_DST" || error_exit "dashusb-pick-binary failed on first run — check journalctl"
+fi
 
 # Preserve the legacy binary path for external tooling.
 ln -sfn "$INSTALL_DIR/dashusb-current" "$INSTALL_DIR/$BINARY_NAME"
@@ -176,12 +212,12 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
+[ "$IMAGE_BUILD" = 1 ] || systemctl daemon-reload
 systemctl enable dashusb
 ok "dashusb.service installed and enabled"
 
 info "Installing DashUSB BLE daemon..."
-BLE_REPO_URL="https://raw.githubusercontent.com/${REPO}/main/server/ble"
+BLE_REPO_URL="https://raw.githubusercontent.com/${REPO}/${SOURCE_REF}/server/ble"
 # Match the fixed ExecStart path used by the unit and pi-gen.
 BLE_INSTALL_PATH="/root/bin/dashusb-ble.py"
 mkdir -p /root/bin
@@ -195,10 +231,10 @@ if curl -fsSL "$BLE_REPO_URL/dashusb-ble.py" -o "$BLE_INSTALL_PATH" 2>/dev/null;
     # Best-effort Pi OS dependencies; other distributions may not provide them.
     apt-get install -y rfkill >/dev/null 2>&1 || true
     apt-get install -y pi-bluetooth >/dev/null 2>&1 || true
-    systemctl daemon-reload
+    [ "$IMAGE_BUILD" = 1 ] || systemctl daemon-reload
     systemctl enable dashusb-ble 2>/dev/null || true
     # SIGHUP reloads policy without restarting dbus and killing logind/SSH.
-    systemctl reload dbus 2>/dev/null || true
+    [ "$IMAGE_BUILD" = 1 ] || systemctl reload dbus 2>/dev/null || true
     ok "BLE daemon installed at $BLE_INSTALL_PATH"
 else
     warn "Could not fetch BLE daemon — iOS app pairing will be unavailable"
@@ -227,7 +263,7 @@ chmod +x /root/bin/disable_gadget.sh
 ok "Gadget shims installed at /root/bin/{enable,disable}_gadget.sh"
 
 # install-pi users need the envsetup.sh that pi-gen images already include.
-if curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/setup/pi/envsetup.sh" \
+if curl -fsSL "https://raw.githubusercontent.com/${REPO}/${SOURCE_REF}/setup/pi/envsetup.sh" \
        -o /root/bin/envsetup.sh 2>/dev/null; then
     chmod +x /root/bin/envsetup.sh
     ok "envsetup.sh installed (archiveloop runtime config)"
@@ -261,7 +297,7 @@ if ! grep -q DASHUSB_TIP1 /root/.bashrc 2>/dev/null; then
 fi
 
 # OTA invokes this detection-gated helper after each binary swap.
-PATCHES_URL="https://raw.githubusercontent.com/${REPO}/main/setup/pi/apply-runtime-patches.sh"
+PATCHES_URL="https://raw.githubusercontent.com/${REPO}/${SOURCE_REF}/setup/pi/apply-runtime-patches.sh"
 PATCHES_DST="/usr/local/bin/dashusb-apply-runtime-patches"
 PATCHES_LOCAL="$(dirname "${1:-/dev/null}")/setup/pi/apply-runtime-patches.sh"
 if [ -f "$PATCHES_LOCAL" ]; then
@@ -273,9 +309,11 @@ elif curl -fsSL --max-time 10 "$PATCHES_URL" -o "$PATCHES_DST" 2>/dev/null; then
 else
     warn "Could not fetch runtime-patches script — OTA updates won't re-apply BLE patches"
 fi
-# Apply patches now, using the same source as custom-REPO installs.
-if [ -x "$PATCHES_DST" ]; then
-    DASHUSB_REPO_SLUG="$REPO" DASHUSB_REF=main "$PATCHES_DST" \
+# Apply patches now, using the same source as custom-REPO installs. The
+# patches check the board they run on, so an image applies them on the
+# card's first boot instead (image/dashusb-image-firstboot).
+if [ "$IMAGE_BUILD" != 1 ] && [ -x "$PATCHES_DST" ]; then
+    DASHUSB_REPO_SLUG="$REPO" DASHUSB_REF="$SOURCE_REF" "$PATCHES_DST" \
         || warn "runtime-patches first-run reported issues — see output above"
 fi
 
@@ -298,7 +336,9 @@ has_dietpi_overlays() {
 }
 
 NEEDS_REBOOT=0
-if is_rock_4cplus; then
+# The image is Raspberry Pi OS only, and in its chroot these checks would
+# read the build machine.
+if [ "$IMAGE_BUILD" != 1 ] && is_rock_4cplus; then
     info "Rock Pi 4C+ detected — applying USB-gadget + BLE hardware setup..."
     # Best effort: don't let a minor apt/systemd hiccup abort the install.
     set +e
@@ -411,9 +451,11 @@ is_known_broken_ble_chip() {
         /proc/device-tree/model 2>/dev/null && return 0
     return 1
 }
-if is_known_broken_ble_chip; then
+# An image installs the helper on the card's first boot instead, through
+# the runtime patches (apply_ble_adv_helper), once the real chip is known.
+if [ "$IMAGE_BUILD" != 1 ] && is_known_broken_ble_chip; then
     info "Known-affected BLE chip detected — installing raw-HCI advertising helper..."
-    BLE_ADV_BASE_URL="https://raw.githubusercontent.com/${REPO}/main/setup/pi"
+    BLE_ADV_BASE_URL="https://raw.githubusercontent.com/${REPO}/${SOURCE_REF}/setup/pi"
     LOCAL_PI_DIR="$(dirname "${1:-/dev/null}")/setup/pi"
     fetch_file() {
         # $1: filename; $2: destination. Prefer the local repository.
@@ -448,7 +490,7 @@ fi
 if [ ! -f /root/dashusb.conf ]; then
     info "Creating sample config..."
     # Fetch the matching key set from this repository.
-    SAMPLE_URL="https://raw.githubusercontent.com/${REPO}/main/pi-gen-sources/00-dashusb-tweaks/files/dashusb.conf.sample"
+    SAMPLE_URL="https://raw.githubusercontent.com/${REPO}/${SOURCE_REF}/pi-gen-sources/00-dashusb-tweaks/files/dashusb.conf.sample"
     if curl -fsSL --max-time 15 "$SAMPLE_URL" -o /root/dashusb.conf; then
         ok "Sample config downloaded to /root/dashusb.conf"
     else
@@ -482,18 +524,29 @@ if [ ! -f /dashusb/WIFI_ENABLED ]; then
 fi
 
 TARGET_HOSTNAME="dashusb"
-CURRENT_HOSTNAME=$(hostname -s 2>/dev/null || echo "raspberrypi")
+# In an image build, `hostname` would read and change the build machine's
+# name; the image's own name lives in /etc/hostname. Imager's hostname
+# setting replaces it on the user's card.
+if [ "$IMAGE_BUILD" = 1 ]; then
+    CURRENT_HOSTNAME=$(cat /etc/hostname 2>/dev/null || echo "raspberrypi")
+else
+    CURRENT_HOSTNAME=$(hostname -s 2>/dev/null || echo "raspberrypi")
+fi
 
 if [ "$CURRENT_HOSTNAME" != "$TARGET_HOSTNAME" ]; then
     info "Setting hostname to ${TARGET_HOSTNAME}..."
-    hostnamectl set-hostname "$TARGET_HOSTNAME" 2>/dev/null \
-        || echo "$TARGET_HOSTNAME" > /etc/hostname
+    if [ "$IMAGE_BUILD" = 1 ]; then
+        echo "$TARGET_HOSTNAME" > /etc/hostname
+    else
+        hostnamectl set-hostname "$TARGET_HOSTNAME" 2>/dev/null \
+            || echo "$TARGET_HOSTNAME" > /etc/hostname
+    fi
     if grep -qE "^127\.0\.1\.1\s" /etc/hosts; then
         sed -i "s/^127\.0\.1\.1\s.*/127.0.1.1\t${TARGET_HOSTNAME}/" /etc/hosts
     else
         echo -e "127.0.1.1\t${TARGET_HOSTNAME}" >> /etc/hosts
     fi
-    hostname "$TARGET_HOSTNAME" 2>/dev/null || true
+    [ "$IMAGE_BUILD" = 1 ] || hostname "$TARGET_HOSTNAME" 2>/dev/null || true
     ok "Hostname set to ${TARGET_HOSTNAME}"
 fi
 
@@ -505,7 +558,7 @@ fi
 # Advertise IPv4 only: a AAAA answer for .local sends Windows/Chrome to the
 # board's rotating SLAAC address (slow, stale) and triggers Chrome Private
 # Network Access "CORS" blocks on the plain-http UI. Device IPv6 is untouched.
-AVAHI_V4_URL="https://raw.githubusercontent.com/${REPO}/main/setup/pi/avahi-ipv4-only.sh"
+AVAHI_V4_URL="https://raw.githubusercontent.com/${REPO}/${SOURCE_REF}/setup/pi/avahi-ipv4-only.sh"
 if curl -fsSL --max-time 15 "$AVAHI_V4_URL" -o /tmp/avahi-ipv4-only.sh 2>/dev/null; then
     bash /tmp/avahi-ipv4-only.sh >/dev/null 2>&1 || warn "could not apply IPv4-only mDNS config"
     rm -f /tmp/avahi-ipv4-only.sh
@@ -513,8 +566,13 @@ else
     warn "could not fetch avahi-ipv4-only.sh — ${TARGET_HOSTNAME}.local may advertise IPv6"
 fi
 systemctl enable avahi-daemon >/dev/null 2>&1 || true
-systemctl restart avahi-daemon >/dev/null 2>&1 || true
+[ "$IMAGE_BUILD" = 1 ] || systemctl restart avahi-daemon >/dev/null 2>&1 || true
 ok "mDNS active: http://${TARGET_HOSTNAME}.local"
+
+if [ "$IMAGE_BUILD" = 1 ]; then
+    ok "DashUSB ${RELEASE_TAG:-} installed into the image; it starts on the card's first boot"
+    exit 0
+fi
 
 info "Starting DashUSB..."
 systemctl restart dashusb

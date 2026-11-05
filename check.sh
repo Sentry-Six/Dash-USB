@@ -7,7 +7,8 @@ shellcheck -V
 
 # SC1091: don't flag sourced files that can't be resolved at lint time.
 shellcheck --exclude=SC1091 \
-           ./pi-gen-sources/00-dashusb-tweaks/files/rc.local \
+           ./image/build-image.sh \
+           ./image/dashusb-image-firstboot \
            ./pi-gen-sources/00-dashusb-tweaks/files/dashusb-pick-binary \
            ./run/archiveloop \
            ./run/archive-control.sh \

@@ -5,7 +5,7 @@
 - Rust stable (1.88+; some locked dependencies need it)
 - Node `^20.19.0 || >=22.12.0` and npm
 - `cross` for cross-compilation: `cargo install cross`
-- Docker (for `cross` and image builds)
+- Docker (for `cross`)
 
 ## Web UI
 
@@ -46,18 +46,35 @@ Binaries land in `target/<target>/release/`.
 cargo build --release
 ```
 
-## Full OS image
+## SD card image
 
-Prebuilt images aren't offered right now; this script is kept for a future image release and isn't maintained or tested in the meantime.
+`image/build-image.sh` takes the newest official Raspberry Pi OS Lite
+(64-bit) image, installs one Dash USB release into it by running
+`install-pi.sh` in image mode inside a chroot, and writes the image, its
+checksum and a Raspberry Pi Imager manifest. It needs Linux, root, and an
+arm64 host (or qemu-user binfmt for aarch64):
 
-`build-image.sh` wraps pi-gen with the DashUSB stage overlay:
 ```
-./build-image.sh                  # arm64
-./build-image.sh --32bit          # armhf
-./build-image.sh /path/to/binary  # use a pre-built binary
+sudo image/build-image.sh --tag v1.3.0 --out deploy
 ```
 
-Output: `deploy/dashusb-*.img.gz`.
+The tag must be a published release: the image installs that release's
+binaries and the scripts at that tag. One 64-bit image covers every
+supported board (Pi 5, Pi 4, Pi 3A+, Pi Zero 2 W); the CPU picker chooses
+the binary when the service starts.
+
+The image keeps Pi OS's first boot as it ships, so the Wi-Fi, user,
+hostname and SSH settings chosen in Imager apply on the user's card. Imager
+2 only offers those settings for images opened through a manifest that
+declares how the image is configured (`init_format`), which is why users
+open the `.rpi-imager-manifest` rather than the `.img.xz` itself;
+`image/imager.py` copies `init_format` and the board list from Raspberry
+Pi's own entry for the base image.
+
+Steps that depend on the board (the runtime patches, including the BLE
+advertising helper for the Pi Zero 2 W) can't be decided in the chroot.
+`dashusb-image-firstboot.service` runs them on the card's first boot once
+GitHub is reachable, and tries again on later boots until it has.
 
 ## Deploy to an existing Pi
 
@@ -111,10 +128,27 @@ workflows use the existing Ubuntu 22.04 runner labels, including the hosted
 ## Releasing
 
 GitHub Releases are expected to host these artifacts (naming consumed by
-`install-pi.sh` and `build-image.sh`):
+`install-pi.sh` and the updater):
 
 - `dashusb-linux-arm64-a53` / `-a72` / `-a76` (per-CPU aarch64 variants)
 - `dashusb-linux-armv7`
+
+Pushing a `v*` tag runs **Build & Release**, which publishes the binaries.
+When it succeeds, the **SD Card Image** workflow builds the image for that
+tag and attaches:
+
+- `Dash-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest` (what users open)
+- `dashusb-raspberry-pi-image.img.xz` and `dashusb-raspberry-pi-image.img.xz.sha256`
+- `dashusb-imager-os-list.json` (the entry Raspberry Pi's own Imager list
+  would read)
+
+It also adds one line pointing at the manifest to the top of the release
+notes. Automatic image builds run only for stable releases, and only while
+the repository variable `DASHUSB_SD_IMAGE` is `auto`; a pre-release promoted
+to a full release gets its image then. To build by hand, run **SD Card
+Image** from the Actions tab with the tag. Turn off **publish** to keep the
+image as a workflow artifact for 7 days instead of attaching it, or turn
+on **replace** to rebuild an image a release already has.
 
 armv6 (Pi Zero W / Pi 1) is no longer built — the board is too underpowered
 to run the daemon comfortably, and dropping the matrix entry keeps the

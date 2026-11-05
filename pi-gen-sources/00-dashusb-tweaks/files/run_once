@@ -1,4 +1,0 @@
-#!/bin/bash -eu
-
-# rc.local renames this file to `ran_once` after its single setup invocation.
-# Any added reboot path must preserve that once-only behavior.
