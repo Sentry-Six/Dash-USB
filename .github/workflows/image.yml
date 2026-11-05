@@ -4,6 +4,10 @@ name: SD Card Image
 # once the release is already out, so publishing a release never waits for
 # the image (image/build-image.sh takes a while).
 on:
+  # TEMP (drop before landing on main): test build from this branch, since
+  # workflow_dispatch only works once the workflow is on main.
+  push:
+    branches: [sd-card-image]
   workflow_run:
     workflows: ['Build & Release']
     types: [completed]
@@ -61,7 +65,7 @@ jobs:
           AUTO: ${{ vars.DASHUSB_SD_IMAGE }}
         run: |
           skip() { echo "Skipping: $1"; echo "build=false" >> "$GITHUB_OUTPUT"; exit 0; }
-          if [ "$EVENT" != workflow_dispatch ] && [ "$AUTO" != auto ]; then
+          if [ "$EVENT" != workflow_dispatch ] && [ "$EVENT" != push ] && [ "$AUTO" != auto ]; then
             skip "automatic image builds are off (set the DASHUSB_SD_IMAGE variable to auto)"
           fi
           case "$EVENT" in
@@ -73,6 +77,9 @@ jobs:
               tag="$RELEASE_TAG"; publish=true; replace=false ;;
             workflow_dispatch)
               tag="$INPUT_TAG"; publish="$INPUT_PUBLISH"; replace="$INPUT_REPLACE" ;;
+            push)
+              # TEMP: the latest release, kept as a workflow artifact.
+              tag="$(gh release view --json tagName --jq .tagName)"; publish=false; replace=false ;;
             *)
               skip "unexpected event $EVENT" ;;
           esac
@@ -83,7 +90,7 @@ jobs:
           fi
           # Automatic builds are for stable releases only; a manual run may
           # build any release, and attaches only when asked to.
-          if [ "$EVENT" != workflow_dispatch ]; then
+          if [ "$EVENT" != workflow_dispatch ] && [ "$EVENT" != push ]; then
             [ "$(jq -r .isPrerelease <<<"$info")" = false ] || skip "$tag is a pre-release"
             [ "$(jq -r .isDraft <<<"$info")" = false ] || skip "$tag is a draft"
           fi
