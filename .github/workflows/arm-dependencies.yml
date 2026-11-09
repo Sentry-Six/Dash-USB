@@ -56,13 +56,14 @@ jobs:
             cpu_features: ''
             linker: arm-linux-gnueabihf-gcc
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
+          toolchain: 1.99.0
           targets: ${{ matrix.target }}
 
       - name: Install target build dependencies
@@ -98,7 +99,7 @@ jobs:
           esac
 
       - name: Cache Cargo dependency smoke builds
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
