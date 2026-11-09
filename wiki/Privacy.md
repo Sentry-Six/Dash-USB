@@ -87,14 +87,14 @@ whether a device-derived identifier is sent with update checks.
 - **How to disable:** Don't start a chat. Discord remains available for help
   from a person.
 
-## Things Dash USB does **not** do
+## Consent and uploads
 
-- Send a hardware fingerprint without explicit opt-in.
-- Send diagnostics or crash reports in the background.
-- Bundle multiple consents under one button. Each opt-in is a separate
-  affirmative action.
-- Use pre-ticked checkboxes — explicit click required.
-- Upload footage. Recordings go only to the archive you configure.
+- A hardware fingerprint is sent only after you opt in.
+- A diagnostics report is uploaded only when you approve a request in AI
+  Support.
+- Each opt-in has its own button, and you turn each one on yourself.
+- Every opt-in checkbox starts unticked.
+- Recordings go only to the archive you configure.
 
 ## Source code references
 

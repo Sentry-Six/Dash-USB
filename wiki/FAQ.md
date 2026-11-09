@@ -39,6 +39,8 @@ The car checks for a drive of **at least 64 GB with 32 GB available** and refuse
 Yes. Dash USB only needs internet for:
 - **First-time setup** (downloads the binary, installs system packages).
 - **Update checks and installs**.
+- **Automatic time-zone lookup**, when the time zone is set to `auto` (during setup, and at boot while the clock is still on UTC). Pick your time zone in the Setup Wizard to skip it.
+- **AI Support** (if you use it).
 - Some **archive backends** (rclone to cloud storage).
 
 All local archive methods (CIFS, NFS, rsync to a LAN server) work offline.

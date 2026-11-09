@@ -68,7 +68,7 @@ Follow the prompts — it'll ask which cloud service, walk you through OAuth, an
 |-------|---------|
 | Remote Name | `gdrive` (matches the name you set in `rclone config`) |
 | Remote Path | `Dashcam` or `Backups/DashUSB` |
-| Archive Server | `8.8.8.8` (fallback connectivity host; use the remote host for LAN storage) |
+| Archive Server | `8.8.8.8`, the default. Dash USB only uses it to check that the Pi is online before uploading. Leave it as is, unless your rclone remote is on your home network: then enter that server's address. |
 
 ## NFS
 
