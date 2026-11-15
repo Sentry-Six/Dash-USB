@@ -157,11 +157,11 @@ fn check_required_config(env: &SetupEnv) -> Result<()> {
     if !env.config.contains_key("CAM_SIZE") {
         // A missing key fails identically on every retry, so classify it as
         // ConfigError to halt the boot-loop auto-resume and surface it.
-        return Err(ConfigError(
+        let min = &sentryusb_vehicle_profile::Profile::active().virtual_drive.min_size;
+        return Err(ConfigError(format!(
             "STOP: Define the variable CAM_SIZE in dashusb.conf like this: \
-             export CAM_SIZE=64G (GM requires a 64 GB or larger drive)"
-                .into(),
-        )
+             export CAM_SIZE={min} (the vehicle requires a drive of at least that size)"
+        ))
         .into());
     }
     Ok(())

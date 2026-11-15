@@ -44,7 +44,9 @@ function groupByTimestamp(files: string[], basePath: string, regex: RegExp | nul
     const m = f.match(regex)
     const g = m?.groups
     if (!g?.camera || !g.y) continue
-    const ts = `${g.y}-${g.mo}-${g.d}_${g.h}-${g.mi}-${g.s}`
+    // Two-digit years (some cars' folder names) are 20xx, as on the server.
+    const year = g.y.length === 2 ? `20${g.y}` : g.y
+    const ts = `${year}-${g.mo}-${g.d}_${g.h}-${g.mi}-${g.s}`
     if (!map.has(ts)) map.set(ts, {})
     map.get(ts)![g.camera] = `${basePath}/${f}`
   }
@@ -117,22 +119,32 @@ export default function Viewer() {
     profile?.cameras.forEach((c) => { m[c.id] = c.label })
     return m
   }, [profile])
+  // Cameras found in the footage that the profile does not declare, for
+  // profiles whose camera names are not known yet.
+  const undeclaredCameras = useMemo(() => {
+    const declared = new Set(profile?.cameras.map((c) => c.id))
+    const found = new Set<string>()
+    for (const s of clipSets) for (const id of Object.keys(s.cameras)) if (!declared.has(id)) found.add(id)
+    return [...found].sort()
+  }, [profile, clipSets])
   // First camera in the grid (reading order) is the primary/master.
   const primaryCamera = useMemo(
-    () => profile?.grid.flat().find((c) => c) ?? profile?.cameras[0]?.id ?? null,
-    [profile]
+    () => profile?.grid.flat().find((c) => c) ?? profile?.cameras[0]?.id ?? undeclaredCameras[0] ?? null,
+    [profile, undeclaredCameras]
   )
-  const gridCols = profile ? Math.max(...profile.grid.map((r) => r.length), 1) : 2
 
-  // Append recorded optional cameras that have no configured grid slot.
+  // Append recorded cameras that have no configured grid slot.
   const gridCells = useMemo(() => {
     if (!profile) return [] as string[]
     const cells = profile.grid.flat()
     const extras = profile.cameras
       .map((c) => c.id)
       .filter((id) => !cells.includes(id) && clipSets.some((s) => id in s.cameras))
-    return [...cells, ...extras]
-  }, [profile, clipSets])
+    return [...cells, ...extras, ...undeclaredCameras]
+  }, [profile, clipSets, undeclaredCameras])
+  // A profile without a grid lays its cameras out two across.
+  const declaredCols = profile ? Math.max(...profile.grid.map((r) => r.length), 0) : 2
+  const gridCols = declaredCols || (gridCells.length > 1 ? 2 : 1)
 
   const currentSet = clipSets[currentSetIdx] as ClipSet | undefined
   // Track probes explicitly because fallback and measured durations can match.

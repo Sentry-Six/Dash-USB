@@ -11,6 +11,7 @@ import { NotificationsStep } from "./steps/NotificationsStep"
 import { SecurityStep } from "./steps/SecurityStep"
 import { AdvancedStep } from "./steps/AdvancedStep"
 import { ReviewStep } from "./steps/ReviewStep"
+import { storageError, type VehicleList } from "./vehicles"
 
 interface SetupFormData {
   [key: string]: string
@@ -27,19 +28,8 @@ export interface StepProps {
   onChange: (key: string, value: string) => void
   onBatchChange: (updates: Record<string, string>) => void
   setupAlreadyFinished: boolean
-}
-
-function storageError(data: SetupFormData): string | null {
-  // Zero disables the image, which is invalid for this setup flow.
-  const cam = parseFloat(data.CAM_SIZE ?? "0")
-  if (!Number.isFinite(cam) || cam <= 0) {
-    return "Dashcam drive size must be greater than 0 GB."
-  }
-  // GM refuses drives under 64 GB (needs 64 GB total / 32 GB available).
-  if (cam < 64) {
-    return "GM requires a dashcam drive of at least 64 GB."
-  }
-  return null
+  /** Selectable vehicles; absent until the list loads or outside the wizard. */
+  vehicles?: VehicleList | null
 }
 
 function archiveError(data: SetupFormData): string | null {
@@ -97,9 +87,9 @@ function securityError(data: SetupFormData): string | null {
   return null
 }
 
-function getStepError(stepIdx: number, data: SetupFormData): string | null {
+function getStepError(stepIdx: number, data: SetupFormData, vehicles: VehicleList | null): string | null {
   switch (stepIdx) {
-    case 3: return storageError(data)
+    case 3: return storageError(data, vehicles)
     case 4: return archiveError(data)
     case 5: return notificationsError(data)
     case 6: return securityError(data)
@@ -186,7 +176,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
   const [currentStep, setCurrentStep] = useState(0)
   // Persist UI defaults even when the config does not yet contain them.
   const defaults: SetupFormData = {
-    // GM requires a FAT32 drive of at least 64 GB.
+    // The default vehicle (GM) requires a drive of at least 64 GB.
     CAM_SIZE: "64",
     ARCHIVE_SYSTEM: "cifs",
     TEMPERATURE_UNIT: "C",
@@ -209,6 +199,18 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
   // Distinguish reconfiguration from first-time setup messaging.
   const [setupAlreadyFinished, setSetupAlreadyFinished] = useState(false)
   const [spaceRejection, setSpaceRejection] = useState<string | null>(null)
+  const [vehicles, setVehicles] = useState<VehicleList | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    fetch("/api/profiles")
+      .then((r) => r.json())
+      .then((list: VehicleList) => {
+        if (!cancelled && Array.isArray(list?.profiles)) setVehicles(list)
+      })
+      .catch(() => { /* Older firmware: the wizard keeps the configured vehicle. */ })
+    return () => { cancelled = true }
+  }, [])
 
   // Must update during render; an effect runs too late after Apply's blur.
   // eslint-disable-next-line react-hooks/refs
@@ -352,7 +354,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
   }, [phase])
 
   const StepComponent = steps[currentStep].component
-  const currentStepError = getStepError(currentStep, formData)
+  const currentStepError = getStepError(currentStep, formData, vehicles)
 
   async function doApply(dataToSave: SetupFormData) {
     setSaving(true)
@@ -455,10 +457,10 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
     await new Promise<void>((r) => requestAnimationFrame(() => r()))
     const data = formDataRef.current
 
-    const firstInvalidIdx = steps.findIndex((_, i) => getStepError(i, data) !== null)
+    const firstInvalidIdx = steps.findIndex((_, i) => getStepError(i, data, vehicles) !== null)
     if (firstInvalidIdx !== -1) {
       setCurrentStep(firstInvalidIdx)
-      setSaveError(getStepError(firstInvalidIdx, data))
+      setSaveError(getStepError(firstInvalidIdx, data, vehicles))
       return
     }
 
@@ -642,7 +644,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
                 onClick={() => {
                   if (i > currentStep) {
                     for (let s = 0; s < i; s++) {
-                      if (getStepError(s, formData) !== null) {
+                      if (getStepError(s, formData, vehicles) !== null) {
                         setCurrentStep(s)
                         return
                       }
@@ -658,7 +660,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
                     "h-1 rounded-full transition-all",
                     i === currentStep
                       ? "bg-blue-400"
-                      : i < currentStep && getStepError(i, formData) !== null
+                      : i < currentStep && getStepError(i, formData, vehicles) !== null
                         ? "bg-red-500/70"
                         : i < currentStep
                           ? "bg-blue-500"
@@ -684,6 +686,7 @@ export function SetupWizard({ initialData, onClose }: SetupWizardProps) {
             onChange={handleChange}
             onBatchChange={handleBatchChange}
             setupAlreadyFinished={setupAlreadyFinished}
+            vehicles={vehicles}
           />
         </div>
 

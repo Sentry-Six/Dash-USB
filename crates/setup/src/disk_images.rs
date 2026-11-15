@@ -185,6 +185,30 @@ async fn ensure_vfat_tools(emitter: &SetupEmitter) -> Result<()> {
     Ok(())
 }
 
+/// Backing space (KB) to require for drive images of `logical_kb`.
+///
+/// A car that keeps footage until the drive is full can fill the whole
+/// image, so reserve all of it. Sparse rolling-only images reserve:
+///   min(logical, max(0.5 * logical, 2 * rolling window for live plus one
+///   COW generation)) + snapshot reserve
+/// Keep snapshot reserve outside the cap and a 0.5x logical floor for
+/// segment-size variance.
+fn required_backing_kb(profile: &sentryusb_vehicle_profile::Profile, logical_kb: u64) -> u64 {
+    if profile.features.event_folders || !profile.has_rolling_window() {
+        return logical_kb;
+    }
+    let seg = profile.recording.segment_seconds.max(1) as u64;
+    let window_secs = profile.recording.rolling_window_minutes as u64 * 60;
+    let rolling_bytes = profile.recording.approx_bytes_per_camera_segment
+        * profile.cameras.len() as u64
+        * window_secs.div_ceil(seg);
+    let rolling_kb = rolling_bytes / 1024;
+    const SNAPSHOT_RESERVE_KB: u64 = 15 * 1024 * 1024; // 15 GB
+    logical_kb
+        .min((logical_kb / 2).max(rolling_kb.saturating_mul(2)))
+        .saturating_add(SNAPSHOT_RESERVE_KB)
+}
+
 /// Create all disk images from the config settings. Returns true if any work
 /// was performed.
 pub async fn create_disk_images(env: &SetupEnv, emitter: &SetupEmitter) -> Result<bool> {
@@ -225,26 +249,8 @@ pub async fn create_disk_images(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
     ensure_vfat_tools(emitter).await?;
 
     // Reject insufficient space; never shrink images or delete snapshots.
-    // Sparse rolling-only images reserve:
-    //   min(logical, max(0.5 * logical, 2 * rolling window for live plus one
-    //   COW generation)) + snapshot reserve
-    // Keep snapshot reserve outside the cap and a 0.5x logical floor for
-    // segment-size variance.
     let logical_requested: u64 = sizes.iter().map(|(_, _, sz, _)| sz).sum();
-    let total_requested: u64 = if profile.features.event_folders {
-        logical_requested
-    } else {
-        let seg = profile.recording.segment_seconds.max(1) as u64;
-        let window_secs = profile.recording.rolling_window_minutes as u64 * 60;
-        let rolling_bytes = profile.recording.approx_bytes_per_camera_segment
-            * profile.cameras.len() as u64
-            * window_secs.div_ceil(seg);
-        let rolling_kb = rolling_bytes / 1024;
-        const SNAPSHOT_RESERVE_KB: u64 = 15 * 1024 * 1024; // 15 GB
-        logical_requested
-            .min((logical_requested / 2).max(rolling_kb.saturating_mul(2)))
-            .saturating_add(SNAPSHOT_RESERVE_KB)
-    };
+    let total_requested = required_backing_kb(profile, logical_requested);
     // Credit back the allocation of images about to be deleted and recreated.
     // du reports referenced KB and reflink-shared snapshot blocks stay
     // allocated either way, so this only ever under-frees.
@@ -297,4 +303,27 @@ pub async fn create_disk_images(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
 
     emitter.progress("Disk image creation complete.");
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sentryusb_vehicle_profile::Profile;
+
+    const GB_KB: u64 = 1024 * 1024;
+
+    /// GM only ever holds its rolling window, so a 64 GB image is backed
+    /// by half its size plus the snapshot reserve.
+    #[test]
+    fn rolling_window_profile_reserves_a_sparse_image() {
+        let gm = Profile::embedded("gm_surroundvision").unwrap().unwrap();
+        assert_eq!(required_backing_kb(&gm, 64 * GB_KB), (32 + 15) * GB_KB);
+    }
+
+    /// A car that records until the drive is full needs the whole image.
+    #[test]
+    fn fill_until_full_profile_reserves_the_whole_image() {
+        let rivian = Profile::embedded("rivian_roadcam").unwrap().unwrap();
+        assert_eq!(required_backing_kb(&rivian, 128 * GB_KB), 128 * GB_KB);
+    }
 }

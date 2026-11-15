@@ -431,7 +431,7 @@ fn make_links_in(
     info!("Making links for {}, retargeted to {}", cur_mnt, final_mnt);
 
     let mut clips = Vec::new();
-    collect_clips_under(&rec_root, profile, 0, &mut clips);
+    collect_clips_under(&rec_root, profile, &mut Vec::new(), &mut clips);
 
     // Newest timestamp per camera in THIS snapshot.
     let mut newest: std::collections::HashMap<&str, chrono::NaiveDateTime> =
@@ -484,14 +484,16 @@ fn make_links_in(
     Ok(())
 }
 
-/// Collect matching clips with bounded depth for flat or date-bucketed layouts.
+/// Collect matching clips with bounded depth for flat, date-bucketed, or
+/// per-session layouts. `rel` holds the folder names below the recording
+/// root; each clip is returned with the name the profile links it under.
 fn collect_clips_under(
     dir: &Path,
     profile: &sentryusb_vehicle_profile::Profile,
-    depth: u8,
+    rel: &mut Vec<String>,
     out: &mut Vec<(std::path::PathBuf, String, sentryusb_vehicle_profile::ClipInfo, u64)>,
 ) {
-    if depth > 3 {
+    if rel.len() > 3 {
         return;
     }
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -500,16 +502,16 @@ fn collect_clips_under(
     for entry in entries.flatten() {
         let path = entry.path();
         let Ok(ftype) = entry.file_type() else { continue };
+        rel.push(entry.file_name().to_string_lossy().to_string());
         if ftype.is_dir() {
-            collect_clips_under(&path, profile, depth + 1, out);
-            continue;
+            collect_clips_under(&path, profile, rel, out);
+        } else if let Some(name) = profile.clip_name(rel) {
+            if let Some(clip) = profile.parse_clip_filename(&name) {
+                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                out.push((path, name, clip, size));
+            }
         }
-        let name = entry.file_name().to_string_lossy().to_string();
-        let Some(clip) = profile.parse_clip_filename(&name) else {
-            continue;
-        };
-        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-        out.push((path, name, clip, size));
+        rel.pop();
     }
 }
 
@@ -805,6 +807,88 @@ mod tests {
             !day.join("REAR_2026_07_17_T_19_39_53.mp4").exists(),
             "size changed since last snapshot — still recording, must hold"
         );
+    }
+
+    /// Per-session layouts repeat file names across session folders, so
+    /// clips are named by their path below the recording root.
+    #[test]
+    fn collects_rivian_clips_named_by_session_folder() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("RoadCam/DriveStream");
+        for session in ["09_25_26_063343", "09_25_26_071500", "09_26_26_090251"] {
+            let dir = root.join(session);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("front.mp4"), b"xxxx").unwrap();
+            std::fs::write(dir.join("rear.mp4"), b"xxxxxx").unwrap();
+        }
+        std::fs::create_dir_all(root.join("09_27_26_101010")).unwrap(); // empty session
+        std::fs::write(root.join("benchmark.log"), b"x").unwrap();
+
+        let profile = sentryusb_vehicle_profile::Profile::embedded("rivian_roadcam")
+            .unwrap()
+            .unwrap();
+        let mut clips = Vec::new();
+        collect_clips_under(&root, &profile, &mut Vec::new(), &mut clips);
+        let mut names: Vec<(String, String, u64)> = clips
+            .iter()
+            .map(|(_, name, clip, size)| (name.clone(), clip.date_str(), *size))
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                ("09_25_26_063343__front.mp4".to_string(), "2026-09-25".to_string(), 4),
+                ("09_25_26_063343__rear.mp4".to_string(), "2026-09-25".to_string(), 6),
+                ("09_25_26_071500__front.mp4".to_string(), "2026-09-25".to_string(), 4),
+                ("09_25_26_071500__rear.mp4".to_string(), "2026-09-25".to_string(), 6),
+                ("09_26_26_090251__front.mp4".to_string(), "2026-09-26".to_string(), 4),
+                ("09_26_26_090251__rear.mp4".to_string(), "2026-09-26".to_string(), 6),
+            ]
+        );
+    }
+
+    /// Same-day sessions must not overwrite each other's links, and the
+    /// newest session per camera is held until its size is stable.
+    #[cfg(unix)]
+    #[test]
+    fn links_rivian_sessions_without_name_collisions() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let snap_mnt = tmp.path().join("snapmnt");
+        let root = snap_mnt.join("RoadCam/DriveStream");
+        for session in ["09_25_26_063343", "09_25_26_071500"] {
+            let dir = root.join(session);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("front.mp4"), b"xxxx").unwrap();
+        }
+        let profile = sentryusb_vehicle_profile::Profile::embedded("rivian_roadcam")
+            .unwrap()
+            .unwrap();
+        let recordings = tmp.path().join("Recordings");
+        let cur = snap_mnt.to_string_lossy().to_string();
+        let day = recordings.join("Continuous/2026-09-25");
+
+        make_links_in(&recordings, &profile, &cur, "/backingfiles/snapshots/snap-000001/mnt", None)
+            .unwrap();
+        let older = day.join("09_25_26_063343__front.mp4");
+        let newest = day.join("09_25_26_071500__front.mp4");
+        assert_eq!(
+            std::fs::read_link(&older).unwrap().to_string_lossy(),
+            "/backingfiles/snapshots/snap-000001/mnt/RoadCam/DriveStream/09_25_26_063343/front.mp4"
+        );
+        assert!(!newest.exists(), "newest session is held without a stability proof");
+
+        let mut prev = std::collections::HashMap::new();
+        prev.insert("RoadCam/DriveStream/09_25_26_071500/front.mp4".to_string(), 4u64);
+        make_links_in(
+            &recordings,
+            &profile,
+            &cur,
+            "/backingfiles/snapshots/snap-000002/mnt",
+            Some(&prev),
+        )
+        .unwrap();
+        assert!(newest.is_symlink());
+        assert!(older.is_symlink());
     }
 
     /// TOC parsing: `<size> <path>` lines → map.

@@ -72,3 +72,32 @@ test('Viewer aborts the StrictMode replayed clip read and keeps the live respons
     assert.ok(!container.textContent?.includes('2 files'))
   }) } finally { globalThis.fetch = oldFetch }
 })
+
+test('Viewer groups session-folder clips with two-digit years and shows cameras the profile does not declare', async () => {
+  const oldFetch = globalThis.fetch
+  const sessionProfile = {
+    id: 'session', display_name: 'Session', segment_seconds: 900, cameras: [], grid: [],
+    filename_regex: String.raw`^(?P<mo>\d{2})_(?P<d>\d{2})_(?P<y>\d{2})_(?P<h>\d{2})(?P<mi>\d{2})(?P<s>\d{2})__(?P<camera>[^/]+?)\.(?:mp4|MP4)$`,
+  }
+  const day = {
+    date: '2026-09-25', path: '/mutable/Recordings/Continuous/2026-09-25',
+    files: ['09_25_26_063343__front.mp4', '09_25_26_063343__rear.mp4', '09_25_26_071500__front.mp4'],
+  }
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url === '/api/profile') return Response.json(sessionProfile)
+    if (url.startsWith('/api/clips?')) return Response.json([{ name: 'Continuous', clips: [day], hasMore: false }])
+    return Response.json({})
+  }
+  try { await mount(async container => {
+    const button = (text: string) => [...container.querySelectorAll('button')].find(b => b.textContent?.includes(text))!
+    await act(async () => button('3 files').click())
+    // Two sessions of 15 minutes each, not three unrelated files.
+    assert.ok(container.textContent?.includes('0:00 / 30:00'))
+    const grid = container.querySelector('div.grid[style]') as HTMLElement
+    assert.equal(grid.style.gridTemplateColumns, 'repeat(2, minmax(0, 1fr))')
+    // The first camera found is primary and streams; the rest wait for a click.
+    assert.deepEqual([...grid.children].map(cell => cell.textContent?.trim()), ['front', 'Click to streamrear'])
+    assert.equal(grid.querySelectorAll('video').length, 1)
+  }) } finally { globalThis.fetch = oldFetch }
+})

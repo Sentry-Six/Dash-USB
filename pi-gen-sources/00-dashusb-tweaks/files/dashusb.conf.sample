@@ -55,7 +55,8 @@ export SHARE_PASSWORD='password'
 # Disable to retain recordings only in rotating local snapshots.
 #export ARCHIVE_RECORDINGS=false
 
-# Vehicle-specific recording layout. Available: gm_surroundvision.
+# Vehicle-specific recording layout. Available: gm_surroundvision, and
+# rivian_roadcam (experimental, untested in a car; needs CAM_SIZE=128G or more).
 # export VEHICLE_PROFILE=gm_surroundvision
 
 # A high-endurance 256 GB or larger data device is recommended. CAM_SIZE must

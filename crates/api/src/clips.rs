@@ -70,7 +70,8 @@ fn list_clips_in(
         if let Ok(items) = std::fs::read_dir(&dir_path) {
             for item in items.flatten() {
                 let name = item.file_name().to_string_lossy().to_string();
-                if name.ends_with(".mp4") {
+                // FAT drives may carry the extension in either case.
+                if name.to_ascii_lowercase().ends_with(".mp4") {
                     files.push(name);
                 }
             }

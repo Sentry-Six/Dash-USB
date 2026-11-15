@@ -30,6 +30,9 @@ Either choice takes effect immediately and persists if you back out of the wizar
 
 ## 4. Storage
 
+- **Dashcam system** — the vehicle Dash USB is plugged into. GM Surround Vision
+  is the default; Rivian Road Cam is experimental and has not been confirmed in
+  a car. Changing it sets the dashcam size to that vehicle's minimum.
 - **Dashcam Size** — the virtual USB drive the car records to. Keep the 64 GB
   default unless necessary: GM requires ≥64 GB total with 32 GB available, and
   remaining capacity is used for retained snapshots.

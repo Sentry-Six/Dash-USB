@@ -1,0 +1,54 @@
+# Rivian Road Cam (continuous drive recording) — PROVISIONAL, untested in a car.
+#
+# Seen in a directory listing of a real drive (folders only, no file names):
+#   RoadCam/DriveStream/MM_DD_YY_HHMMSS/   one folder per recording session
+#   RoadCam/SaveClips, GearGuardVideo/Incidents, IncidentCam, LaunchCam,
+#   VideoExport                            saved/event footage, not handled yet
+# Reported by owners, not verified here: the car wants FAT32 on 128 GB-2 TB,
+# speed-tests the drive, deletes the oldest continuous footage only when the
+# drive fills, and (Gen 1) writes one mp4 per camera about every 15 minutes.
+# Unknown: file names inside a session folder, and therefore the camera ids.
+
+# Cameras are not declared until the file names are known; the viewer shows
+# whatever it finds. Replace with [[cameras]] tables and a viewer grid.
+cameras = []
+
+[profile]
+id = "rivian_roadcam"
+display_name = "Rivian Road Cam"
+brand = "Rivian"
+experimental = true
+
+[recording]
+root = "RoadCam/DriveStream"
+# The timestamp is in the session folder name, so match the path below `root`:
+# 09_25_26_063343/<file>.mp4 is matched as 09_25_26_063343__<file>.mp4.
+match_relative_path = true
+# Until the file names are known, the whole file stem stands in for the camera.
+filename_regex = '^(?P<mo>\d{2})_(?P<d>\d{2})_(?P<y>\d{2})_(?P<h>\d{2})(?P<mi>\d{2})(?P<s>\d{2})__(?P<camera>[^/]+?)\.(?:mp4|MP4)$'
+# Owner-reported for Gen 1; only the viewer's pre-probe duration uses it.
+segment_seconds = 900
+# No age-based delete: the car removes the oldest footage when the drive fills.
+rolling_window_minutes = 0
+# Unknown; only used to size drives for cars with a rolling window.
+approx_bytes_per_camera_segment = 0
+
+[viewer]
+grid = []
+
+[virtual_drive]
+default_size = "128G"
+min_size = "128G"
+filesystem = "fat32"
+label = "DASHUSB"
+# Dash USB's own post-archive floor (32 GiB), not a Rivian requirement.
+min_free_bytes = 34359738368
+
+[snapshots]
+default_interval_secs = 900
+
+[features]
+event_folders = false
+archive_everything_default = true
+# Suppress FUA writes; snapshots tolerate incomplete tails after power loss.
+nofua = true
