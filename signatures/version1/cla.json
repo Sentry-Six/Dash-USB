@@ -1,3 +1,12 @@
 {
-  "signedContributors": []
+  "signedContributors": [
+    {
+      "name": "JeffFromTheIRS",
+      "id": 155955500,
+      "comment_id": 6911117462,
+      "created_at": "2026-11-16T08:18:02Z",
+      "repoId": 1312445145,
+      "pullRequestNo": 25
+    }
+  ]
 }
