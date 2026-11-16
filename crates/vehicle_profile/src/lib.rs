@@ -438,6 +438,38 @@ mod tests {
         }
     }
 
+    /// File names from an owner's incident clip:
+    /// `MM_DD_YY_HHMMSS_video_<camera>.mp4`.
+    #[test]
+    fn rivian_parses_real_clip_names_and_prefers_the_file_timestamp() {
+        let p = rivian();
+        let parsed = |name: &str| {
+            let info = p.parse_clip_filename(name).unwrap_or_else(|| panic!("{name} must parse"));
+            (info.camera, info.timestamp.format("%Y-%m-%d_%H-%M-%S").to_string())
+        };
+        let at = |camera: &str, ts: &str| (camera.to_string(), ts.to_string());
+
+        for camera in ["frontCenter", "rearCenter", "sideLeft", "sideRight", "gearGuard"] {
+            // As the incident clip was shared, with no session folder.
+            assert_eq!(
+                parsed(&format!("09_05_26_174959_video_{camera}.mp4")),
+                at(camera, "2026-09-05_17-49-59")
+            );
+            assert!(p.cameras.iter().any(|c| c.id == camera), "{camera} must be declared");
+        }
+        // Inside a session folder, a segment's own timestamp wins.
+        assert_eq!(
+            parsed("09_05_26_173818__09_05_26_174959_video_sideLeft.mp4"),
+            at("sideLeft", "2026-09-05_17-49-59")
+        );
+        // Without one, the session folder supplies it.
+        assert_eq!(
+            parsed("09_05_26_173818__video_rearCenter.mp4"),
+            at("rearCenter", "2026-09-05_17-38-18")
+        );
+        assert!(p.cameras.iter().find(|c| c.id == "gearGuard").unwrap().optional);
+    }
+
     /// The only test that touches the process-wide profile or the override.
     #[test]
     fn reload_switches_the_active_profile_when_the_selection_changes() {

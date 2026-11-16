@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { act, createElement, StrictMode } from 'react'
 import { Window } from 'happy-dom'
@@ -99,5 +100,46 @@ test('Viewer groups session-folder clips with two-digit years and shows cameras 
     // The first camera found is primary and streams; the rest wait for a click.
     assert.deepEqual([...grid.children].map(cell => cell.textContent?.trim()), ['front', 'Click to streamrear'])
     assert.equal(grid.querySelectorAll('video').length, 1)
+  }) } finally { globalThis.fetch = oldFetch }
+})
+
+test('Viewer lays out a real Rivian clip with the shipped profile pattern', async () => {
+  const oldFetch = globalThis.fetch
+  // The pattern must work in JavaScript as well as in the Rust regex engine.
+  const toml = readFileSync(new URL('../../../profiles/rivian_roadcam.toml', import.meta.url), 'utf8')
+  const rivian = {
+    id: 'rivian_roadcam', display_name: 'Rivian Road Cam', segment_seconds: 900,
+    filename_regex: toml.match(/^filename_regex = '(.*)'\r?$/m)![1],
+    cameras: [
+      { id: 'frontCenter', label: 'Front' }, { id: 'sideLeft', label: 'Left' }, { id: 'sideRight', label: 'Right' },
+      { id: 'rearCenter', label: 'Rear' }, { id: 'gearGuard', label: 'Gear Guard', optional: true },
+    ],
+    grid: [['sideLeft', 'frontCenter', 'sideRight'], ['', 'rearCenter', '']],
+  }
+  // File names from an owner's clip, linked under their session folder, plus the next segment.
+  const cameras = ['sideRight', 'frontCenter', 'gearGuard', 'rearCenter', 'sideLeft']
+  const day = {
+    date: '2026-09-05', path: '/mutable/Recordings/Continuous/2026-09-05',
+    files: [
+      ...cameras.map(c => `09_05_26_173818__09_05_26_174959_video_${c}.mp4`),
+      '09_05_26_173818__09_05_26_180459_video_frontCenter.mp4',
+    ],
+  }
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url === '/api/profile') return Response.json(rivian)
+    if (url.startsWith('/api/clips?')) return Response.json([{ name: 'Continuous', clips: [day], hasMore: false }])
+    return Response.json({})
+  }
+  try { await mount(async container => {
+    const button = (text: string) => [...container.querySelectorAll('button')].find(b => b.textContent?.includes(text))!
+    await act(async () => button('6 files').click())
+    // Two segments: the five cameras of one moment group together.
+    assert.ok(container.textContent?.includes('0:00 / 30:00'))
+    const grid = container.querySelector('div.grid[style]') as HTMLElement
+    assert.equal(grid.style.gridTemplateColumns, 'repeat(3, minmax(0, 1fr))')
+    const labels = [...grid.children].map(cell => cell.textContent?.replace('Click to stream', '').trim())
+    assert.deepEqual(labels, ['Left', 'Front', 'Right', '', 'Rear', '', 'Gear Guard'])
+    assert.ok((grid.querySelector('video') as HTMLVideoElement).src.endsWith('09_05_26_173818__09_05_26_174959_video_sideLeft.mp4'))
   }) } finally { globalThis.fetch = oldFetch }
 })

@@ -4,14 +4,15 @@
 #   RoadCam/DriveStream/MM_DD_YY_HHMMSS/   one folder per recording session
 #   RoadCam/SaveClips, GearGuardVideo/Incidents, IncidentCam, LaunchCam,
 #   VideoExport                            saved/event footage, not handled yet
+# Seen in one owner's incident clip (five files, 120 s each, no audio):
+#   09_05_26_174959_video_frontCenter.mp4  MM_DD_YY_HHMMSS in local time
+#   frontCenter, rearCenter, sideLeft, sideRight: H.264 1920x1536@30, 10 Mbit/s
+#   gearGuard (bed camera on the R1T):           H.264 1280x720@30,   4 Mbit/s
 # Reported by owners, not verified here: the car wants FAT32 on 128 GB-2 TB,
 # speed-tests the drive, deletes the oldest continuous footage only when the
 # drive fills, and (Gen 1) writes one mp4 per camera about every 15 minutes.
-# Unknown: file names inside a session folder, and therefore the camera ids.
-
-# Cameras are not declared until the file names are known; the viewer shows
-# whatever it finds. Replace with [[cameras]] tables and a viewer grid.
-cameras = []
+# Unknown: the file names inside a DriveStream session folder. They are
+# assumed to follow the incident clip's naming.
 
 [profile]
 id = "rivian_roadcam"
@@ -21,20 +22,48 @@ experimental = true
 
 [recording]
 root = "RoadCam/DriveStream"
-# The timestamp is in the session folder name, so match the path below `root`:
-# 09_25_26_063343/<file>.mp4 is matched as 09_25_26_063343__<file>.mp4.
+# Match the path below `root`, so a clip is named <session folder>__<file>.
 match_relative_path = true
-# Until the file names are known, the whole file stem stands in for the camera.
-filename_regex = '^(?P<mo>\d{2})_(?P<d>\d{2})_(?P<y>\d{2})_(?P<h>\d{2})(?P<mi>\d{2})(?P<s>\d{2})__(?P<camera>[^/]+?)\.(?:mp4|MP4)$'
+# Takes the timestamp from the file name when it has one (the incident clip's
+# naming), else from the session folder. Any other mp4 in a session folder
+# still matches, with its file stem as the camera, so nothing goes unarchived:
+#   09_05_26_173818__09_05_26_174959_video_frontCenter.mp4
+#   09_05_26_173818__video_frontCenter.mp4
+#   09_05_26_173818__anything.mp4
+filename_regex = '^(?:\d{2}_\d{2}_\d{2}_\d{6}__)?(?P<mo>\d{2})_(?P<d>\d{2})_(?P<y>\d{2})_(?P<h>\d{2})(?P<mi>\d{2})(?P<s>\d{2})_{1,2}(?:video_)?(?P<camera>[A-Za-z0-9_-]+)\.(?:mp4|MP4)$'
 # Owner-reported for Gen 1; only the viewer's pre-probe duration uses it.
 segment_seconds = 900
 # No age-based delete: the car removes the oldest footage when the drive fills.
 rolling_window_minutes = 0
-# Unknown; only used to size drives for cars with a rolling window.
+# Unknown for continuous footage; only used to size drives for cars with a
+# rolling window. (The incident clip above is ~75 MB per camera-minute.)
 approx_bytes_per_camera_segment = 0
 
+[[cameras]]
+id = "frontCenter"
+label = "Front"
+
+[[cameras]]
+id = "sideLeft"
+label = "Left"
+
+[[cameras]]
+id = "sideRight"
+label = "Right"
+
+[[cameras]]
+id = "rearCenter"
+label = "Rear"
+
+# Present in the incident clip; shown only when matching files exist.
+[[cameras]]
+id = "gearGuard"
+label = "Gear Guard"
+optional = true
+
 [viewer]
-grid = []
+# Row-major playback grid; "" is empty. Present optional cameras are appended.
+grid = [["sideLeft", "frontCenter", "sideRight"], ["", "rearCenter", ""]]
 
 [virtual_drive]
 default_size = "128G"

@@ -823,6 +823,10 @@ mod tests {
         }
         std::fs::create_dir_all(root.join("09_27_26_101010")).unwrap(); // empty session
         std::fs::write(root.join("benchmark.log"), b"x").unwrap();
+        // A segment named like a real Rivian clip is dated by its own name.
+        let late = root.join("09_30_26_235500");
+        std::fs::create_dir_all(&late).unwrap();
+        std::fs::write(late.join("10_01_26_000500_video_frontCenter.mp4"), b"xx").unwrap();
 
         let profile = sentryusb_vehicle_profile::Profile::embedded("rivian_roadcam")
             .unwrap()
@@ -843,6 +847,11 @@ mod tests {
                 ("09_25_26_071500__rear.mp4".to_string(), "2026-09-25".to_string(), 6),
                 ("09_26_26_090251__front.mp4".to_string(), "2026-09-26".to_string(), 4),
                 ("09_26_26_090251__rear.mp4".to_string(), "2026-09-26".to_string(), 6),
+                (
+                    "09_30_26_235500__10_01_26_000500_video_frontCenter.mp4".to_string(),
+                    "2026-10-01".to_string(),
+                    2
+                ),
             ]
         );
     }
