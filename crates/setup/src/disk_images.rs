@@ -297,6 +297,9 @@ pub async fn create_disk_images(env: &SetupEnv, emitter: &SetupEmitter) -> Resul
     if sizes[0].2 == 0 || cam_changed {
         if Path::new("/mutable/Recordings").is_dir() {
             let _ = std::fs::remove_dir_all("/mutable/Recordings/Continuous");
+            for event in &profile.events {
+                let _ = std::fs::remove_dir_all(format!("/mutable/Recordings/{}", event.category));
+            }
             let _ = std::fs::remove_file("/mutable/recordings_archived");
         }
     }

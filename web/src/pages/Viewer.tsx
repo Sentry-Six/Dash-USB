@@ -14,9 +14,11 @@ interface VehicleProfile {
   grid: string[][]
   filename_regex: string
   segment_seconds: number
+  /** Saved/event clip categories beside the continuous recordings. */
+  events?: { category: string; label: string; segment_seconds: number | null }[]
 }
 
-const CATEGORY = "Continuous"
+const CONTINUOUS = "Continuous"
 
 interface ClipSet {
   timestamp: string
@@ -96,6 +98,8 @@ export default function Viewer() {
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
   const [segmentDurations, setSegmentDurations] = useState<number[]>([])
   const [profile, setProfile] = useState<VehicleProfile | null>(null)
+  // Continuous recordings, or one of the profile's event categories.
+  const [category, setCategory] = useState(CONTINUOUS)
 
   // Profile data defines cameras, layout, and filename parsing.
   useEffect(() => {
@@ -148,7 +152,9 @@ export default function Viewer() {
 
   const currentSet = clipSets[currentSetIdx] as ClipSet | undefined
   // Track probes explicitly because fallback and measured durations can match.
-  const segmentSeconds = profile?.segment_seconds ?? 300
+  const events = profile?.events ?? []
+  const segmentSeconds =
+    events.find((e) => e.category === category)?.segment_seconds ?? profile?.segment_seconds ?? 300
   const probedRef = useRef<Set<number>>(new Set())
 
   // Reset durations and playback while rendering a new clip set so the probe
@@ -219,7 +225,7 @@ export default function Viewer() {
   // loading starts true, so the mount fetch only clears it.
   useEffect(() => {
     const controller = new AbortController()
-    fetch(`/api/clips?category=${CATEGORY}&limit=${CLIPS_PAGE_SIZE}`, { signal: controller.signal })
+    fetch(`/api/clips?category=${category}&limit=${CLIPS_PAGE_SIZE}`, { signal: controller.signal })
       .then((r) => r.json())
       .then((data: ClipGroup[]) => {
         if (controller.signal.aborted) return
@@ -228,24 +234,34 @@ export default function Viewer() {
       })
       .catch(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
-  }, [])
+  }, [category])
+
+  // Switching sets loading itself; the fetch above then clears it.
+  function switchCategory(next: string) {
+    if (next === category) return
+    setCategory(next)
+    setLoading(true)
+    setGroups([])
+    setSelectedClip(null)
+    setDeleteConfirm(null)
+  }
 
   const [loadingMore, setLoadingMore] = useState(false)
 
   function loadMoreClips() {
-    const group = groups.find((g) => g.name === CATEGORY)
+    const group = groups.find((g) => g.name === category)
     if (!group || !group.hasMore) return
     const lastClip = group.clips[group.clips.length - 1]
     if (!lastClip) return
     setLoadingMore(true)
-    fetch(`/api/clips?category=${CATEGORY}&limit=${CLIPS_PAGE_SIZE}&before=${lastClip.date}`)
+    fetch(`/api/clips?category=${category}&limit=${CLIPS_PAGE_SIZE}&before=${lastClip.date}`)
       .then((r) => r.json())
       .then((data: ClipGroup[]) => {
-        const newGroup = data.find((g) => g.name === CATEGORY)
+        const newGroup = data.find((g) => g.name === category)
         if (newGroup) {
           setGroups((prev) =>
             prev.map((g) =>
-              g.name === CATEGORY
+              g.name === category
                 ? { ...g, clips: [...g.clips, ...newGroup.clips], hasMore: newGroup.hasMore }
                 : g
             )
@@ -256,7 +272,7 @@ export default function Viewer() {
       .catch(() => setLoadingMore(false))
   }
 
-  const activeGroup = groups.find((g) => g.name === CATEGORY)
+  const activeGroup = groups.find((g) => g.name === category)
 
   // Playback state resets during render above; the matching refs reset here.
   useEffect(() => {
@@ -577,11 +593,11 @@ export default function Viewer() {
   async function handleDeleteClip(clip: ClipEntry) {
     try {
       // Delete through the listed snapshot tree; /mnt/cam may be host-mounted.
-      const fullPath = `/mutable/Recordings/${CATEGORY}/${clip.date}`
+      const fullPath = `/mutable/Recordings/${category}/${clip.date}`
       await fetch(`/api/files?path=${encodeURIComponent(fullPath)}`, { method: "DELETE" })
       setGroups((prev) =>
         prev.map((g) =>
-          g.name === CATEGORY
+          g.name === category
             ? { ...g, clips: g.clips.filter((c) => c.date !== clip.date) }
             : g
         )
@@ -595,7 +611,7 @@ export default function Viewer() {
 
   function handleDownload() {
     if (!selectedClip) return
-    const fullPath = `/mutable/Recordings/${CATEGORY}/${selectedClip.date}`
+    const fullPath = `/mutable/Recordings/${category}/${selectedClip.date}`
     window.open(`/api/files/download-zip?path=${encodeURIComponent(fullPath)}`, "_blank")
   }
 
@@ -636,14 +652,40 @@ export default function Viewer() {
       )}
 
       <div className={cn("mb-2 flex items-center gap-1", isFullscreen && "mb-1")}>
-        <span className="rounded-lg bg-blue-500/15 px-3 py-1.5 text-sm font-medium text-blue-400">
-          Recordings
-          {(activeGroup?.clips.length ?? 0) > 0 && (
+        {/* Several categories outgrow a phone's width, so the row scrolls. */}
+        <div className="flex min-w-0 items-center gap-1 overflow-x-auto whitespace-nowrap">
+        {[{ category: CONTINUOUS, label: "Recordings" }, ...events].map((tab) => {
+          const count = (
             <span className="ml-1.5 rounded-full bg-white/5 px-1.5 py-0.5 text-[10px] tabular-nums text-slate-500">
               {activeGroup?.clips.length}
             </span>
-          )}
-        </span>
+          )
+          const showCount = tab.category === category && (activeGroup?.clips.length ?? 0) > 0
+          // A car with only continuous recordings has nothing to switch between.
+          return events.length === 0 ? (
+            <span key={tab.category} className="rounded-lg bg-blue-500/15 px-3 py-1.5 text-sm font-medium text-blue-400">
+              {tab.label}
+              {showCount && count}
+            </span>
+          ) : (
+            <button
+              key={tab.category}
+              type="button"
+              aria-pressed={tab.category === category}
+              onClick={() => switchCategory(tab.category)}
+              className={cn(
+                "shrink-0 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
+                tab.category === category
+                  ? "bg-blue-500/15 text-blue-400"
+                  : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
+              )}
+            >
+              {tab.label}
+              {showCount && count}
+            </button>
+          )
+        })}
+        </div>
 
         <button
           onClick={() => setSidebarCollapsed((c) => !c)}
@@ -715,7 +757,9 @@ export default function Viewer() {
               ) : (
                 <div className="flex flex-col items-center justify-center py-8 text-center">
                   <Video className="mb-2 h-8 w-8 text-slate-500" />
-                  <p className="text-xs text-slate-600">No recordings yet</p>
+                  <p className="text-xs text-slate-600">
+                    {category === CONTINUOUS ? "No recordings yet" : "No clips here yet"}
+                  </p>
                 </div>
               )}
               {activeGroup?.hasMore && (

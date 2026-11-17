@@ -10,7 +10,18 @@ fn profiles_json(active_id: &str) -> serde_json::Value {
     let profiles: Vec<serde_json::Value> = Profile::all_embedded()
         .iter()
         .map(|p| {
+            // What the vehicle saves, continuous recordings first; the
+            // wizard lets the owner choose which of these to archive.
+            let continuous = serde_json::json!({
+                "category": sentryusb_vehicle_profile::CONTINUOUS_CATEGORY,
+                "label": "Recordings",
+            });
+            let events = p.events.iter().map(|e| {
+                serde_json::json!({ "category": e.category, "label": e.label })
+            });
+            let categories: Vec<serde_json::Value> = std::iter::once(continuous).chain(events).collect();
             serde_json::json!({
+                "categories": categories,
                 "id": p.profile.id,
                 "display_name": p.profile.display_name,
                 "brand": p.profile.brand,
@@ -42,6 +53,11 @@ pub async fn get_profile() -> (StatusCode, Json<serde_json::Value>) {
             "filename_regex": p.recording.filename_regex,
             "segment_seconds": p.recording.segment_seconds,
             "rolling_window_minutes": p.recording.rolling_window_minutes,
+            "events": p.events.iter().map(|e| serde_json::json!({
+                "category": e.category,
+                "label": e.label,
+                "segment_seconds": e.segment_seconds,
+            })).collect::<Vec<_>>(),
         })),
     )
 }
@@ -69,5 +85,27 @@ mod tests {
         assert_eq!(rivian["experimental"], true);
         assert_eq!(rivian["rolling_window_minutes"], 0);
         assert!(rivian["approx_gb_per_hour"].is_null());
+
+        // Categories the owner can choose to archive, continuous first.
+        let labels = |p: &serde_json::Value| -> Vec<String> {
+            p["categories"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| format!("{}={}", c["category"].as_str().unwrap(), c["label"].as_str().unwrap()))
+                .collect()
+        };
+        assert_eq!(labels(gm), ["Continuous=Recordings"]);
+        assert_eq!(
+            labels(rivian),
+            [
+                "Continuous=Recordings",
+                "Incidents=Incidents",
+                "Saved=Saved Clips",
+                "GearGuard=Gear Guard",
+                "Launch=Launch Cam",
+                "Exports=Exports",
+            ]
+        );
     }
 }

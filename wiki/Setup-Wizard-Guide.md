@@ -56,6 +56,11 @@ local and rotate as space is needed.
 
 For rsync, the wizard generates an SSH key for the Pi and shows you the public key to paste onto your server, then lets you test the connection. See [Archive Methods](Archive-Methods) for setup details for each backend.
 
+**What to Archive** turns archiving of the car's footage on or off. A vehicle that
+saves to several folders (Rivian: recordings, incidents, saved clips and more)
+also lists each category so you can archive only some of them. Unticked
+categories still appear in the Viewer and in local snapshots.
+
 ## 6. Notifications
 
 Pick one or more push notification providers. Dash USB will notify you when archiving starts, finishes, or fails, and when temperature thresholds trip.

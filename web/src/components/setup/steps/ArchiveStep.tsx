@@ -3,6 +3,7 @@ import { Archive, Loader2, CheckCircle, XCircle, HardDrive, Save } from "lucide-
 import type { StepProps } from "../SetupWizard"
 import { SecretInput } from "../SecretInput"
 import { NasSSHKey } from "../NasSSHKey"
+import { archiveCategoryChange, archivedCategories, selectedVehicle } from "../vehicles"
 import { cn } from "@/lib/utils"
 
 const archiveSystems = [
@@ -64,8 +65,11 @@ function Field({
   )
 }
 
-export function ArchiveStep({ data, onChange }: StepProps) {
+export function ArchiveStep({ data, onChange, onBatchChange, vehicles }: StepProps) {
   const system = data.ARCHIVE_SYSTEM ?? "cifs"
+  const vehicle = selectedVehicle(data, vehicles)
+  const categories = vehicle?.categories ?? []
+  const archived = archivedCategories(data, vehicle)
   const [testing, setTesting] = useState(false)
   const [testStage, setTestStage] = useState<string | null>(null)
   const [testResult, setTestResult] = useState<{ success: boolean; error?: string } | null>(null)
@@ -256,11 +260,33 @@ export function ArchiveStep({ data, onChange }: StepProps) {
               onChange={(e) => onChange("ARCHIVE_RECORDINGS", e.target.checked ? "true" : "false")}
               className="h-4 w-4 rounded border-white/20 bg-white/5 accent-blue-500"
             />
-            <span className="text-sm text-slate-300">Recordings (everything the car saves)</span>
+            <span className="text-sm text-slate-300">
+              {categories.length > 1 ? "Footage the car saves" : "Recordings (everything the car saves)"}
+            </span>
           </label>
+          {/* A car that saves to several folders lets the owner pick among them. */}
+          {vehicle && categories.length > 1 && (data.ARCHIVE_RECORDINGS ?? "true") === "true" && (
+            <fieldset className="ml-6 grid gap-1.5 sm:grid-cols-2">
+              <legend className="sr-only">Categories to archive</legend>
+              {categories.map((c) => (
+                <label key={c.category} className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={archived.includes(c.category)}
+                    onChange={(e) => onBatchChange(archiveCategoryChange(c.category, e.target.checked, data, vehicle))}
+                    className="h-4 w-4 rounded border-white/20 bg-white/5 accent-blue-500"
+                  />
+                  <span className="text-sm text-slate-300">{c.label}</span>
+                </label>
+              ))}
+            </fieldset>
+          )}
           <p className="text-xs text-slate-600">
-            The car keeps only a rolling window of footage on the drive; archiving
-            is what preserves it. Turn this off only if local snapshots are all you want.
+            {(vehicle?.rolling_window_minutes ?? 120) > 0
+              ? "The car keeps only a rolling window of footage on the drive; archiving is what preserves it."
+              : "The car deletes its oldest recordings once the drive fills; archiving is what preserves them."}
+            {" "}Turn this off only if local snapshots are all you want.
+            {categories.length > 1 && " Unticked categories stay in local snapshots and the Viewer."}
           </p>
         </div>
       )}

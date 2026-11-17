@@ -37,8 +37,30 @@ pub struct Profile {
     pub virtual_drive: VirtualDrive,
     pub snapshots: Snapshots,
     pub features: Features,
+    /// Saved and event footage the car keeps outside `recording.root`.
+    #[serde(default)]
+    pub events: Vec<EventFolder>,
     #[serde(skip)]
     compiled_regex: OnceLock<regex::Regex>,
+}
+
+/// Category the continuous recordings are linked under.
+pub const CONTINUOUS_CATEGORY: &str = "Continuous";
+
+/// A folder of discrete clips (an incident, a saved clip). Its files are
+/// matched with `recording.filename_regex`, linked one folder per clip under
+/// `category`, and archived, but never removed from the drive by Dash USB.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventFolder {
+    /// Folder under the recordings tree; letters and digits only.
+    pub category: String,
+    pub label: String,
+    /// Folder on the virtual drive, relative, no leading slash.
+    pub root: String,
+    /// Typical clip length when known, shown until the viewer has probed the
+    /// video; otherwise the continuous segment length stands in.
+    #[serde(default)]
+    pub segment_seconds: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,6 +143,11 @@ impl ClipInfo {
     pub fn date_str(&self) -> String {
         self.timestamp.format("%Y-%m-%d").to_string()
     }
+
+    /// Per-clip bucket for event folders ("2026-07-17_19-34-53").
+    pub fn clip_str(&self) -> String {
+        self.timestamp.format("%Y-%m-%d_%H-%M-%S").to_string()
+    }
 }
 
 impl Profile {
@@ -151,7 +178,32 @@ impl Profile {
             self.recording.root.starts_with(|c: char| c.is_ascii_alphanumeric()),
             "recording.root must be a relative path"
         );
+        for (i, event) in self.events.iter().enumerate() {
+            // The category is a folder name and a word in archiveloop's list.
+            anyhow::ensure!(
+                !event.category.is_empty()
+                    && event.category.chars().all(|c| c.is_ascii_alphanumeric())
+                    && event.category != CONTINUOUS_CATEGORY,
+                "events category `{}` must be letters and digits, and not `{CONTINUOUS_CATEGORY}`",
+                event.category
+            );
+            anyhow::ensure!(
+                self.events[..i].iter().all(|e| e.category != event.category),
+                "events category `{}` is listed twice",
+                event.category
+            );
+            anyhow::ensure!(
+                event.root.starts_with(|c: char| c.is_ascii_alphanumeric()),
+                "events root `{}` must be a relative path",
+                event.root
+            );
+        }
         Ok(())
+    }
+
+    /// Whether clips may be listed and linked under `category`.
+    pub fn has_category(&self, category: &str) -> bool {
+        category == CONTINUOUS_CATEGORY || self.events.iter().any(|e| e.category == category)
     }
 
     pub fn embedded(id: &str) -> Option<Result<Self>> {
@@ -295,8 +347,15 @@ impl Profile {
              export CAM_MIN_FREE_BYTES={min_free}\n\
              export RECORDINGS_ARCHIVE_DEFAULT={archive}\n\
              export SNAPSHOT_INTERVAL_DEFAULT={interval}\n\
+             export RECORDING_EVENT_CATEGORIES='{events}'\n\
              export CLIP_MIN_BYTES=100000\n",
             id = self.profile.id,
+            events = self
+                .events
+                .iter()
+                .map(|e| e.category.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
             root = self.recording.root,
             min_free = self.virtual_drive.min_free_bytes,
             archive = self.features.archive_everything_default,
@@ -468,6 +527,48 @@ mod tests {
             at("rearCenter", "2026-09-05_17-38-18")
         );
         assert!(p.cameras.iter().find(|c| c.id == "gearGuard").unwrap().optional);
+    }
+
+    #[test]
+    fn event_folders_become_categories_of_their_own() {
+        let p = rivian();
+        let incidents = p.events.iter().find(|e| e.category == "Incidents").unwrap();
+        assert_eq!(incidents.root, "IncidentCam");
+        assert_eq!(incidents.segment_seconds, Some(120));
+        // Folders whose clip length nobody has reported leave it unset.
+        let launch = p.events.iter().find(|e| e.category == "Launch").unwrap();
+        assert_eq!((launch.root.as_str(), launch.segment_seconds), ("LaunchCam", None));
+        assert!(p.has_category("Continuous") && p.has_category("Saved"));
+        assert!(!p.has_category("Nope") && !p.has_category("../etc"));
+        assert!(gm().events.is_empty() && !gm().has_category("Incidents"));
+
+        // A clip in an event folder's subfolder is named by its path too.
+        let name = p
+            .clip_name(&[
+                "TranscodedVideos".to_string(),
+                "09_05_26_174959_video_gearGuard.mp4".to_string(),
+            ])
+            .unwrap();
+        let info = p.parse_clip_filename(&name).unwrap();
+        assert_eq!(info.camera, "gearGuard");
+        assert_eq!(info.clip_str(), "2026-09-05_17-49-59");
+
+        assert!(p
+            .render_profile_env()
+            .contains("export RECORDING_EVENT_CATEGORIES='Incidents Saved GearGuard Launch Exports'\n"));
+        assert!(gm().render_profile_env().contains("export RECORDING_EVENT_CATEGORIES=''\n"));
+    }
+
+    #[test]
+    fn rejects_event_categories_that_are_not_plain_new_names() {
+        let toml = EMBEDDED.iter().find(|(id, _)| *id == "rivian_roadcam").unwrap().1;
+        for bad in ["Continuous", "Saved", "Two Words", "../up", ""] {
+            let edited = toml.replacen("category = \"Incidents\"", &format!("category = \"{bad}\""), 1);
+            assert_ne!(edited, toml, "fixture must contain the Incidents category");
+            assert!(Profile::from_toml(&edited).is_err(), "category {bad:?} must be rejected");
+        }
+        let edited = toml.replacen("root = \"IncidentCam\"", "root = \"/IncidentCam\"", 1);
+        assert!(Profile::from_toml(&edited).is_err(), "absolute event root must be rejected");
     }
 
     /// The only test that touches the process-wide profile or the override.

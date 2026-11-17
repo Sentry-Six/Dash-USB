@@ -143,3 +143,69 @@ test('Viewer lays out a real Rivian clip with the shipped profile pattern', asyn
     assert.ok((grid.querySelector('video') as HTMLVideoElement).src.endsWith('09_05_26_173818__09_05_26_174959_video_sideLeft.mp4'))
   }) } finally { globalThis.fetch = oldFetch }
 })
+
+test('Viewer switches to an event category and plays, lists and deletes its clips there', async () => {
+  const oldFetch = globalThis.fetch
+  const toml = readFileSync(new URL('../../../profiles/rivian_roadcam.toml', import.meta.url), 'utf8')
+  const rivian = {
+    id: 'rivian_roadcam', display_name: 'Rivian Road Cam', segment_seconds: 900,
+    filename_regex: toml.match(/^filename_regex = '(.*)'\r?$/m)![1],
+    cameras: [{ id: 'frontCenter', label: 'Front' }, { id: 'gearGuard', label: 'Gear Guard', optional: true }],
+    grid: [['frontCenter']],
+    events: [
+      { category: 'Incidents', label: 'Incidents', segment_seconds: 120 }, { category: 'Saved', label: 'Saved Clips', segment_seconds: 120 },
+      { category: 'Launch', label: 'Launch Cam', segment_seconds: null },
+    ],
+  }
+  const launch = { date: '2026-09-07_10-00-00', path: '/mutable/Recordings/Launch/2026-09-07_10-00-00', files: ['09_07_26_100000_video_frontCenter.mp4'] }
+  const drive = { date: '2026-09-05', path: '/mutable/Recordings/Continuous/2026-09-05', files: ['09_05_26_173818__video_frontCenter.mp4'] }
+  // One incident as Dash USB links it: its own folder, files named by their path under IncidentCam.
+  const incident = {
+    date: '2026-09-05_17-49-59', path: '/mutable/Recordings/Incidents/2026-09-05_17-49-59',
+    files: ['frontCenter', 'gearGuard'].map(c => `TranscodedVideos__09_05_26_174959_video_${c}.mp4`),
+  }
+  const requests: string[] = []
+  globalThis.fetch = async (input, init) => {
+    const url = String(input)
+    if (url === '/api/profile') return Response.json(rivian)
+    if (init?.method === 'DELETE') { requests.push(`DELETE ${decodeURIComponent(url)}`); return new Response(null, { status: 204 }) }
+    if (url.startsWith('/api/clips?')) {
+      requests.push(url)
+      const name = new URL(url, 'http://localhost').searchParams.get('category')!
+      const clips = { Incidents: [incident], Continuous: [drive], Launch: [launch] }[name] ?? []
+      return Response.json([{ name, clips, hasMore: false }])
+    }
+    return Response.json({})
+  }
+  try { await mount(async container => {
+    const button = (text: string) => [...container.querySelectorAll('button')].find(b => b.textContent?.includes(text))!
+    const pressed = () => [...container.querySelectorAll('button[aria-pressed]')].map(b => `${b.textContent}:${b.getAttribute('aria-pressed')}`)
+    assert.deepEqual(pressed(), ['Recordings1:true', 'Incidents:false', 'Saved Clips:false', 'Launch Cam:false'])
+    await act(async () => button('1 files').click())
+    assert.ok(container.textContent?.includes('0:00 / 15:00'))
+
+    await act(async () => button('Incidents').click())
+    assert.deepEqual(pressed(), ['Recordings:false', 'Incidents1:true', 'Saved Clips:false', 'Launch Cam:false'])
+    assert.ok(requests.at(-1)?.includes('category=Incidents'))
+    // The drive that was playing is gone, and the incident lists by its own time.
+    assert.ok(container.textContent?.includes('Select a clip to begin playback'))
+    assert.ok(container.textContent?.includes('Sep 5, 5:49 PM'))
+    await act(async () => button('2 files').click())
+    // An incident is two minutes long, not a 15-minute drive segment.
+    assert.ok(container.textContent?.includes('0:00 / 2:00'))
+    const grid = container.querySelector('div.grid[style]') as HTMLElement
+    assert.deepEqual([...grid.children].map(cell => cell.textContent?.replace('Click to stream', '').trim()), ['Front', 'Gear Guard'])
+
+    await act(async () => (container.querySelector('button[title="Delete clip"]') as HTMLButtonElement).click())
+    await act(async () => button('Yes').click())
+    assert.equal(requests.at(-1), 'DELETE /api/files?path=/mutable/Recordings/Incidents/2026-09-05_17-49-59')
+
+    await act(async () => button('Saved Clips').click())
+    assert.ok(container.textContent?.includes('No clips here yet'))
+
+    // A category with no known clip length borrows the drive segment length until probed.
+    await act(async () => button('Launch Cam').click())
+    await act(async () => button('1 files').click())
+    assert.ok(container.textContent?.includes('0:00 / 15:00'))
+  }) } finally { globalThis.fetch = oldFetch }
+})

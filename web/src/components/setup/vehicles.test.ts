@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { selectedVehicle, storageError, vehicleChange, type VehicleList } from './vehicles.ts'
+import { archiveCategoryChange, archivedCategories, selectedVehicle, storageError, vehicleChange, type VehicleList } from './vehicles.ts'
 
 const vehicles: VehicleList = {
   active: 'gm_surroundvision',
@@ -39,4 +39,37 @@ test('the storage step enforces the chosen vehicle minimum', () => {
   assert.equal(storageError({ CAM_SIZE: '128G', VEHICLE_PROFILE: 'rivian_roadcam' }, vehicles), null)
   // Before the list loads the GM minimum still applies.
   assert.equal(storageError({ CAM_SIZE: '32G' }, null), 'GM requires a dashcam drive of at least 64 GB.')
+})
+
+const rivian = {
+  ...vehicles.profiles[1],
+  categories: [
+    { category: 'Continuous', label: 'Recordings' }, { category: 'Incidents', label: 'Incidents' }, { category: 'Saved', label: 'Saved Clips' },
+  ],
+}
+
+test('every category archives until the owner picks a subset', () => {
+  assert.deepEqual(archivedCategories({}, rivian), ['Continuous', 'Incidents', 'Saved'])
+  assert.deepEqual(archivedCategories({ ARCHIVE_CATEGORIES: '' }, rivian), ['Continuous', 'Incidents', 'Saved'])
+  // Listed in the vehicle's order; names it does not have are ignored.
+  assert.deepEqual(archivedCategories({ ARCHIVE_CATEGORIES: 'Saved, Continuous,Launch' }, rivian), ['Continuous', 'Saved'])
+  // Older firmware sends no category list, and no vehicle means nothing to choose.
+  assert.deepEqual(archivedCategories({ ARCHIVE_CATEGORIES: 'Saved' }, vehicles.profiles[0]), [])
+  assert.deepEqual(archivedCategories({}, null), [])
+})
+
+test('ticking categories writes a list only for a strict subset', () => {
+  assert.deepEqual(archiveCategoryChange('Incidents', false, {}, rivian), { ARCHIVE_CATEGORIES: 'Continuous,Saved' })
+  assert.deepEqual(archiveCategoryChange('Saved', false, { ARCHIVE_CATEGORIES: 'Continuous,Saved' }, rivian), { ARCHIVE_CATEGORIES: 'Continuous' })
+  // Back to everything: no list, so categories added by a later profile archive too.
+  assert.deepEqual(archiveCategoryChange('Incidents', true, { ARCHIVE_CATEGORIES: 'Continuous,Saved' }, rivian), { ARCHIVE_CATEGORIES: '' })
+  // Unticking the last one turns archiving off instead of saving an empty list.
+  assert.deepEqual(archiveCategoryChange('Continuous', false, { ARCHIVE_CATEGORIES: 'Continuous' }, rivian), { ARCHIVE_RECORDINGS: 'false', ARCHIVE_CATEGORIES: '' })
+})
+
+test('picking another vehicle drops a category selection made for the old one', () => {
+  assert.deepEqual(
+    vehicleChange('gm_surroundvision', { VEHICLE_PROFILE: 'rivian_roadcam', CAM_SIZE: '200G', ARCHIVE_CATEGORIES: 'Incidents' }, vehicles),
+    { VEHICLE_PROFILE: 'gm_surroundvision', ARCHIVE_CATEGORIES: '' },
+  )
 })
