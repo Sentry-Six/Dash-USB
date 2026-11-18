@@ -34,6 +34,15 @@ let config = {
   DASHUSB_HOSTNAME: 'dashusb', NOTIFICATION_TITLE: 'Dash USB', NTFY_URL: 'https://ntfy.sh/dash-preview', NTFY_ENABLED: 'true',
   MOBILE_PUSH_ENABLED: 'false', TIMEZONE: 'America/Edmonton',
 }
+// Shown once the setup wizard's vehicle picker saves Rivian; the clip pattern is the shipped one.
+const rivianToml = await readFile(new URL('../profiles/rivian_roadcam.toml', import.meta.url), 'utf8')
+const rivianProfile = {
+  id: 'rivian_roadcam', display_name: 'Rivian Road Cam', brand: 'Rivian', segment_seconds: 900, rolling_window_minutes: 0,
+  filename_regex: rivianToml.match(/^filename_regex = '(.*)'\r?$/m)[1],
+  cameras: [{ id: 'frontCenter', label: 'Front' }, { id: 'sideLeft', label: 'Left' }, { id: 'sideRight', label: 'Right' }, { id: 'rearCenter', label: 'Rear' }, { id: 'gearGuard', label: 'Gear Guard', optional: true }],
+  grid: [['sideLeft', 'frontCenter', 'sideRight'], ['', 'rearCenter', '']],
+  events: [{ category: 'Incidents', label: 'Incidents', segment_seconds: 120 }, { category: 'Saved', label: 'Saved Clips', segment_seconds: 120 }, { category: 'GearGuard', label: 'Gear Guard', segment_seconds: 30 }, { category: 'Launch', label: 'Launch Cam', segment_seconds: null }, { category: 'Exports', label: 'Exports', segment_seconds: null }],
+}
 let settings = Object.fromEntries(['archive_start','archive_complete','archive_error','archive_cancelled','temperature','update','rtc_battery','storage_repair'].map(k => [k, true]))
 const providerKey = key => /^(NOTIFICATION_TITLE|NTFY_|PUSHOVER_|GOTIFY_|DISCORD_|TELEGRAM_|IFTTT_|SLACK_|SIGNAL_|MATRIX_|SNS_|AWS_|WEBHOOK_)/.test(key)
 const providers = () => Object.fromEntries(Object.entries(config).filter(([k]) => providerKey(k)))
@@ -66,6 +75,8 @@ const server=createServer(async(req,res)=>{
     if(path==='/api/config/preference'){if(method==='PUT'){const data=await body(req);preferences[data.key]=data.value;return json(res,{success:true})}const key=url.searchParams.get('key');return json(res,key?{key,value:preferences[key]??null}:preferences)}
     if(path==='/api/config')return json(res,config)
     if(path==='/api/setup/config'){if(method==='PUT'){Object.assign(config,await body(req));return json(res,{success:true})}return json(res,Object.fromEntries(Object.entries(config).map(([k,value])=>[k,{value,active:true}]))) }
+    if(path==='/api/profiles')return json(res,{active:config.VEHICLE_PROFILE,profiles:[{id:'gm_surroundvision',display_name:'GM Surround Vision',brand:'GM',experimental:false,default_size:'64G',min_size:'64G',rolling_window_minutes:120,approx_gb_per_hour:5.3,categories:[{category:'Continuous',label:'Recordings'}]},{id:'rivian_roadcam',display_name:'Rivian Road Cam',brand:'Rivian',experimental:true,default_size:'128G',min_size:'128G',rolling_window_minutes:0,approx_gb_per_hour:null,categories:[{category:'Continuous',label:'Recordings'},...rivianProfile.events.map(({category,label})=>({category,label}))]}]})
+    if(path==='/api/profile'&&config.VEHICLE_PROFILE==='rivian_roadcam')return json(res,rivianProfile)
     if(path==='/api/profile')return json(res,{id:'gm_surroundvision',display_name:'GM Surround Vision',brand:'GM',cameras:['FRONT','LEFT','RIGHT','REAR'].map(id=>({id,label:id[0]+id.slice(1).toLowerCase()})),grid:[['LEFT','FRONT','RIGHT'],['','REAR','']],filename_regex:'^(?P<camera>FRONT|LEFT|RIGHT|REAR)_(?P<y>\\d{4})_(?P<mo>\\d{2})_(?P<d>\\d{2})_T_(?P<h>\\d{2})_(?P<mi>\\d{2})_(?P<s>\\d{2})\\.mp4$',segment_seconds:300,rolling_window_minutes:120})
     if(path==='/api/snapshots')return json(res,{snapshots:snapshots.map((s,i)=>({...s,older_count:i,cumulative_reclaim_bytes:Math.round((i+1)*1.3*gib)})),total_allocated_bytes:104*gib,sizes_pending:false})
     if(path.startsWith('/api/snapshots/')&&method==='DELETE'){snapshots=snapshots.filter(s=>s.id!==path.split('/').at(-1));return json(res,{success:true})}
@@ -90,7 +101,7 @@ const server=createServer(async(req,res)=>{
     if(path==='/api/storage/health')return json(res,{state:'healthy',external:true,device:'/dev/sda1',fstype:'xfs',mounted:true,mountpoint:'/backingfiles',cam_disk_present:true,dmesg_errors:[],last_repair_log:null})
     if(path==='/api/system/backups'||path==='/api/system/block-devices')return json(res,[])
     if(path==='/api/files/ls')return json(res,{path:url.searchParams.get('path')||'/mutable',files:[],entries:[]})
-    if(path==='/api/clips')return json(res,[{name:'Continuous',clips:[],hasMore:false}])
+    if(path==='/api/clips')return json(res,[{name:url.searchParams.get('category')||'Continuous',clips:[],hasMore:false}])
     if(path==='/api/support/check')return json(res,{available:false})
     if(path==='/api/system/check-internet')return json(res,{connected:true})
     if(path==='/api/wifi')return json(res,{ssid:'Home Wi-Fi (simulated)'})

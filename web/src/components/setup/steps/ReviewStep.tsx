@@ -8,7 +8,7 @@ const sections = [
   },
   {
     title: "Storage",
-    fields: ["CAM_SIZE", "DATA_DRIVE"],
+    fields: ["VEHICLE_PROFILE", "CAM_SIZE", "DATA_DRIVE"],
   },
   {
     title: "Archive",
@@ -16,7 +16,7 @@ const sections = [
       "ARCHIVE_SYSTEM", "ARCHIVE_SERVER", "SHARE_NAME", "SHARE_USER", "SHARE_PASSWORD",
       "RSYNC_SERVER", "RSYNC_USER", "RSYNC_PATH",
       "RCLONE_DRIVE", "RCLONE_PATH",
-      "ARCHIVE_RECORDINGS",
+      "ARCHIVE_RECORDINGS", "ARCHIVE_CATEGORIES",
     ],
   },
   {

@@ -773,6 +773,21 @@ function soc_temperature () {
   fi
 }
 
+# Categories to archive, one per line: every category this vehicle records,
+# or only those named in the comma-separated ARCHIVE_CATEGORIES. An empty
+# value means every category, as it does in the setup wizard.
+function archive_selected_categories () {
+  local category
+  # shellcheck disable=SC2086
+  for category in Continuous ${RECORDING_EVENT_CATEGORIES:-}
+  do
+    if [ -z "${ARCHIVE_CATEGORIES:-}" ] ||[[ ",${ARCHIVE_CATEGORIES}," == *",${category},"* ]]
+    then
+      echo "$category"
+    fi
+  done
+}
+
 function archive_recordings () {
   log "Checking for recordings to archive..."
 
@@ -798,7 +813,27 @@ function archive_recordings () {
   # names without following links, which would mount every snapshot.
   if [ "${ARCHIVE_RECORDINGS:-${RECORDINGS_ARCHIVE_DEFAULT:-true}}" = "true" ]
   then
-    (cd "$overlaylower"; find . -path "./Continuous/*" -type l -fprintf "$reclist" '%P\n')
+    local category selected
+    selected=" $(archive_selected_categories | tr '\n' ' ')"
+    if [[ "$selected" == *" Continuous "* ]]
+    then
+      (cd "$overlaylower"; find . -path "./Continuous/*" -type l -fprintf "$reclist" '%P\n')
+    else
+      true > "$reclist"
+    fi
+    # The profile's saved/event clip categories (plain words) archive too.
+    # shellcheck disable=SC2086
+    for category in $selected
+    do
+      if [ "$category" != "Continuous" ] && [ -d "$overlaylower/$category" ]
+      then
+        (cd "$overlaylower"; find . -path "./$category/*" -type l -printf '%P\n') >> "$reclist"
+      fi
+    done
+    if [ "$selected" = " " ]
+    then
+      log "ARCHIVE_CATEGORIES='${ARCHIVE_CATEGORIES:-}' names no category this vehicle records; nothing will be archived"
+    fi
   else
     true > "$reclist"
   fi
