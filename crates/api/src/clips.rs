@@ -70,7 +70,8 @@ fn list_clips_in(
         if let Ok(items) = std::fs::read_dir(&dir_path) {
             for item in items.flatten() {
                 let name = item.file_name().to_string_lossy().to_string();
-                if name.ends_with(".mp4") {
+                // FAT drives may carry the extension in either case.
+                if name.to_ascii_lowercase().ends_with(".mp4") {
                     files.push(name);
                 }
             }
@@ -91,14 +92,15 @@ fn list_clips_in(
     }])
 }
 
-/// Query params: `category` (only `Continuous` is accepted), `limit` (default
-/// 20, capped at 200), and a `before` date cursor.
+/// Query params: `category` (`Continuous` or one of the active profile's
+/// event categories), `limit` (default 20, capped at 200), and a `before`
+/// date cursor.
 pub async fn get_clips(
     State(_s): State<AppState>,
     Query(params): Query<ClipParams>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     let category = params.category.as_deref().unwrap_or("Continuous");
-    if !matches!(category, "Continuous") {
+    if !sentryusb_vehicle_profile::Profile::active().has_category(category) {
         return crate::json_error(StatusCode::BAD_REQUEST, "invalid category");
     }
     let limit = params.limit.unwrap_or(20).min(200);

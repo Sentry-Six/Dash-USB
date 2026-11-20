@@ -55,7 +55,13 @@ export SHARE_PASSWORD='password'
 # Disable to retain recordings only in rotating local snapshots.
 #export ARCHIVE_RECORDINGS=false
 
-# Vehicle-specific recording layout. Available: gm_surroundvision.
+# Archive only some of what the car saves: a comma-separated list of
+# categories. Unset or empty archives everything. GM has only Continuous;
+# Rivian has Continuous, Incidents, Saved, GearGuard, Launch and Exports.
+#export ARCHIVE_CATEGORIES=Continuous,Incidents,Saved
+
+# Vehicle-specific recording layout. Available: gm_surroundvision, and
+# rivian_roadcam (experimental, untested in a car; needs CAM_SIZE=128G or more).
 # export VEHICLE_PROFILE=gm_surroundvision
 
 # A high-endurance 256 GB or larger data device is recommended. CAM_SIZE must
