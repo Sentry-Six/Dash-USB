@@ -427,11 +427,40 @@ fn make_links_in(
     final_mnt: &str,
     prev_sizes: Option<&std::collections::HashMap<String, u64>>,
 ) -> Result<()> {
-    let rec_root = Path::new(cur_mnt).join(&profile.recording.root);
     info!("Making links for {}, retargeted to {}", cur_mnt, final_mnt);
+    let mnt = (cur_mnt, final_mnt);
 
+    // Continuous footage is bucketed per day; each event clip gets its own
+    // folder, so an incident's cameras stay together.
+    let continuous = sentryusb_vehicle_profile::CONTINUOUS_CATEGORY;
+    let (mut made, mut held) =
+        link_clips(recordings, profile, mnt, prev_sizes, &profile.recording.root, continuous, false);
+    for event in &profile.events {
+        let (m, h) =
+            link_clips(recordings, profile, mnt, prev_sizes, &event.root, &event.category, true);
+        made += m;
+        held += h;
+    }
+    info!(
+        "Made {} link(s) for {} ({} newest-per-camera held until size-stable)",
+        made, cur_mnt, held
+    );
+    Ok(())
+}
+
+/// Link the clips under one drive folder into `recordings/<category>`,
+/// returning how many links were made and how many clips were held back.
+fn link_clips(
+    recordings: &Path,
+    profile: &sentryusb_vehicle_profile::Profile,
+    (cur_mnt, final_mnt): (&str, &str),
+    prev_sizes: Option<&std::collections::HashMap<String, u64>>,
+    root: &str,
+    category: &str,
+    per_clip: bool,
+) -> (usize, usize) {
     let mut clips = Vec::new();
-    collect_clips_under(&rec_root, profile, 0, &mut clips);
+    collect_clips_under(&Path::new(cur_mnt).join(root), profile, &mut Vec::new(), &mut clips);
 
     // Newest timestamp per camera in THIS snapshot.
     let mut newest: std::collections::HashMap<&str, chrono::NaiveDateTime> =
@@ -465,9 +494,10 @@ fn make_links_in(
                 continue;
             }
         }
-        let day_dir = recordings.join("Continuous").join(clip.date_str());
-        let _ = std::fs::create_dir_all(&day_dir);
-        let link = day_dir.join(name);
+        let bucket = if per_clip { clip.clip_str() } else { clip.date_str() };
+        let bucket_dir = recordings.join(category).join(bucket);
+        let _ = std::fs::create_dir_all(&bucket_dir);
+        let link = bucket_dir.join(name);
         let _ = std::fs::remove_file(&link);
         #[cfg(unix)]
         {
@@ -477,21 +507,19 @@ fn make_links_in(
             }
         }
     }
-    info!(
-        "Made {} link(s) for {} ({} newest-per-camera held until size-stable)",
-        made, cur_mnt, held
-    );
-    Ok(())
+    (made, held)
 }
 
-/// Collect matching clips with bounded depth for flat or date-bucketed layouts.
+/// Collect matching clips with bounded depth for flat, date-bucketed, or
+/// per-session layouts. `rel` holds the folder names below the recording
+/// root; each clip is returned with the name the profile links it under.
 fn collect_clips_under(
     dir: &Path,
     profile: &sentryusb_vehicle_profile::Profile,
-    depth: u8,
+    rel: &mut Vec<String>,
     out: &mut Vec<(std::path::PathBuf, String, sentryusb_vehicle_profile::ClipInfo, u64)>,
 ) {
-    if depth > 3 {
+    if rel.len() > 3 {
         return;
     }
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -500,16 +528,16 @@ fn collect_clips_under(
     for entry in entries.flatten() {
         let path = entry.path();
         let Ok(ftype) = entry.file_type() else { continue };
+        rel.push(entry.file_name().to_string_lossy().to_string());
         if ftype.is_dir() {
-            collect_clips_under(&path, profile, depth + 1, out);
-            continue;
+            collect_clips_under(&path, profile, rel, out);
+        } else if let Some(name) = profile.clip_name(rel) {
+            if let Some(clip) = profile.parse_clip_filename(&name) {
+                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                out.push((path, name, clip, size));
+            }
         }
-        let name = entry.file_name().to_string_lossy().to_string();
-        let Some(clip) = profile.parse_clip_filename(&name) else {
-            continue;
-        };
-        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-        out.push((path, name, clip, size));
+        rel.pop();
     }
 }
 
@@ -805,6 +833,153 @@ mod tests {
             !day.join("REAR_2026_07_17_T_19_39_53.mp4").exists(),
             "size changed since last snapshot — still recording, must hold"
         );
+    }
+
+    /// Per-session layouts repeat file names across session folders, so
+    /// clips are named by their path below the recording root.
+    #[test]
+    fn collects_rivian_clips_named_by_session_folder() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("RoadCam/DriveStream");
+        for session in ["09_25_26_063343", "09_25_26_071500", "09_26_26_090251"] {
+            let dir = root.join(session);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("front.mp4"), b"xxxx").unwrap();
+            std::fs::write(dir.join("rear.mp4"), b"xxxxxx").unwrap();
+        }
+        std::fs::create_dir_all(root.join("09_27_26_101010")).unwrap(); // empty session
+        std::fs::write(root.join("benchmark.log"), b"x").unwrap();
+        // A segment named like a real Rivian clip is dated by its own name.
+        let late = root.join("09_30_26_235500");
+        std::fs::create_dir_all(&late).unwrap();
+        std::fs::write(late.join("10_01_26_000500_video_frontCenter.mp4"), b"xx").unwrap();
+
+        let profile = sentryusb_vehicle_profile::Profile::embedded("rivian_roadcam")
+            .unwrap()
+            .unwrap();
+        let mut clips = Vec::new();
+        collect_clips_under(&root, &profile, &mut Vec::new(), &mut clips);
+        let mut names: Vec<(String, String, u64)> = clips
+            .iter()
+            .map(|(_, name, clip, size)| (name.clone(), clip.date_str(), *size))
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                ("09_25_26_063343__front.mp4".to_string(), "2026-09-25".to_string(), 4),
+                ("09_25_26_063343__rear.mp4".to_string(), "2026-09-25".to_string(), 6),
+                ("09_25_26_071500__front.mp4".to_string(), "2026-09-25".to_string(), 4),
+                ("09_25_26_071500__rear.mp4".to_string(), "2026-09-25".to_string(), 6),
+                ("09_26_26_090251__front.mp4".to_string(), "2026-09-26".to_string(), 4),
+                ("09_26_26_090251__rear.mp4".to_string(), "2026-09-26".to_string(), 6),
+                (
+                    "09_30_26_235500__10_01_26_000500_video_frontCenter.mp4".to_string(),
+                    "2026-10-01".to_string(),
+                    2
+                ),
+            ]
+        );
+    }
+
+    /// Same-day sessions must not overwrite each other's links, and the
+    /// newest session per camera is held until its size is stable.
+    #[cfg(unix)]
+    #[test]
+    fn links_rivian_sessions_without_name_collisions() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let snap_mnt = tmp.path().join("snapmnt");
+        let root = snap_mnt.join("RoadCam/DriveStream");
+        for session in ["09_25_26_063343", "09_25_26_071500"] {
+            let dir = root.join(session);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("front.mp4"), b"xxxx").unwrap();
+        }
+        let profile = sentryusb_vehicle_profile::Profile::embedded("rivian_roadcam")
+            .unwrap()
+            .unwrap();
+        let recordings = tmp.path().join("Recordings");
+        let cur = snap_mnt.to_string_lossy().to_string();
+        let day = recordings.join("Continuous/2026-09-25");
+
+        make_links_in(&recordings, &profile, &cur, "/backingfiles/snapshots/snap-000001/mnt", None)
+            .unwrap();
+        let older = day.join("09_25_26_063343__front.mp4");
+        let newest = day.join("09_25_26_071500__front.mp4");
+        assert_eq!(
+            std::fs::read_link(&older).unwrap().to_string_lossy(),
+            "/backingfiles/snapshots/snap-000001/mnt/RoadCam/DriveStream/09_25_26_063343/front.mp4"
+        );
+        assert!(!newest.exists(), "newest session is held without a stability proof");
+
+        let mut prev = std::collections::HashMap::new();
+        prev.insert("RoadCam/DriveStream/09_25_26_071500/front.mp4".to_string(), 4u64);
+        make_links_in(
+            &recordings,
+            &profile,
+            &cur,
+            "/backingfiles/snapshots/snap-000002/mnt",
+            Some(&prev),
+        )
+        .unwrap();
+        assert!(newest.is_symlink());
+        assert!(older.is_symlink());
+    }
+
+    /// Event folders link one folder per clip under their own category, and
+    /// the newest clip waits for a stable size like continuous footage does.
+    #[cfg(unix)]
+    #[test]
+    fn links_rivian_incident_clips_one_folder_per_clip() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let snap_mnt = tmp.path().join("snapmnt");
+        let incidents = snap_mnt.join("IncidentCam/TranscodedVideos");
+        std::fs::create_dir_all(&incidents).unwrap();
+        for clip in ["09_05_26_174959", "09_06_26_081500"] {
+            for camera in ["frontCenter", "gearGuard"] {
+                std::fs::write(incidents.join(format!("{clip}_video_{camera}.mp4")), b"xxxx").unwrap();
+            }
+        }
+        let profile = sentryusb_vehicle_profile::Profile::embedded("rivian_roadcam")
+            .unwrap()
+            .unwrap();
+        let recordings = tmp.path().join("Recordings");
+        let cur = snap_mnt.to_string_lossy().to_string();
+
+        make_links_in(&recordings, &profile, &cur, "/backingfiles/snapshots/snap-000001/mnt", None)
+            .unwrap();
+        let older = recordings.join("Incidents/2026-09-05_17-49-59");
+        let newest = recordings.join("Incidents/2026-09-06_08-15-00");
+        for camera in ["frontCenter", "gearGuard"] {
+            let link = older.join(format!("TranscodedVideos__09_05_26_174959_video_{camera}.mp4"));
+            assert_eq!(
+                std::fs::read_link(&link).unwrap().to_string_lossy(),
+                format!(
+                    "/backingfiles/snapshots/snap-000001/mnt/IncidentCam/TranscodedVideos/09_05_26_174959_video_{camera}.mp4"
+                )
+            );
+        }
+        assert!(!newest.exists(), "newest incident is held without a stability proof");
+        assert!(!recordings.join("Continuous").exists(), "incidents are not continuous footage");
+
+        let mut prev = std::collections::HashMap::new();
+        for camera in ["frontCenter", "gearGuard"] {
+            prev.insert(
+                format!("IncidentCam/TranscodedVideos/09_06_26_081500_video_{camera}.mp4"),
+                4u64,
+            );
+        }
+        make_links_in(
+            &recordings,
+            &profile,
+            &cur,
+            "/backingfiles/snapshots/snap-000002/mnt",
+            Some(&prev),
+        )
+        .unwrap();
+        assert!(newest
+            .join("TranscodedVideos__09_06_26_081500_video_gearGuard.mp4")
+            .is_symlink());
     }
 
     /// TOC parsing: `<size> <path>` lines → map.

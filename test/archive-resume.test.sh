@@ -17,7 +17,7 @@ root = sys.argv[1]
 paths = {"/root/bin/": root + "/bin/", "/mutable/": root + "/mutable/", "/tmp/": root + "/tmp/"}
 sys.stdout.write(re.sub(r"/root/bin/|/mutable/|/tmp/", lambda match: paths[match.group()], sys.stdin.read()))' "$work"
 }
-for name in archive_start_summary archive_finish_summary archive_resume_context write_archive_checkpoint finish_archive_checkpoint archive_progress_monitor archive_recordings sortfile intersect prunefile filterfile convert_seconds_to_nice_time cancel_archive_cleanup; do
+for name in archive_start_summary archive_finish_summary archive_resume_context write_archive_checkpoint finish_archive_checkpoint archive_progress_monitor archive_selected_categories archive_recordings sortfile intersect prunefile filterfile convert_seconds_to_nice_time cancel_archive_cleanup; do
   eval "$(extract "$name" | rewrite_fixture_paths)"
 done
 checkpoint="$work/mutable/archive_in_progress.json"

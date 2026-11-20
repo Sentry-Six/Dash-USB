@@ -30,6 +30,9 @@ Either choice takes effect immediately and persists if you back out of the wizar
 
 ## 4. Storage
 
+- **Dashcam system** — the vehicle Dash USB is plugged into. GM Surround Vision
+  is the default; Rivian Road Cam is experimental and has not been confirmed in
+  a car. Changing it sets the dashcam size to that vehicle's minimum.
 - **Dashcam Size** — the virtual USB drive the car records to. Keep the 64 GB
   default unless necessary: GM requires ≥64 GB total with 32 GB available, and
   remaining capacity is used for retained snapshots.
@@ -52,6 +55,11 @@ local and rotate as space is needed.
 | **None** | No archiving — snapshots stay on the SD card until space runs out |
 
 For rsync, the wizard generates an SSH key for the Pi and shows you the public key to paste onto your server, then lets you test the connection. See [Archive Methods](Archive-Methods) for setup details for each backend.
+
+**What to Archive** turns archiving of the car's footage on or off. A vehicle that
+saves to several folders (Rivian: recordings, incidents, saved clips and more)
+also lists each category so you can archive only some of them. Unticked
+categories still appear in the Viewer and in local snapshots.
 
 ## 6. Notifications
 

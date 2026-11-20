@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react"
 import { Cog, Thermometer, Search, Battery, AlertTriangle, Ruler } from "lucide-react"
 import type { StepProps } from "../SetupWizard"
 import { SizeInput } from "../SizeInput"
+import { selectedVehicle } from "../vehicles"
 
 function Field({ label, field, type = "text", placeholder, data, onChange, hint }: {
   label: string; field: string; type?: string; placeholder?: string
@@ -207,7 +208,13 @@ function TempInput({
   )
 }
 
-export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps) {
+export function AdvancedStep({ data, onChange, setupAlreadyFinished, vehicles }: StepProps) {
+  // Only cars that delete footage by age put a deadline on snapshots.
+  const vehicle = selectedVehicle(data, vehicles)
+  const windowHours = (vehicle?.rolling_window_minutes ?? 120) / 60
+  const snapshotHint = windowHours > 0
+    ? `Keep well under the car's rolling-delete window (${vehicle?.brand ?? "GM"} ≈ ${windowHours} h; default 900 s)`
+    : "How often new footage is captured from the drive (default 900 s)"
   const [tzSearch, setTzSearch] = useState("")
   const [isPi5, setIsPi5] = useState(false)
   const useFahrenheit = data.TEMPERATURE_UNIT === "F"
@@ -279,7 +286,7 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
           <Field label="Archive Delay (seconds)" field="ARCHIVE_DELAY" placeholder="20"
             data={data} onChange={onChange} hint="Delay between WiFi connect and archiving start" />
           <Field label="Snapshot Interval (seconds)" field="SNAPSHOT_INTERVAL" placeholder="default"
-            data={data} onChange={onChange} hint="Keep well under the car's rolling-delete window (GM ≈ 2 h; default 900 s)" />
+            data={data} onChange={onChange} hint={snapshotHint} />
         </div>
       </div>
 

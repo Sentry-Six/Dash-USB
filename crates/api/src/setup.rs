@@ -178,7 +178,10 @@ pub async fn save_setup_config(
     let config_path = sentryusb_config::find_config_path();
     match tokio::task::spawn_blocking(move || {
         let _guard = crate::notification_providers::PROVIDER_CONFIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        sentryusb_config::write_file(config_path, &body)
+        sentryusb_config::write_file(config_path, &body)?;
+        // The setup run that follows must use a newly picked vehicle.
+        sentryusb_vehicle_profile::apply_config_change();
+        Ok::<_, anyhow::Error>(())
     }).await {
         Ok(Ok(())) => crate::json_ok(),
         Ok(Err(e)) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to write config: {}", e)),
