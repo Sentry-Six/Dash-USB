@@ -746,7 +746,7 @@ Copyright (c) 2012-2014 Roman Shtylman <shtylman@gmail.com>
 Copyright (c) 2015 Douglas Christopher Wilson <doug@somethingdoug.com>
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-lucide-react 1.65.0 (ISC)
+lucide-react 1.72.0 (ISC)
 https://github.com/lucide-icons/lucide
 ISC License
 Copyright (c) 2026 Lucide Icons and Contributors
@@ -791,9 +791,9 @@ Copyright (c) Remix Software Inc. 2020-2021
 Copyright (c) Shopify Inc. 2022-2023
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-rolldown 1.2.15 (MIT)
+rolldown 1.2.19 (MIT)
 https://github.com/rolldown/rolldown
---- rolldown 1.2.15: LICENSE ---
+--- rolldown 1.2.19: LICENSE ---
 MIT License
 
 Copyright (c) 2024-present VoidZero Inc. & Contributors
@@ -835,14 +835,14 @@ https://github.com/dcastil/tailwind-merge
 Copyright (c) 2021 Dany Castillo
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tailwindcss 4.3.3 (MIT)
+tailwindcss 4.3.5 (MIT)
 https://github.com/tailwindlabs/tailwindcss
 Copyright (c) Tailwind Labs, Inc.
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-vite 8.3.5 (MIT)
+vite 8.3.8 (MIT)
 https://github.com/vitejs/vite
-vite 8.3.5: its licence file without the part from "# Licenses of bundled dependencies" on, which covers code inside the tool, not in the web UI.
+vite 8.3.8: its licence file without the part from "# Licenses of bundled dependencies" on, which covers code inside the tool, not in the web UI.
 # Vite core license
 Vite is released under the MIT license:
 Copyright (c) 2019-present, VoidZero Inc. and Vite contributors
